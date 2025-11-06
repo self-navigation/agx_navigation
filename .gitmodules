@@ -1,0 +1,15 @@
+[submodule "src/rslidar_msg"]
+	path = src/rslidar_msg
+	url = https://github.com/rudn-lab/rslidar_msg.git
+[submodule "src/rslidar_sdk"]
+	path = src/rslidar_sdk
+	url = https://github.com/rudn-lab/rslidar_sdk.git
+[submodule "src/ugv_sdk"]
+	path = src/ugv_sdk
+	url = https://github.com/agilexrobotics/ugv_sdk.git
+[submodule "src/scout_ros2"]
+	path = src/scout_ros2
+	url = https://github.com/rudn-lab/scout_ros2.git
+[submodule "src/realsense-ros"]
+	path = src/realsense-ros
+	url = https://github.com/IntelRealSense/realsense-ros.git
