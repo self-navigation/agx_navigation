@@ -29,7 +29,7 @@ install-deps:
 	sudo apt install \
 		libasio-dev \
 		libpcap-dev \
-		librealsense2-dev \
+		librealsense2-dev=2.56.5-0~realsense.17055 \
 		librealsense2-utils \
 		ros-jazzy-gz-ros2-control \
 		ros-jazzy-diff-drive-controller
