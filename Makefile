@@ -2,35 +2,58 @@ SHELL := /bin/bash
 
 .PHONY: all build clean install-deps run run-sim
 
+WORLD ?= empty.sdf
+ODOM_FRAME ?= odom
+BASE_FRAME ?= base_link
+ODOM_TOPIC_NAME ?= odom
+FLOOR_NUMBER ?= 3
+PORT_NAME ?= can0
+SIMULATED_ROBOT ?= false
+CONTROL_RATE ?= 50
+
 all: build
 
 build:
 	source /opt/ros/jazzy/setup.bash && \
-	colcon build
+		colcon build
 
 clean:
 	rm -rf install build log
 
 install-deps:
-	sudo mkdir -p /etc/apt/keyrings && \
-	curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null && \
+	sudo mkdir -p /etc/apt/keyrings
+	curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.intel.com/Debian/apt-repo `lsb_release -cs` main" | \
-	sudo tee /etc/apt/sources.list.d/librealsense.list && \
-	sudo apt-get update && \
-	sudo apt install libasio-dev \
-	libpcap-dev \
-	librealsense2-dev \
-	librealsense2-utils \
-	ros-jazzy-gz-ros2-control \
-	ros-jazzy-diff-drive-controller
+		sudo tee /etc/apt/sources.list.d/librealsense.list && \
+	sudo apt-get update
+	sudo apt install \
+		libasio-dev \
+		libpcap-dev \
+		librealsense2-dev \
+		librealsense2-utils \
+		ros-jazzy-gz-ros2-control \
+		ros-jazzy-diff-drive-controller
 
 run: build
 	source /opt/ros/jazzy/setup.bash && \
-	sudo ip link set can0 up type can bitrate 500000 || true && \
-	source install/setup.bash && \
-	ros2 launch py_robot_nav main.launch.py
+		sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
+		source install/setup.bash && \
+		ros2 launch py_robot_nav main.launch.py
+	ros2 launch py_robot_nav main.launch.py \
+		use_sim_time:=$(or $(USE_SIM_TIME),false) \
+		port_name:=$(PORT_NAME) \
+		odom_frame:=$(ODOM_FRAME) \
+		base_frame:=$(BASE_FRAME) \
+		odom_topic_name:=$(ODOM_TOPIC_NAME) \
+		simulated_robot:=$(SIMULATED_ROBOT) \
+		control_rate:=$(CONTROL_RATE)
 
 sim: build
 	source /opt/ros/jazzy/setup.bash && \
-	source install/setup.bash && \
-	ros2 launch py_robot_nav gazebo.launch.py
+		source install/setup.bash && \
+		ros2 launch py_robot_nav gazebo.launch.py
+
+teleop:
+	ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
+
+# vim: tabstop=2 softtabstop=2 shiftwidth=2
