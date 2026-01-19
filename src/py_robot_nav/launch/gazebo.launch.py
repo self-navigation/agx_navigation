@@ -1,10 +1,11 @@
-
 import launch
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, ExecuteProcess, RegisterEventHandler, EmitEvent
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import FindExecutable, PathJoinSubstitution, LaunchConfiguration, Command, EnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 
 import launch_ros
 from launch_ros.actions import Node
@@ -55,16 +56,16 @@ def scout_urdf():
     ]
 
 def generate_launch_description():
-    # Declare arguments (unchanged)
     declared_args = [
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation clock if true'),
         DeclareLaunchArgument('world', default_value='empty.sdf', description='SDF world file for Gazebo'),
         DeclareLaunchArgument('odom_frame', default_value='odom', description='Odometry frame id'),
         DeclareLaunchArgument('base_frame', default_value='base_link', description='Base link frame id'),
         DeclareLaunchArgument('odom_topic_name', default_value='odom', description='Odometry topic name'),
+        DeclareLaunchArgument('floor_number', default_value='3', description='On which floor of the RUDN building to perform the simulation.'),
     ]
 
-    # Set GZ_SIM_RESOURCE_PATH to enable model:// resolution for your package
+    # Set GZ_SIM_RESOURCE_PATH to enable model:// resolution
     set_gz_resource_path = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
         value=[
@@ -74,21 +75,40 @@ def generate_launch_description():
         ]
     )
 
-    # Path to the custom world (unchanged)
     world_path = PathJoinSubstitution([FindPackageShare('py_robot_nav'), 'worlds', LaunchConfiguration('world')])
 
-    # Launch Gazebo with custom world and explicit GUI enabled (unchanged)
-    gz_launch = IncludeLaunchDescription(
+    # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
+    gz_process = ExecuteProcess(
+        cmd=[
+            FindExecutable(name='gz'),
+            'sim',
+            '-v', '6',
+            '-r',
+            world_path
+        ],
+        output='screen',
+        name='gz_sim'
+    )
+
+    shutdown_handler = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gz_process,
+            on_exit=[
+                EmitEvent(event=Shutdown())
+            ]
+        )
+    )
+
+    spawn_floor = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
-                FindPackageShare('ros_gz_sim'),
+                FindPackageShare('rudn_ordjo_building'),
                 'launch',
-                'gz_sim.launch.py'
+                'spawn_floor.launch.py'
             ])
         ),
         launch_arguments={
-            'gz_args': ['-v 6 -r ', world_path],  # -v4: verbose; add '-r ' if you want auto-run
-            # 'gui': 'true'  # Explicitly enable GUI
+            'floor_number': LaunchConfiguration('floor_number'),
         }.items()
     )
 
@@ -102,7 +122,7 @@ def generate_launch_description():
             '-name', 'scout_mini',
             '-topic', '/robot_description',
             '-allow_renaming', 'true',
-            '-x', '0.0', '-y', '0.0', '-z', '0.5'  # Adjust pose
+            '-x', '0.0', '-y', '0.0', '-z', '0.5'
         ]
     )
 
@@ -113,14 +133,16 @@ def generate_launch_description():
         name='gz_bridge',
         output='screen',
         arguments=[
-            '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',  # ROS->GZ for commands
-            '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',    # GZ->ROS for odom
+            # ROS->GZ for commands
+            '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
+            # GZ->ROS for odom
+            '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             # RGB-D Camera
             '/camera/image@sensor_msgs/msg/Image@gz.msgs.Image',
-            '/camera/depth_image@sensor_msgs/msg/Image@gz.msgs.Image',  # Depth (encoding: 32FC1)
+            # Depth (encoding: 32FC1)
+            '/camera/depth_image@sensor_msgs/msg/Image@gz.msgs.Image',
             '/camera/points@sensor_msgs/msg/PointCloud2@gz.msgs.PointCloudPacked',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo',
-
             # Laser (LiDAR)
             '/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
         ],
@@ -130,8 +152,10 @@ def generate_launch_description():
     return LaunchDescription(
         declared_args +
         [
-            set_gz_resource_path,  # Add this here (before gz_launch to ensure it's set early)
-            gz_launch, 
+            set_gz_resource_path,  
+            gz_process, 
+            shutdown_handler,
+            spawn_floor,
             robot_spawner,
             gz_bridge,
         ]
