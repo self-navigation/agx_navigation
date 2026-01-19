@@ -18,3 +18,7 @@
 	path = src/realsense-ros
 	url = https://github.com/IntelRealSense/realsense-ros.git
 	branch = ros2-master
+[submodule "src/rudn-ordjo-building"]
+	path = src/rudn-ordjo-building
+	url = https://github.com/self-navigation/rudn-ordjo-building.git
+	branch = main
