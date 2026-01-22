@@ -68,6 +68,6 @@ teleop:
 rviz: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		rviz2
+		$(GPU_PREFIX) rviz2 --display-config robot.rviz
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
