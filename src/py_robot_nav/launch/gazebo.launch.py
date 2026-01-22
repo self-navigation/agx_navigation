@@ -26,20 +26,6 @@ def scout_urdf():
 
     robot_description_content = ParameterValue(robot_description_content, value_type=str)
 
-    # controller_manager = Node(
-    #     package='controller_manager',
-    #     executable='ros2_control_node',
-    #     parameters=[{'robot_description': robot_description_content}, PathJoinSubstitution([FindPackageShare('scout_description'), 'config', 'scout_controller.yaml'])],
-    #     output='screen'
-    # )
-
-    # diff_drive_spawner = Node(
-    #     package='controller_manager',
-    #     executable='spawner',
-    #     arguments=['diff_drive_controller', '--controller-manager', '/controller_manager'],
-    #     output='screen'
-    # )
-
     return [
         launch_ros.actions.Node(
             package='robot_state_publisher',
@@ -50,9 +36,6 @@ def scout_urdf():
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'robot_description': robot_description_content
             }]),
-
-            # controller_manager,
-            # diff_drive_spawner,
     ]
 
 def generate_launch_description():
@@ -163,7 +146,7 @@ def generate_launch_description():
             set_gz_resource_path,  
             gz_process, 
             shutdown_handler,
-            # spawn_floor,
+            spawn_floor,
             robot_spawner,
             gz_bridge,
             rotator,
