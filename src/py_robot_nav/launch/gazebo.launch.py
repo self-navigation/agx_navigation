@@ -58,7 +58,6 @@ def scout_urdf():
 def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation clock if true'),
-        DeclareLaunchArgument('world', default_value='empty.sdf', description='SDF world file for Gazebo'),
         DeclareLaunchArgument('odom_frame', default_value='odom', description='Odometry frame id'),
         DeclareLaunchArgument('base_frame', default_value='base_link', description='Base link frame id'),
         DeclareLaunchArgument('odom_topic_name', default_value='odom', description='Odometry topic name'),
@@ -75,7 +74,7 @@ def generate_launch_description():
         ]
     )
 
-    world_path = PathJoinSubstitution([FindPackageShare('py_robot_nav'), 'worlds', LaunchConfiguration('world')])
+    world_path = PathJoinSubstitution([FindPackageShare('rudn_ordjo_building'), 'worlds', "ordjo_world.world"])
 
     # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
     gz_process = ExecuteProcess(
@@ -112,7 +111,6 @@ def generate_launch_description():
         }.items()
     )
 
-    # Spawn robot
     robot_spawner = Node(
         package='ros_gz_sim',
         executable='create',
@@ -122,7 +120,7 @@ def generate_launch_description():
             '-name', 'scout_mini',
             '-topic', '/robot_description',
             '-allow_renaming', 'true',
-            '-x', '0.0', '-y', '0.0', '-z', '0.5'
+            '-x', '-23', '-y', '-5', '-z', '0.5'
         ]
     )
 
