@@ -1,33 +1,34 @@
-DO NOT FORGET to start your environment (should happen automatically in bashrc):
+# Scout Mini self driving
 
-source /opt/ros/jazzy/setup.bash
+## Installation
 
+This ROS2 workspace is built for ROS2 Jazzy and Gazebo Harmonic.
+Ensure they are installed on the system
+and that the main ROS2 environment is sourced
+prior to attempting to build and run this project.
 
-After building with make (colcon build):
+Install the required dependencies with:
 
-sudo ip link set can0 up type can bitrate 500000  # init CANbus interface
-source install/setup.bash  # to get packages in environment
-ros2 launch scout_base scout_base.launch.py  # to launch robot chassis module
-
----
-
-To run main combo, use `run.sh`. This will launch the drivers for the chassis, lidar, camera, and our custom modules.
-
----
-
-Requirements (ubuntu):
-
-`sudo apt install libasio-dev`
-
+```bash
+make install-deps
 ```
-sudo mkdir -p /etc/apt/keyrings
-curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
-sudo tee /etc/apt/sources.list.d/librealsense.list
-sudo apt-get update
+## Usage
 
-sudo apt-get install librealsense2-dev
+Run a Gazebo simulation:
 
-sudo apt install ros-jazzy-gz-ros2-control ros-jazzy-diff-drive-controller
+```bash
+make sim
+```
+
+Run on an Agilex Scout Mini R&D Kit:
+
+```bash
+make run
+```
+
+Build without running:
+
+```bash
+make build # or simply make
 ```
