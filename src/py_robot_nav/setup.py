@@ -32,6 +32,7 @@ setup(
         'console_scripts': [
             'agx_nav = py_robot_nav.agx_nav:main',
             'agx_odometry_publisher = py_robot_nav.agx_odometry_publisher:main',
+            'sim_point_cloud_fixup = py_robot_nav.sim_point_cloud_fixup:main',
         ],
     },
 )

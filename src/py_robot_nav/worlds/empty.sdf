@@ -10,11 +10,6 @@
         <!-- SceneBroadcaster: Broadcasts scene info to the GUI so the world/robot is visible -->
         <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
 
-        <!-- Sensors: Enables sensor rendering/updates; required for your lidar and camera -->
-        <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
-            <render_engine>ogre2</render_engine>
-        </plugin>
-
     <light type="directional" name="sun">
       <cast_shadows>true</cast_shadows>
       <pose>0 0 10 0 0 0</pose>

@@ -29,6 +29,7 @@ clean:
 	rm -rf install build log
 
 install-deps:
+	git submodule update --init --recursive
 	sudo mkdir -p /etc/apt/keyrings
 	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
@@ -62,5 +63,10 @@ sim: build
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
 		ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
+
+rviz: build
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
+		rviz2
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2

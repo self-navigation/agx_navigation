@@ -126,6 +126,18 @@ def generate_launch_description():
         ]
     )
 
+    rotator = Node(
+        package='py_robot_nav',
+        executable='sim_point_cloud_fixup',
+        name='sim_point_cloud_fixup',
+        output='screen',
+        parameters=[
+            {'input_topic': '/camera/points'},  # Bridged raw topic
+            {'output_topic': '/camera/points_corrected'},
+            {'rotation_angle_deg': 90.0}  # Or -90.0 if over-correcting
+        ]
+    )
+
     # ROS-GZ bridge with corrected directions ( [ for GZ->ROS, ] for ROS->GZ )
     gz_bridge = Node(
         package='ros_gz_bridge',
@@ -133,31 +145,30 @@ def generate_launch_description():
         name='gz_bridge',
         output='screen',
         arguments=[
-            # ROS->GZ for commands
+            # ROS->GZ for commands (unchanged)
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-            # GZ->ROS for odom
-            '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
-            # RGB-D Camera
-            '/camera/image@sensor_msgs/msg/Image@gz.msgs.Image',
-            # Depth (encoding: 32FC1)
-            '/camera/depth_image@sensor_msgs/msg/Image@gz.msgs.Image',
-            '/camera/points@sensor_msgs/msg/PointCloud2@gz.msgs.PointCloudPacked',
-            '/camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo',
-            # Laser (LiDAR)
-            '/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
+            # GZ->ROS for odom (corrected: GZ type first)
+            '/odom@gz.msgs.Odometry[nav_msgs/msg/Odometry',
+            # Camera (GZ->ROS)
+            '/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            # LiDAR Point Cloud (GZ->ROS)
+            '/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         ],
-        parameters=[{'lazy': True}]  # Lazy bridging to reduce overhead
+        parameters=[{'lazy': True}]  # Still useful for efficiency
     )
-
     return LaunchDescription(
         declared_args +
         [
             set_gz_resource_path,  
             gz_process, 
             shutdown_handler,
-            spawn_floor,
+            # spawn_floor,
             robot_spawner,
             gz_bridge,
+            rotator,
         ]
         + scout_urdf()
     )
