@@ -56,11 +56,13 @@ run: build
 		control_rate:=$(CONTROL_RATE)
 
 sim: build
-	source install/setup.bash && \
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
 		$(GPU_PREFIX) ros2 launch py_robot_nav gazebo.launch.py
 
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
 		ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
 
 rviz: build
