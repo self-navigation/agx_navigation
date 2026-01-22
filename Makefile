@@ -2,7 +2,6 @@ SHELL := /bin/bash
 
 .PHONY: all build clean install-deps run run-sim
 
-WORLD ?= empty.sdf
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
 ODOM_TOPIC_NAME ?= odom
