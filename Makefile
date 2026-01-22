@@ -11,6 +11,14 @@ PORT_NAME ?= can0
 SIMULATED_ROBOT ?= false
 CONTROL_RATE ?= 50
 
+USE_GPU_RENDER_ACCELERATION ?= true
+
+ifeq ($(USE_GPU_RENDER_ACCELERATION),true)
+GPU_PREFIX := __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
+else
+GPU_PREFIX :=
+endif
+
 all: build
 
 build:
@@ -22,24 +30,23 @@ clean:
 
 install-deps:
 	sudo mkdir -p /etc/apt/keyrings
-	curl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
-	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.intel.com/Debian/apt-repo `lsb_release -cs` main" | \
+	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
+	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
 		sudo tee /etc/apt/sources.list.d/librealsense.list && \
 	sudo apt-get update
-	sudo apt install \
+	sudo apt install -y \
 		libasio-dev \
 		libpcap-dev \
 		librealsense2-dev=2.56.5-0~realsense.17055 \
 		librealsense2-utils \
+		ros-jazzy-ros-gz \
 		ros-jazzy-gz-ros2-control \
 		ros-jazzy-diff-drive-controller
 
 run: build
-	source /opt/ros/jazzy/setup.bash && \
-		sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
+	sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
 		source install/setup.bash && \
-		ros2 launch py_robot_nav main.launch.py
-	ros2 launch py_robot_nav main.launch.py \
+		ros2 launch py_robot_nav main.launch.py \
 		use_sim_time:=$(or $(USE_SIM_TIME),false) \
 		port_name:=$(PORT_NAME) \
 		odom_frame:=$(ODOM_FRAME) \
@@ -49,11 +56,11 @@ run: build
 		control_rate:=$(CONTROL_RATE)
 
 sim: build
-	source /opt/ros/jazzy/setup.bash && \
-		source install/setup.bash && \
-		ros2 launch py_robot_nav gazebo.launch.py
+	source install/setup.bash && \
+		$(GPU_PREFIX) ros2 launch py_robot_nav gazebo.launch.py
 
 teleop:
-	ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
+	source /opt/ros/jazzy/setup.bash && \
+		ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
