@@ -2,12 +2,26 @@
 
 ## Installation
 
-This ROS2 workspace is built for ROS2 Jazzy and Gazebo Harmonic.
-Ensure they are installed on the system
-and that the main ROS2 environment is sourced
-prior to attempting to build and run this project.
+Recursively clone this repository
+to ensure all submodule dependencies are cloned as well:
 
-Install the required dependencies with:
+```bash
+git clone https://github.com/self-navigation/agx_navigation.git --recursive
+```
+
+## Dependencies
+
+This ROS2 workspace is built for ROS2 Jazzy and Gazebo Harmonic.
+You can prepare the workspace with:
+
+```bash
+make setup
+```
+
+This will install the latest versions of ROS2 Jazzy and Gazebo Harmonic
+before installing the dependenceis for this project.
+
+If you only want to install the dependencies use:
 
 ```bash
 make install-deps
