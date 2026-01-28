@@ -1,3 +1,4 @@
+*.stamp
 build
 install
 log
