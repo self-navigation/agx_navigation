@@ -23,9 +23,9 @@ SOURCES := $(shell find src -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.
 
 all: build
 
-build: .build.stamp
+build: build.stamp
 
-.build.stamp: $(SOURCES)
+build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
 		colcon build --symlink-install
 	touch $@
