@@ -59,6 +59,16 @@ install-gazebo:
 
 submodules:
 	git submodule update --init --recursive
+	git submodule foreach --recursive ' \
+		parent_root=$$(git rev-parse --show-superproject-working-tree); \
+		branch=$$(git config -f "$$parent_root/.gitmodules" --get "submodule.$$name.branch"); \
+		if [ -n "$$branch" ]; then \
+			git checkout "$$branch"; \
+			git pull origin "$$branch"; \
+		else \
+			echo "No branch specified for $$name"; \
+		fi \
+	'
 
 install-deps: submodules
 	sudo mkdir -p /etc/apt/keyrings
