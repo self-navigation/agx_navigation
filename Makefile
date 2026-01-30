@@ -9,6 +9,8 @@ FLOOR_NUMBER ?= 3
 PORT_NAME ?= can0
 SIMULATED_ROBOT ?= false
 CONTROL_RATE ?= 50
+USE_SIM_TIME ?= true
+HEADLESS ?= false
 
 USE_GPU_RENDER_ACCELERATION ?= true
 
@@ -16,6 +18,12 @@ ifeq ($(USE_GPU_RENDER_ACCELERATION),true)
 GPU_PREFIX := __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
 else
 GPU_PREFIX :=
+endif
+
+ifeq ($(HEADLESS),true)
+DISPLAY_PREFIX := DISPLAY=
+else
+DISPLAY_PREFIX :=
 endif
 
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
@@ -103,7 +111,7 @@ run: build
 	sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
 		source install/setup.bash && \
 		ros2 launch py_robot_nav main.launch.py \
-		use_sim_time:=$(or $(USE_SIM_TIME),false) \
+		use_sim_time:=$(USE_SIM_TIME) \
 		port_name:=$(PORT_NAME) \
 		odom_frame:=$(ODOM_FRAME) \
 		base_frame:=$(BASE_FRAME) \
@@ -114,7 +122,10 @@ run: build
 sim: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		$(GPU_PREFIX) ros2 launch py_robot_nav gazebo.launch.py
+		$(DISPLAY_PREFIX) $(GPU_PREFIX) ros2 launch py_robot_nav gazebo.launch.py \
+		use_sim_time:=$(USE_SIM_TIME) \
+		floor_number:=$(FLOOR_NUMBER) \
+		headless:=$(HEADLESS)
 
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
@@ -124,6 +135,8 @@ teleop:
 rviz: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		$(GPU_PREFIX) rviz2 --display-config robot.rviz
+		$(GPU_PREFIX) rviz2 \
+		--display-config robot.rviz \
+		--ros-args --param use_sim_time:=$(USE_SIM_TIME)
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
