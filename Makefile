@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps submodules run sim teleop rviz
+.PHONY: all clean update-caches install-ros install-gazebo install-deps submodules run sim teleop rviz
 
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
@@ -18,12 +18,21 @@ else
 GPU_PREFIX :=
 endif
 
-# List all source files as dependencies for the build stamp
-SOURCES := $(shell find src -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.py' -o -name '*.yaml' -o -name '*.launch.py' -o -name 'package.xml' -o -name 'CMakeLists.txt' \))
+SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
 
 all: build
 
-build: build.stamp
+build: update-caches build.stamp
+
+update-caches:
+	grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
+		file="$$1"; \
+		mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
+		sed -E -i "s|/home/[^/]+|/home/$$USER|g" "$$file"; \
+		if [ -n "$$mtime" ] && [ -f "$$file" ]; then \
+			touch -d "@$$mtime" "$$file" 2>/dev/null || true; \
+		fi \
+	' _ {}
 
 build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
@@ -83,7 +92,12 @@ install-deps: submodules
 		librealsense2-utils \
 		ros-jazzy-ros-gz \
 		ros-jazzy-gz-ros2-control \
-		ros-jazzy-diff-drive-controller
+		ros-jazzy-diff-drive-controller \
+		ros-jazzy-navigation2 \
+		ros-jazzy-nav2-bringup \
+		ros-jazzy-slam-toolbox \
+		ros-jazzy-pointcloud-to-laserscan
+
 
 run: build
 	sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
