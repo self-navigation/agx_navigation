@@ -30,25 +30,28 @@ SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
 
 all: build
 
-build: update-caches build.stamp
+build: update-caches .build.stamp
 
 update-caches:
-	grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
-		file="$$1"; \
-		mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
-		sed -E -i "s|/home/[^/]+|/home/$$USER|g" "$$file"; \
-		if [ -n "$$mtime" ] && [ -f "$$file" ]; then \
-			touch -d "@$$mtime" "$$file" 2>/dev/null || true; \
-		fi \
-	' _ {}
+	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
+		grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
+			file="$$1"; \
+			mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
+			sed -E -i "s|/home/[^/]+|/home/$$USER|g" "$$file"; \
+			if [ -n "$$mtime" ] && [ -f "$$file" ]; then \
+				touch -d "@$$mtime" "$$file" 2>/dev/null || true; \
+			fi \
+		' _ {}; \
+		echo "$$USER" > .last_build_user; \
+	fi
 
-build.stamp: $(SOURCES)
+.build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
 		colcon build --symlink-install
 	touch $@
 
 clean:
-	rm -rf install build log *.stamp
+	rm -rf install build log *.stamp .last_build_user
 
 setup: install-ros install-gazebo install-deps
 
