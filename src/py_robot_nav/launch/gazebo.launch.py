@@ -6,6 +6,7 @@ from launch.substitutions import FindExecutable, PathJoinSubstitution, LaunchCon
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
+from launch.conditions import IfCondition, UnlessCondition
 
 import launch_ros
 from launch_ros.actions import Node
@@ -15,7 +16,7 @@ from ament_index_python.packages import get_package_share_directory
 
 import os
 
-def scout_urdf():
+def scout():
     model_name = 'mini.xacro'
     robot_description_content = Command([
         PathJoinSubstitution([FindExecutable(name="xacro")]), " ",
@@ -26,27 +27,95 @@ def scout_urdf():
 
     robot_description_content = ParameterValue(robot_description_content, value_type=str)
 
+    robot_state = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'robot_description': robot_description_content
+        }]
+    )
+
+    robot_spawner = Node(
+        package='ros_gz_sim',
+        executable='create',
+        name='scout_spawner',
+        output='screen',
+        arguments=[
+            '-name', 'scout_mini',
+            '-topic', '/robot_description',
+            '-allow_renaming', 'true',
+            '-x', '-23', '-y', '-5', '-z', '0.5'
+        ]
+    )
+
     return [
-        launch_ros.actions.Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            output='screen',
-            parameters=[{
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
-                'robot_description': robot_description_content
-            }]),
+        robot_spawner,
+        robot_state,
     ]
 
-def generate_launch_description():
-    declared_args = [
-        DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation clock if true'),
-        DeclareLaunchArgument('odom_frame', default_value='odom', description='Odometry frame id'),
-        DeclareLaunchArgument('base_frame', default_value='base_link', description='Base link frame id'),
-        DeclareLaunchArgument('odom_topic_name', default_value='odom', description='Odometry topic name'),
-        DeclareLaunchArgument('floor_number', default_value='3', description='On which floor of the RUDN building to perform the simulation.'),
+def slam():
+    p2s = Node(
+        package='pointcloud_to_laserscan',
+        executable='pointcloud_to_laserscan_node',
+        name='pointcloud_to_laserscan',
+        remappings=[
+            ('cloud_in', '/lidar/points'),
+            ('scan', '/lidar/laserscan')
+        ],
+        parameters=[{
+            'target_frame': '',
+            'transform_tolerance': 0.1,
+
+            'min_height': -.1,
+            'max_height': 0.1,
+
+            # [-pi; +pi] because lidar has 360 degrees FOV
+            'angle_min': -3.14159,
+            'angle_max': 3.14159,
+
+            'angle_increment': 0.0087,  # M_PI/360.0
+            'scan_time': 0.1,
+
+            'range_min': 0.2,
+            'range_max': 150.0,
+
+            # outputs NaN for no-return rays
+            'use_inf': False,
+
+            # auto-detect
+            'concurrency_level': 0
+        }],
+    )
+
+    nav2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                get_package_share_directory('nav2_bringup'), 'launch', 'navigation_launch.py',
+            ])
+        ),
+        launch_arguments={
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }.items()
+    )
+
+    slam_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                get_package_share_directory('slam_toolbox'), 'launch', 'online_async_launch.py',
+            ])
+        ),
+        launch_arguments={
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }.items()
+    )
+    return [
+        p2s,
     ]
 
+def gz_sim():
     # Set GZ_SIM_RESOURCE_PATH to enable model:// resolution
     set_gz_resource_path = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
@@ -60,21 +129,39 @@ def generate_launch_description():
     world_path = PathJoinSubstitution([FindPackageShare('rudn_ordjo_building'), 'worlds', "ordjo_world.world"])
 
     # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
-    gz_process = ExecuteProcess(
-        cmd=[
-            FindExecutable(name='gz'),
-            'sim',
-            '-v', '6',
-            '-r',
-            world_path
-        ],
+    base_cmd = [
+        FindExecutable(name='gz'),
+        'sim',
+        '-v',
+        '6',
+        '-r',
+        world_path,
+    ]
+    
+    gz_process_gui = ExecuteProcess(
+        cmd=base_cmd,
         output='screen',
-        name='gz_sim'
+        name='gz_sim',
+        condition=UnlessCondition(LaunchConfiguration('headless'))
+    )
+    gz_process_headless = ExecuteProcess(
+        cmd=base_cmd + ['-s', '--headless-rendering'],
+        output='screen',
+        name='gz_sim_headless',
+        condition=IfCondition(LaunchConfiguration('headless'))
     )
 
-    shutdown_handler = RegisterEventHandler(
+    shutdown_handler_gui = RegisterEventHandler(
         OnProcessExit(
-            target_action=gz_process,
+            target_action=gz_process_gui,
+            on_exit=[
+                EmitEvent(event=Shutdown())
+            ]
+        )
+    )
+    shutdown_handler_headless = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gz_process_headless,
             on_exit=[
                 EmitEvent(event=Shutdown())
             ]
@@ -94,30 +181,21 @@ def generate_launch_description():
         }.items()
     )
 
-    robot_spawner = Node(
-        package='ros_gz_sim',
-        executable='create',
-        name='scout_spawner',
-        output='screen',
-        arguments=[
-            '-name', 'scout_mini',
-            '-topic', '/robot_description',
-            '-allow_renaming', 'true',
-            '-x', '-23', '-y', '-5', '-z', '0.5'
-        ]
-    )
+    return [
+        set_gz_resource_path,  
+        gz_process_gui, 
+        gz_process_headless, 
+        shutdown_handler_gui,
+        shutdown_handler_headless,
+        spawn_floor,
+    ]
 
-    rotator = Node(
-        package='py_robot_nav',
-        executable='sim_point_cloud_fixup',
-        name='sim_point_cloud_fixup',
-        output='screen',
-        parameters=[
-            {'input_topic': '/camera/points'},  # Bridged raw topic
-            {'output_topic': '/camera/points_corrected'},
-            {'rotation_angle_deg': 90.0}  # Or -90.0 if over-correcting
-        ]
-    )
+def generate_launch_description():
+    declared_args = [
+        DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation clock if true'),
+        DeclareLaunchArgument('floor_number', default_value='3', description='On which floor of the RUDN building to perform the simulation.'),
+        DeclareLaunchArgument('headless', default_value='false', description='Enable headless rendering for gz sim.'),
+    ]
 
     # ROS-GZ bridge with corrected directions ( [ for GZ->ROS, ] for ROS->GZ )
     gz_bridge = Node(
@@ -141,15 +219,11 @@ def generate_launch_description():
         parameters=[{'lazy': True}]  # Still useful for efficiency
     )
     return LaunchDescription(
-        declared_args +
-        [
-            set_gz_resource_path,  
-            gz_process, 
-            shutdown_handler,
-            spawn_floor,
-            robot_spawner,
+        declared_args
+        + gz_sim()
+        + scout()
+        + [
             gz_bridge,
-            rotator,
         ]
-        + scout_urdf()
+        + slam()
     )
