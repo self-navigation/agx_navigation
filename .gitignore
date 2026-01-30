@@ -1,4 +1,5 @@
 *.stamp
+.last_build_user
 build
 install
 log
