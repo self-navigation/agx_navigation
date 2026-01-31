@@ -4,15 +4,19 @@ SHELL := /bin/bash
 
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
-ODOM_TOPIC_NAME ?= odom
+ODOM_TOPIC_NAME ?= /diff_drive_controller/odom
+CMD_VEL_TOPIC_NAME ?= /diff_drive_controller/cmd_vel
 FLOOR_NUMBER ?= 3
 PORT_NAME ?= can0
 SIMULATED_ROBOT ?= false
 CONTROL_RATE ?= 50
 USE_SIM_TIME ?= true
 HEADLESS ?= false
+TWIST_STAMPED ?= true
 
 USE_GPU_RENDER_ACCELERATION ?= true
+
+ENV_PREFIX := GZ_SIM_SYSTEM_PLUGIN_PATH=/opt/ros/jazzy/lib/
 
 ifeq ($(USE_GPU_RENDER_ACCELERATION),true)
 GPU_PREFIX := __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
@@ -103,11 +107,14 @@ install-deps: submodules
 		librealsense2-utils \
 		ros-jazzy-ros-gz \
 		ros-jazzy-gz-ros2-control \
+		ros-jazzy-ros2-controllers \
+		ros-jazzy-ros2-control \
 		ros-jazzy-diff-drive-controller \
 		ros-jazzy-navigation2 \
 		ros-jazzy-nav2-bringup \
 		ros-jazzy-slam-toolbox \
-		ros-jazzy-pointcloud-to-laserscan
+		ros-jazzy-pointcloud-to-laserscan \
+		ros-jazzy-topic-tools
 
 
 run: build
@@ -125,7 +132,10 @@ run: build
 sim: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		$(DISPLAY_PREFIX) $(GPU_PREFIX) ros2 launch py_robot_nav gazebo.launch.py \
+		$(ENV_PREFIX) \
+		$(DISPLAY_PREFIX) \
+		$(GPU_PREFIX) \
+		ros2 launch py_robot_nav gazebo.launch.py \
 		use_sim_time:=$(USE_SIM_TIME) \
 		floor_number:=$(FLOOR_NUMBER) \
 		headless:=$(HEADLESS)
@@ -133,7 +143,10 @@ sim: build
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args --remap cmd_vel:=/cmd_vel
+		ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+		--ros-args --remap \
+		cmd_vel:=$(CMD_VEL_TOPIC_NAME) \
+		--param stamped:=$(TWIST_STAMPED)
 
 rviz: build
 	source /opt/ros/jazzy/setup.bash && \

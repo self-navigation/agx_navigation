@@ -38,6 +38,16 @@ def scout():
         }]
     )
 
+    joint_state_spawner = ExecuteProcess(
+        cmd=['ros2', 'run', 'controller_manager', 'spawner', 'joint_state_broadcaster'],
+        output='screen'
+    )
+
+    diff_drive_spawner = ExecuteProcess(
+        cmd=['ros2', 'run', 'controller_manager', 'spawner', 'diff_drive_controller'],
+        output='screen'
+    )
+
     robot_spawner = Node(
         package='ros_gz_sim',
         executable='create',
@@ -54,6 +64,8 @@ def scout():
     return [
         robot_spawner,
         robot_state,
+        joint_state_spawner,
+        diff_drive_spawner,
     ]
 
 def slam():
@@ -98,6 +110,9 @@ def slam():
         ),
         launch_arguments={
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'params_file': PathJoinSubstitution([
+                FindPackageShare('py_robot_nav'), 'config', 'nav2_params.yaml'
+            ]),
         }.items()
     )
 
@@ -109,10 +124,16 @@ def slam():
         ),
         launch_arguments={
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'slam_params_file': PathJoinSubstitution([
+                FindPackageShare('py_robot_nav'), 'config', 'slam_params.yaml'
+            ]),
         }.items()
     )
+
     return [
         p2s,
+        # nav2_launch,
+        # slam_launch,
     ]
 
 def gz_sim():
@@ -192,9 +213,10 @@ def gz_sim():
 
 def generate_launch_description():
     declared_args = [
-        DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation clock if true'),
+        DeclareLaunchArgument('odom_topic_name', default_value='/diff_drive_controller/odom', description='Odometry topic name'),
+        DeclareLaunchArgument('use_sim_time', default_value='True', description='Use simulation clock if true'),
         DeclareLaunchArgument('floor_number', default_value='3', description='On which floor of the RUDN building to perform the simulation.'),
-        DeclareLaunchArgument('headless', default_value='false', description='Enable headless rendering for gz sim.'),
+        DeclareLaunchArgument('headless', default_value='False', description='Enable headless rendering for gz sim.'),
     ]
 
     # ROS-GZ bridge with corrected directions ( [ for GZ->ROS, ] for ROS->GZ )
@@ -204,26 +226,30 @@ def generate_launch_description():
         name='gz_bridge',
         output='screen',
         arguments=[
-            # ROS->GZ for commands (unchanged)
+            # ROS->GZ
+            # Twist
             '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
-            # GZ->ROS for odom (corrected: GZ type first)
-            '/odom@gz.msgs.Odometry[nav_msgs/msg/Odometry',
-            # Camera (GZ->ROS)
+
+            # GZ->ROS
+            # Clock
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+            # Camera
             '/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            # LiDAR Point Cloud (GZ->ROS)
+            # LiDAR Point Cloud
             '/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         ],
         parameters=[{'lazy': True}]  # Still useful for efficiency
     )
+
     return LaunchDescription(
         declared_args
         + gz_sim()
-        + scout()
         + [
             gz_bridge,
         ]
+        + scout()
         + slam()
     )
