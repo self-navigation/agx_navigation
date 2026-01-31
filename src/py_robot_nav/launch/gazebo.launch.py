@@ -51,7 +51,6 @@ def scout():
         executable='spawner',
         arguments=['diff_drive_controller'],
         parameters=[
-            PathJoinSubstitution([ FindPackageShare('py_robot_nav'), 'config', 'controllers.yaml']),
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
         output='screen'
@@ -70,12 +69,29 @@ def scout():
         ]
     )
 
+    relays = [
+        Node(
+            package='topic_tools',
+            executable='relay',
+            name='odom_relay',
+            output='screen',
+            arguments=['/diff_drive_controller/odom', '/odom']
+        ),
+        Node(
+            package='topic_tools',
+            executable='relay',
+            name='cmdvel_relay',
+            output='screen',
+            arguments=['/cmd_vel', '/diff_drive_controller/cmd_vel']
+        ),
+    ]
+
     return [
         robot_spawner,
         robot_state,
         joint_state_spawner,
         diff_drive_spawner,
-    ]
+    ] + relays
 
 def slam():
     p2s = Node(
@@ -141,11 +157,21 @@ def slam():
         }.items()
     )
 
+    relays = [
+        Node(
+            package='topic_tools',
+            executable='relay',
+            name='cmdvel_nav_relay',
+            output='screen',
+            arguments=['/cmd_vel_nav', '/cmd_vel']
+        ),
+    ]
+
     return [
         p2s,
         nav2_launch,
         slam_launch,
-    ]
+    ] + relays
 
 def gz_sim():
     # Set GZ_SIM_RESOURCE_PATH to enable model:// resolution
@@ -239,7 +265,7 @@ def generate_launch_description():
         arguments=[
             # ROS->GZ
             # Twist
-            '/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
+            #'/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist',
 
             # GZ->ROS
             # Clock
