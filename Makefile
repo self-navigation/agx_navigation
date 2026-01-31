@@ -4,8 +4,9 @@ SHELL := /bin/bash
 
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
-ODOM_TOPIC_NAME ?= /diff_drive_controller/odom
-CMD_VEL_TOPIC_NAME ?= /diff_drive_controller/cmd_vel
+ODOM_TOPIC_NAME ?= /odom
+CMD_VEL_TOPIC_NAME ?= /cmd_vel
+CMD_VEL_ASSIST_TOPIC_NAME ?= /cmd_vel_assisted_teleop
 FLOOR_NUMBER ?= 3
 PORT_NAME ?= can0
 SIMULATED_ROBOT ?= false
@@ -37,7 +38,7 @@ all: build
 build: update-caches .build.stamp
 
 update-caches:
-	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
+	-if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
 		grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
 			file="$$1"; \
 			mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
@@ -51,11 +52,11 @@ update-caches:
 
 .build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
-		colcon build --symlink-install
+		colcon build
 	touch $@
 
 clean:
-	rm -rf install build log *.stamp .last_build_user
+	rm -rf install build log .*.stamp .last_build_user
 
 setup: install-ros install-gazebo submodules install-deps
 
@@ -147,6 +148,15 @@ teleop:
 		--ros-args --remap \
 		cmd_vel:=$(CMD_VEL_TOPIC_NAME) \
 		--param stamped:=$(TWIST_STAMPED)
+
+teleop_assist:
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
+		ros2 run teleop_twist_keyboard teleop_twist_keyboard \
+		--ros-args --remap \
+		cmd_vel:=$(CMD_VEL_ASSIST_TOPIC_NAME) \
+		--param stamped:=$(TWIST_STAMPED)
+
 
 rviz: build
 	source /opt/ros/jazzy/setup.bash && \
