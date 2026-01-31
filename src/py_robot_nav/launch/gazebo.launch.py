@@ -38,13 +38,22 @@ def scout():
         }]
     )
 
-    joint_state_spawner = ExecuteProcess(
-        cmd=['ros2', 'run', 'controller_manager', 'spawner', 'joint_state_broadcaster'],
-        output='screen'
+    joint_state_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster'],
+        output='screen',
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
     )
 
-    diff_drive_spawner = ExecuteProcess(
-        cmd=['ros2', 'run', 'controller_manager', 'spawner', 'diff_drive_controller'],
+    diff_drive_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['diff_drive_controller'],
+        parameters=[
+            PathJoinSubstitution([ FindPackageShare('py_robot_nav'), 'config', 'controllers.yaml']),
+            {'use_sim_time': LaunchConfiguration('use_sim_time')},
+        ],
         output='screen'
     )
 
@@ -98,7 +107,9 @@ def slam():
             'use_inf': False,
 
             # auto-detect
-            'concurrency_level': 0
+            'concurrency_level': 0,
+
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
         }],
     )
 
@@ -132,8 +143,8 @@ def slam():
 
     return [
         p2s,
-        # nav2_launch,
-        # slam_launch,
+        nav2_launch,
+        slam_launch,
     ]
 
 def gz_sim():
@@ -241,7 +252,10 @@ def generate_launch_description():
             # LiDAR Point Cloud
             '/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
         ],
-        parameters=[{'lazy': True}]  # Still useful for efficiency
+        parameters=[{
+            'lazy': True,
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }],
     )
 
     return LaunchDescription(
