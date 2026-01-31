@@ -57,7 +57,7 @@ update-caches:
 clean:
 	rm -rf install build log *.stamp .last_build_user
 
-setup: install-ros install-gazebo install-deps
+setup: install-ros install-gazebo submodules install-deps
 
 install-ros:
 	sudo apt update
@@ -94,7 +94,7 @@ submodules:
 		fi \
 	'
 
-install-deps: submodules
+install-deps:
 	sudo mkdir -p /etc/apt/keyrings
 	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
