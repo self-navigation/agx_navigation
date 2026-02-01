@@ -14,7 +14,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def scout_urdf():
-    model_name = 'mini.xacro'
+    model_name = 'scout_mini.xacro'
     # model_path = os.path.join(get_package_share_directory('scout_description'), "urdf", model_name)
     # print(model_path)
 

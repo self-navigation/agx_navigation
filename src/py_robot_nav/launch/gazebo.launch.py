@@ -17,7 +17,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def scout():
-    model_name = 'mini.xacro'
+    model_name = 'scout_mini.xacro'
     robot_description_content = Command([
         PathJoinSubstitution([FindExecutable(name="xacro")]), " ",
         PathJoinSubstitution(
