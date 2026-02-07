@@ -1,19 +1,22 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps submodules run sim teleop rviz
+.PHONY: all clean update-caches install-ros install-gazebo install-deps run teleop rviz
 
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
-ODOM_TOPIC_NAME ?= /odom
-CMD_VEL_TOPIC_NAME ?= /cmd_vel
-CMD_VEL_ASSIST_TOPIC_NAME ?= /cmd_vel_assisted_teleop
+ODOM_TOPIC_NAME ?= /robot/odom
+MOTION_CMD_TOPIC_NAME ?= /robot/cmd_vel
+
+STATUS_TOPIC_NAME ?= /robot/scout_status
+LIGHT_CMD_TOPIC_NAME ?= /robot/light_control
+
 FLOOR_NUMBER ?= 3
 PORT_NAME ?= can0
 SIMULATED_ROBOT ?= false
 CONTROL_RATE ?= 50
-USE_SIM_TIME ?= true
+SIM ?= true
 HEADLESS ?= false
-TWIST_STAMPED ?= true
+TELEOP_RAW ?= false
 
 USE_GPU_RENDER_ACCELERATION ?= true
 
@@ -29,6 +32,22 @@ ifeq ($(HEADLESS),true)
 DISPLAY_PREFIX := DISPLAY=
 else
 DISPLAY_PREFIX :=
+endif
+
+ifeq ($(SIM),false)
+LIFE_PREFIX := sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true &&
+else
+LIFE_PREFIX :=
+endif
+
+ifeq ($(TELEOP_RAW),false)
+ASSISTED_TELEOP_START := ros2 action send_goal /assisted_teleop nav2_msgs/action/AssistedTeleop "{time_allowance: {sec: 0, nanosec: 0}}"
+ASSISTED_TELEOP_END := ros2 service call /assisted_teleop/_action/cancel_goal action_msgs/srv/CancelGoal
+TELEOP_TOPIC := /cmd_vel_assisted_teleop
+else
+ASSISTED_TELEOP_START := 
+ASSISTED_TELEOP_END :=
+TELEOP_TOPIC := $(MOTION_CMD_TOPIC_NAME)
 endif
 
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
@@ -58,7 +77,7 @@ update-caches:
 clean:
 	rm -rf install build log .*.stamp .last_build_user
 
-setup: install-ros install-gazebo submodules install-deps
+setup: install-ros install-gazebo install-deps
 
 install-ros:
 	sudo apt update
@@ -82,19 +101,6 @@ install-gazebo:
 	sudo apt update
 	sudo apt install gz-harmonic
 
-submodules:
-	git submodule update --init --recursive
-	git submodule foreach --recursive ' \
-		parent_root=$$(git rev-parse --show-superproject-working-tree); \
-		branch=$$(git config -f "$$parent_root/.gitmodules" --get "submodule.$$name.branch"); \
-		if [ -n "$$branch" ]; then \
-			git checkout "$$branch"; \
-			git pull origin "$$branch"; \
-		else \
-			echo "No branch specified for $$name"; \
-		fi \
-	'
-
 install-deps:
 	sudo mkdir -p /etc/apt/keyrings
 	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
@@ -117,52 +123,43 @@ install-deps:
 		ros-jazzy-pointcloud-to-laserscan \
 		ros-jazzy-topic-tools
 
-
 run: build
-	sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true && \
-		source install/setup.bash && \
-		ros2 launch py_robot_nav main.launch.py \
-		use_sim_time:=$(USE_SIM_TIME) \
-		port_name:=$(PORT_NAME) \
-		odom_frame:=$(ODOM_FRAME) \
-		base_frame:=$(BASE_FRAME) \
-		odom_topic_name:=$(ODOM_TOPIC_NAME) \
-		simulated_robot:=$(SIMULATED_ROBOT) \
-		control_rate:=$(CONTROL_RATE)
-
-sim: build
-	source /opt/ros/jazzy/setup.bash && \
+	$(LIFE_PREFIX) \
+		source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(ENV_PREFIX) \
 		$(DISPLAY_PREFIX) \
 		$(GPU_PREFIX) \
-		ros2 launch py_robot_nav gazebo.launch.py \
-		use_sim_time:=$(USE_SIM_TIME) \
+		ros2 launch \
+		py_robot_nav main.launch.py \
+		sim:=$(SIM) \
+		odom_topic_name:=$(ODOM_TOPIC_NAME) \
+		motion_cmd_topic_name:=$(MOTION_CMD_TOPIC_NAME) \
+		port_name:=$(PORT_NAME) \
+		odom_frame:=$(ODOM_FRAME) \
+		base_frame:=$(BASE_FRAME) \
+		status_topic_name:=$(STATUS_TOPIC_NAME) \
+		light_cmd_topic_name:=$(STATUS_TOPIC_NAME) \
 		floor_number:=$(FLOOR_NUMBER) \
 		headless:=$(HEADLESS)
 
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
-		source install/setup.bash && \
-		ros2 run teleop_twist_keyboard teleop_twist_keyboard \
-		--ros-args --remap \
-		cmd_vel:=$(CMD_VEL_TOPIC_NAME) \
-		--param stamped:=$(TWIST_STAMPED)
-
-teleop_assist:
+		$(ASSISTED_TELEOP_START) &> /dev/null &
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		ros2 run teleop_twist_keyboard teleop_twist_keyboard \
 		--ros-args --remap \
-		cmd_vel:=$(CMD_VEL_ASSIST_TOPIC_NAME) \
-		--param stamped:=$(TWIST_STAMPED)
-
+		cmd_vel:=$(TELEOP_TOPIC) \
+		--param stamped:=true
+	source /opt/ros/jazzy/setup.bash && \
+		$(ASSISTED_TELEOP_END) &> /dev/null &
 
 rviz: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(GPU_PREFIX) rviz2 \
 		--display-config robot.rviz \
-		--ros-args --param use_sim_time:=$(USE_SIM_TIME)
+		--ros-args --param use_sim_time:=$(SIM)
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
