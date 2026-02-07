@@ -1,12 +1,11 @@
 amcl:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
     beam_skip_threshold: 0.3
@@ -43,7 +42,6 @@ amcl:
 
 bt_navigator:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     global_frame: map
     robot_base_frame: base_link
     odom_topic: odom
@@ -163,8 +161,8 @@ controller_server:
       TrajectoryValidator:
         # The validator can be configured with additional parameters if needed.
         plugin: "mppi::DefaultOptimalTrajectoryValidator"
-        collision_lookahead_time: 2.0  # Time to look ahead to check for collisions
-        consider_footprint: false  # Whether to consider the full robot's footprint (or circle) in trajectory validation collision checks
+        collision_lookahead_time: 2.0 # Time to look ahead to check for collisions
+        consider_footprint: false # Whether to consider the full robot's footprint (or circle) in trajectory validation collision checks
       AckermannConstraints:
         min_turning_r: 0.2
       critics:
@@ -238,7 +236,7 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      enable_stamped_cmd_vel: true
+      track_unknown_space: false
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: odom
@@ -246,9 +244,10 @@ local_costmap:
       rolling_window: true
       width: 3
       height: 3
+      # robot_radius: 0.42 # circumferens fully containing the robot
+      footprint: "[[0.31, 0.2925], [0.31, -0.2925], [-0.31, -0.2925], [-0.31, 0.2925], ]"
       resolution: 0.05
-      robot_radius: 0.22
-      plugins: ["voxel_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
       keepout_filter:
         plugin: "nav2_costmap_2d::KeepoutFilter"
@@ -260,24 +259,38 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.70
+        inflation_radius: 0.5
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
-        enabled: true
+        enabled: false
         publish_voxel_map: true
         origin_z: 0.0
         z_resolution: 0.05
         z_voxels: 16
         max_obstacle_height: 2.0
         mark_threshold: 0
-        observation_sources: scan
-        scan:
+        observation_sources: pointcloud
+        pointcloud:
           # A relative topic will be appended to the parent of the local_costmap namespace.
           # For example:
           #   * User chosen namespace is `tb4`.
           #   * User chosen topic is `scan`.
           #   * Topic will be remapped to `/tb4/scan` without `local_costmap`.
           #   * Use global topic `/scan` if you do not wish the node namespace to apply
+          topic: /lidar/points
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          data_type: PointCloud2
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
           topic: /lidar/laserscan
           max_obstacle_height: 2.0
           clearing: true
@@ -296,12 +309,13 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      enable_stamped_cmd_vel: true
+      track_unknown_space: false
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.22
+      # robot_radius: 0.42 # circumferens fully containing the robot
+      footprint: "[[0.31, 0.2925], [0.31, -0.2925], [-0.31, -0.2925], [-0.31, 0.2925], ]"
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -345,7 +359,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.7
+        inflation_radius: 0.5
       always_send_full_costmap: true
       # introspection_mode: "disabled"
 
@@ -354,19 +368,16 @@ global_costmap:
 # file & provide full path to map below. If CLI map configuration or launch default is provided, that will be used.
 map_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     # yaml_filename: ""
     introspection_mode: "disabled"
 
 keepout_filter_mask_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     topic_name: "keepout_filter_mask"
     # yaml_filename: ""
 
 keepout_costmap_filter_info_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     type: 0
     filter_info_topic: "keepout_costmap_filter_info"
     mask_topic: "keepout_filter_mask"
@@ -375,13 +386,11 @@ keepout_costmap_filter_info_server:
 
 speed_filter_mask_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     topic_name: "speed_filter_mask"
     # yaml_filename: ""
 
 speed_costmap_filter_info_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     type: 1
     filter_info_topic: "speed_costmap_filter_info"
     mask_topic: "speed_filter_mask"
@@ -390,7 +399,6 @@ speed_costmap_filter_info_server:
 
 map_saver:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     save_map_timeout: 5.0
     free_thresh_default: 0.25
     occupied_thresh_default: 0.65
@@ -399,7 +407,6 @@ map_saver:
 
 planner_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     allow_partial_planning: false
     expected_planner_frequency: 20.0
     planner_plugins: ["GridBased"]
@@ -413,7 +420,6 @@ planner_server:
 
 smoother_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     smoother_plugins: ["simple_smoother", "route_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
@@ -459,7 +465,7 @@ behavior_server:
       plugin: "nav2_behaviors::Wait"
     assisted_teleop:
       plugin: "nav2_behaviors::AssistedTeleop"
-      cmd_vel_teleop: "/cmd_vel_assisted_teleop"
+    cmd_vel_teleop: /cmd_vel_assisted_teleop
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
@@ -471,7 +477,6 @@ behavior_server:
 
 waypoint_follower:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     loop_rate: 20
     stop_on_failure: false
     introspection_mode: "disabled"
@@ -483,7 +488,6 @@ waypoint_follower:
 
 route_server:
   ros__parameters:
-    enable_stamped_cmd_vel: true
     # The graph_filepath does not need to be specified since it going to be set by defaults in launch.
     # If you'd rather set it in the yaml, remove the default "graph" value in the launch file(s).
     # file & provide full path to map below. If graph config or launch default is provided, it is used
@@ -524,7 +528,7 @@ collision_monitor:
   ros__parameters:
     enable_stamped_cmd_vel: true
     enabled: true
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "/cmd_vel_smoothed"
     cmd_vel_out_topic: "/cmd_vel"
@@ -548,7 +552,7 @@ collision_monitor:
     observation_sources: ["scan"]
     scan:
       type: "scan"
-      topic: "scan"
+      topic: /lidar/laserscan
       min_height: 0.15
       max_height: 2.0
       enabled: true
@@ -610,8 +614,7 @@ docking_server:
 
 loopback_simulator:
   ros__parameters:
-    enable_stamped_cmd_vel: true
-    base_frame_id: "base_footprint"
+    base_frame_id: "base_link"
     odom_frame_id: "odom"
     map_frame_id: "map"
     scan_frame_id: "base_scan" # tb4_loopback_simulator.launch.py remaps to 'rplidar_link'
