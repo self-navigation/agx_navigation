@@ -1,0 +1,85 @@
+rtabmap:
+  ros__parameters:
+    frame_id: base_link
+    map_frame_id: map
+    # needs to be empty to subscribe to a topic with remapping odom
+    odom_frame_id: ""
+    publish_tf: true
+
+    subscribe_depth: false
+    subscribe_odom: true
+    subscribe_odom_info: false
+    subscribe_rgb: false
+    subscribe_rgbd: false
+    subscribe_scan: true
+    subscribe_scan_cloud: true
+    subscribe_scan_descriptor: false
+    subscribe_sensor_data: false
+    subscribe_stereo: false
+    subscribe_user_data: false
+
+    approx_sync: true
+    wait_for_transform: 0.2
+    # sync_queue_size: 30
+
+    map_filter_radius: 2.0
+    map_filter_angle: 70.0
+
+    # RTAB-MAP specific params
+    # https://docs.ros.org/en/noetic/api/rtabmap/html/classrtabmap_1_1Parameters.html#ae1e2099039076c0d3c468d46f588f1f2
+
+    # Use ICP
+    Reg/Strategy: "1"
+
+    # Metric slams doesn't rely solely on images
+    RGBD/Enabled: "true"
+    RGBD/LoopClosureReextractFeatures: "true"
+    RGBD/ProximityBySpace: "true"
+    RGBD/CreateOccupancyGrid: "true"
+    RGBD/NeighborLinkRefining: "true"
+    RGBD/OptimizeFromGraphEnd: "false"
+    RGBD/ProximityPathMaxNeighbors: "10"
+    RGBD/LinearUpdate: "0.1"
+    RGBD/AngularUpdate: "0.1"
+
+    Icp/VoxelSize: "0.05"
+    Icp/DownsamplingStep: "1"
+    Icp/Iterations: "30"
+    Icp/MaxCorrespondenceDistance: "0.1"
+    Icp/PointToPlane: "true"
+    # PointToPlaneK and PointToPlaneRadius cannot be specified simultaneously, set one to 0
+    Icp/PointToPlaneK: "10"
+    Icp/PointToPlaneRadius: "0.0"
+    Icp/CorrespondenceRatio: "0.2"
+    Icp/PMMatcherIntensity: "false"
+
+    Grid/Sensor: "0"
+    Grid/3D: "true"
+    Grid/CellSize: "0.05"
+    Grid/RangeMin: "0.0"
+    Grid/RangeMax: "10.0"
+    Grid/NormalK: "10" # matching Icp/PointToPlaneK
+    Grid/NormalsSegmentation: "false"
+    Grid/MaxGroundAngle: "45"
+    Grid/MinGroundHeight: "-0.1"
+    Grid/MaxGroundHeight: "0.1"
+    Grid/MaxObstacleHeight: "5.0"
+    Grid/MinClusterSize: "0"
+    Grid/ClusterRadius: "0.3"
+    Grid/NoiseFilteringRadius: "0.2"
+    Grid/NoiseFilteringMinNeighbors: "5"
+    Grid/FlatObstacleDetected: "false"
+    Grid/GroundIsObstacle: "false"
+    Grid/MapFrameProjection: "true"
+    Grid/PreVoxelFiltering: "false"
+    Grid/RayTracing: "true"
+    Grid/Scan2dUnknownSpaceFilled: "true"
+
+    GridGlobal/MinSize: "0.0"
+    GridGlobal/ProbHit: "0.8"
+    GridGlobal/ProbMiss: "0.3"
+    GridGlobal/UpdateError: "0.05"
+
+    Rtabmap/DetectionRate: "10.0"
+    Rtabmap/TimeThr: "0"
+    database_path: "~/.ros/rtabmap.db"

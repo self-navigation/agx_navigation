@@ -4,8 +4,8 @@ SHELL := /bin/bash
 
 ODOM_FRAME ?= odom
 BASE_FRAME ?= base_link
-ODOM_TOPIC_NAME ?= /robot/odom
-MOTION_CMD_TOPIC_NAME ?= /robot/cmd_vel
+ODOM_TOPIC_NAME ?= /odom
+MOTION_CMD_TOPIC_NAME ?= /cmd_vel
 
 STATUS_TOPIC_NAME ?= /robot/scout_status
 LIGHT_CMD_TOPIC_NAME ?= /robot/light_control
@@ -119,7 +119,7 @@ install-deps:
 		ros-jazzy-diff-drive-controller \
 		ros-jazzy-navigation2 \
 		ros-jazzy-nav2-bringup \
-		ros-jazzy-slam-toolbox \
+		ros-jazzy-rtabmap \
 		ros-jazzy-pointcloud-to-laserscan \
 		ros-jazzy-topic-tools
 
