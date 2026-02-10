@@ -7,8 +7,8 @@ BASE_FRAME ?= base_link
 ODOM_TOPIC_NAME ?= /odom
 MOTION_CMD_TOPIC_NAME ?= /cmd_vel
 
-STATUS_TOPIC_NAME ?= /robot/scout_status
-LIGHT_CMD_TOPIC_NAME ?= /robot/light_control
+STATUS_TOPIC_NAME ?= /scout_status
+LIGHT_CMD_TOPIC_NAME ?= /light_control
 
 FLOOR_NUMBER ?= 3
 PORT_NAME ?= can0
@@ -139,7 +139,7 @@ run: build
 		odom_frame:=$(ODOM_FRAME) \
 		base_frame:=$(BASE_FRAME) \
 		status_topic_name:=$(STATUS_TOPIC_NAME) \
-		light_cmd_topic_name:=$(STATUS_TOPIC_NAME) \
+		light_cmd_topic_name:=$(LIGHT_CMD_TOPIC_NAME) \
 		floor_number:=$(FLOOR_NUMBER) \
 		headless:=$(HEADLESS)
 
