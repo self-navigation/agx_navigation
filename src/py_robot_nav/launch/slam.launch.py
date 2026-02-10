@@ -29,7 +29,7 @@ def generate_launch_description():
     declared_args = []
 
     downsampling_params = {
-        "leaf_size": 0.05,
+        "leaf_size": 0.07,
         "filter_field_name": "z",
         # show floor
         "filter_limit_min": -0.5,
@@ -48,8 +48,8 @@ def generate_launch_description():
                 name="camera_voxel_grid",
                 parameters=[downsampling_params],
                 remappings=[
-                    ("input", "/camera/points"),
-                    ("output", "/camera/points/downsampled"),
+                    ("input", "/camera/depth/image_raw/points"),
+                    ("output", "/camera/depth/image_raw/points/downsampled"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -80,7 +80,7 @@ def generate_launch_description():
                 ],
                 remappings=[
                     ("cloud1", "/lidar/points/downsampled"),
-                    ("cloud2", "/camera/points/downsampled"),
+                    ("cloud2", "/camera/depth/image_raw/points/downsampled"),
                     ("combined_cloud", "/combined_cloud"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],

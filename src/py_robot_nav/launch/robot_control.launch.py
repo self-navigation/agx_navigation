@@ -38,6 +38,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             "namespace": "",
+            "sim_reduction": "4",
             "use_sim_time": LaunchConfiguration("sim"),
         }.items(),
     )

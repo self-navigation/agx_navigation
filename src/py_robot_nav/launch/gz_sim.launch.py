@@ -7,19 +7,17 @@ from launch.actions import (
     RegisterEventHandler,
     EmitEvent,
 )
-from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import (
     FindExecutable,
     PathJoinSubstitution,
     LaunchConfiguration,
     EnvironmentVariable,
-    TextSubstitution,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.conditions import IfCondition, UnlessCondition
-
+from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 
 
@@ -110,12 +108,16 @@ def generate_launch_description():
             # Clock
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
             # Camera
-            "camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
-            "camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
-            "camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
-            "camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            "/camera/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            "/camera/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/camera/depth/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            "/camera/depth/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/camera/depth/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # LiDAR Point Cloud
             "lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
+            # IMU and Magnetometer
+            "imu@sensor_msgs/msg/Imu[gz.msgs.IMU",
+            "magnetic_field@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer",
         ],
         parameters=[
             {
