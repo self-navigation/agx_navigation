@@ -120,6 +120,7 @@ install-deps:
 		ros-jazzy-navigation2 \
 		ros-jazzy-nav2-bringup \
 		ros-jazzy-rtabmap \
+		ros-jazzy-rtabmap-slam \
 		ros-jazzy-pointcloud-to-laserscan \
 		ros-jazzy-topic-tools
 
