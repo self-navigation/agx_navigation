@@ -29,7 +29,7 @@ def generate_launch_description():
     declared_args = []
 
     downsampling_params = {
-        "leaf_size": 0.07,
+        "leaf_size": 0.05,
         "filter_field_name": "z",
         # show floor
         "filter_limit_min": -0.5,
@@ -130,7 +130,12 @@ def generate_launch_description():
             ("scan", "/combined_cloud/laserscan"),
             ("scan_cloud", "/combined_cloud"),
             ("map", "/map"),
-            ("odom", LaunchConfiguration("odom_topic_name")),
+            (
+                "odom",
+                PathJoinSubstitution(
+                    [LaunchConfiguration("odom_topic_name"), "filtered"]
+                ),
+            ),
         ],
         arguments=["--delete_db_on_start"],
     )

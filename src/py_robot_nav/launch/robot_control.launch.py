@@ -6,6 +6,7 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -46,11 +47,7 @@ def generate_launch_description():
     sim_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [
-                    FindPackageShare("py_robot_nav"),
-                    "launch",
-                    "sim_control.launch.py",
-                ]
+                [FindPackageShare("py_robot_nav"), "launch", "sim_control.launch.py"]
             )
         ),
         condition=IfCondition(LaunchConfiguration("sim")),
@@ -59,15 +56,34 @@ def generate_launch_description():
     life_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [
-                    FindPackageShare("py_robot_nav"),
-                    "launch",
-                    "life_control.launch.py",
-                ]
+                [FindPackageShare("py_robot_nav"), "launch", "life_control.launch.py"]
             )
         ),
         launch_arguments={}.items(),
         condition=UnlessCondition(LaunchConfiguration("sim")),
+    )
+
+    ekf_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_filter_node",
+        output="screen",
+        parameters=[
+            PathJoinSubstitution(
+                [FindPackageShare("py_robot_nav"), "config", "ekf_params.yaml"]
+            ),
+            {"use_sim_time": LaunchConfiguration("sim")},
+        ],
+        remappings=[
+            ("odom", LaunchConfiguration("odom_topic_name")),
+            ("imu", "/imu"),
+            (
+                "odometry/filtered",
+                PathJoinSubstitution(
+                    [LaunchConfiguration("odom_topic_name"), "filtered"]
+                ),
+            ),
+        ],
     )
 
     return LaunchDescription(
@@ -76,5 +92,6 @@ def generate_launch_description():
             scout_launch,
             sim_control_launch,
             life_control_launch,
+            ekf_node,
         ]
     )
