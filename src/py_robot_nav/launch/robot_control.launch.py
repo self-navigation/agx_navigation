@@ -6,8 +6,7 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from launch_ros.actions import Node, ComposableNodeContainer
-from launch_ros.descriptions import ComposableNode
+from launch_ros.actions import Node
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -41,7 +40,7 @@ def generate_launch_description():
         launch_arguments={
             "namespace": "",
             "sim_reduction": "4",
-            "use_sim_time": LaunchConfiguration("sim"),
+            "sim": LaunchConfiguration("sim"),
         }.items(),
     )
 
