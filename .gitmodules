@@ -14,10 +14,6 @@
 	path = src/scout_ros2
 	url = https://github.com/self-navigation/scout_ros2.git
 	branch = main
-[submodule "src/realsense-ros"]
-	path = src/realsense-ros
-	url = https://github.com/IntelRealSense/realsense-ros.git
-	branch = r/4.56.4
 [submodule "src/rudn-ordjo-building"]
 	path = src/rudn-ordjo-building
 	url = https://github.com/self-navigation/rudn-ordjo-building.git
