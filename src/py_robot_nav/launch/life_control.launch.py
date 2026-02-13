@@ -62,7 +62,13 @@ def generate_launch_description():
         package="rslidar_sdk",
         executable="rslidar_sdk_node",
         output="screen",
-        parameters=[{"config_path": ""}],
+        parameters=[
+            {
+                "config_path": PathJoinSubstitution(
+                    [FindPackageShare("py_robot_nav"), "config", "rslidar_config.yaml"]
+                )
+            }
+        ],
     )
 
     realsense = IncludeLaunchDescription(
