@@ -110,7 +110,7 @@ install-deps:
 	sudo apt install -y \
 		libasio-dev \
 		libpcap-dev \
-		librealsense2-dev=2.56.5-0~realsense.17055 \
+		librealsense2-dev \
 		librealsense2-utils \
 		ros-jazzy-ros-gz \
 		ros-jazzy-gz-ros2-control \
@@ -123,7 +123,8 @@ install-deps:
 		ros-jazzy-rtabmap-slam \
 		ros-jazzy-pointcloud-to-laserscan \
 		ros-jazzy-topic-tools \
-		ros-jazzy-imu-filter-madgwick
+		ros-jazzy-imu-filter-madgwick \
+		ros-jazzy-realsense2-camera
 
 run: build
 	$(LIFE_PREFIX) \
