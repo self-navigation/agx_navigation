@@ -130,6 +130,7 @@ def generate_launch_description():
             ("scan", "/combined_cloud/laserscan"),
             ("scan_cloud", "/combined_cloud"),
             ("map", "/map"),
+            ("imu", "/imu"),
             (
                 "odom",
                 PathJoinSubstitution(
