@@ -6,7 +6,8 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from launch_ros.actions import Node
+from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -63,6 +64,24 @@ def generate_launch_description():
         condition=UnlessCondition(LaunchConfiguration("sim")),
     )
 
+    imu_filter = Node(
+        package="imu_filter_madgwick",
+        executable="imu_filter_madgwick_node",
+        name="imu_filter",
+        output="screen",
+        parameters=[
+            PathJoinSubstitution(
+                [FindPackageShare("py_robot_nav"), "config", "imu_filter_params.yaml"]
+            ),
+            {"use_sim_time": LaunchConfiguration("sim")},
+        ],
+        remappings=[
+            ("imu/mag", "/magnetic_field"),
+            ("imu/data_raw", "/imu"),
+            ("imu/data", "/imu/filtered"),
+        ],
+    )
+
     ekf_node = Node(
         package="robot_localization",
         executable="ekf_node",
@@ -92,6 +111,7 @@ def generate_launch_description():
             scout_launch,
             sim_control_launch,
             life_control_launch,
+            # imu_filter,
             ekf_node,
         ]
     )

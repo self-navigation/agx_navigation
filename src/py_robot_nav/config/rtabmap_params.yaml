@@ -31,9 +31,10 @@ rtabmap:
     # Use ICP
     Reg/Strategy: "1"
 
-    # Metric slams doesn't rely solely on images
+    # Crucial, needs to be enabled for the metric-slam algo
+    # which doesn't rely solely on images
     RGBD/Enabled: "true"
-    RGBD/LoopClosureReextractFeatures: "true"
+    RGBD/LoopClosureReextractFeatures: "false"
     RGBD/ProximityBySpace: "true"
     RGBD/CreateOccupancyGrid: "true"
     RGBD/NeighborLinkRefining: "true"

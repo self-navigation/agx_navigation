@@ -122,7 +122,8 @@ install-deps:
 		ros-jazzy-rtabmap \
 		ros-jazzy-rtabmap-slam \
 		ros-jazzy-pointcloud-to-laserscan \
-		ros-jazzy-topic-tools
+		ros-jazzy-topic-tools \
+		ros-jazzy-install-imu-filter-madgwick
 
 run: build
 	$(LIFE_PREFIX) \
