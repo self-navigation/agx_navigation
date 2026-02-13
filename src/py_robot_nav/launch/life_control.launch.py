@@ -53,7 +53,7 @@ def generate_launch_description():
                 "is_scout_mini": True,
                 "is_omni_wheel": False,
                 "simulated_robot": False,
-                "use_sim_time": False,
+                "use_sim_time": LaunchConfiguration("sim"),
             }
         ],
     )

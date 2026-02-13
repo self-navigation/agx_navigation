@@ -44,7 +44,7 @@ def generate_launch_description():
             ],
         ],
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{"use_sim_time": LaunchConfiguration("sim")}],
     )
 
     robot_spawner = Node(
