@@ -131,7 +131,8 @@ install-deps:
 		ros-jazzy-pointcloud-to-laserscan \
 		ros-jazzy-topic-tools \
 		ros-jazzy-imu-filter-madgwick \
-		ros-jazzy-realsense2-camera
+		ros-jazzy-realsense2-camera \
+		ros-jazzy-realsense2-description
 
 
 run: build
