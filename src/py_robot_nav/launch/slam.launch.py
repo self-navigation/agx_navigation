@@ -48,8 +48,11 @@ def generate_launch_description():
                 name="camera_voxel_grid",
                 parameters=[downsampling_params],
                 remappings=[
-                    ("input", "/camera/depth/image_raw/points"),
-                    ("output", "/camera/depth/image_raw/points/downsampled"),
+                    ("input", "/camera/depth/image_raw/points/transformed"),
+                    (
+                        "output",
+                        "/camera/depth/image_raw/points/transformed/downsampled",
+                    ),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -80,7 +83,10 @@ def generate_launch_description():
                 ],
                 remappings=[
                     ("cloud1", "/lidar/points/downsampled"),
-                    ("cloud2", "/camera/depth/image_raw/points/downsampled"),
+                    (
+                        "cloud2",
+                        "/camera/depth/image_raw/points/transformed/downsampled",
+                    ),
                     ("combined_cloud", "/combined_cloud"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
