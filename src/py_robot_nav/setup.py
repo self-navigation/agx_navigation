@@ -32,6 +32,8 @@ setup(
             'agx_nav = py_robot_nav.agx_nav:main',
             'agx_odometry_publisher = py_robot_nav.agx_odometry_publisher:main',
             'sim_point_cloud_fixup = py_robot_nav.sim_point_cloud_fixup:main',
+            'frontier_explorer = py_robot_nav.frontier_explorer:main',
+            'laserscan_interpolator = py_robot_nav.laserscan_interpolator:main',
         ],
     },
 )
