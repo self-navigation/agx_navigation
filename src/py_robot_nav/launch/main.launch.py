@@ -19,6 +19,11 @@ def generate_launch_description():
             default_value="False",
             description="Run in Gazebo sim (spawns the robot and uses sim time).",
         ),
+        DeclareLaunchArgument(
+            "depth_camera_points_topic_name",
+            default_value="/camera/depth/points",
+            description="Unified topic name for points received from the depth camera.",
+        ),
     ]
 
     scout_launch = IncludeLaunchDescription(
