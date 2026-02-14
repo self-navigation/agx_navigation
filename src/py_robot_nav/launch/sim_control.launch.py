@@ -17,7 +17,7 @@ def generate_launch_description():
             "joint_state_broadcaster",
         ],
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[{"use_sim_time": LaunchConfiguration("sim")}],
     )
 
     diff_drive_spawner = Node(
