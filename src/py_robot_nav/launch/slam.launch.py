@@ -36,6 +36,16 @@ def generate_launch_description():
         "filter_limit_max": 5.0,
     }
 
+    depth_camera_points_topic_name = LaunchConfiguration(
+        "depth_camera_points_topic_name"
+    )
+    depth_camera_points_topic_name_downsampled = PathJoinSubstitution(
+        [
+            depth_camera_points_topic_name,
+            "downsampled",
+        ]
+    )
+
     point_cloud_processor = ComposableNodeContainer(
         name="point_cloud_processing_container",
         namespace="",
@@ -48,11 +58,8 @@ def generate_launch_description():
                 name="camera_voxel_grid",
                 parameters=[downsampling_params],
                 remappings=[
-                    ("input", "/camera/depth/image_raw/points/transformed"),
-                    (
-                        "output",
-                        "/camera/depth/image_raw/points/transformed/downsampled",
-                    ),
+                    ("input", depth_camera_points_topic_name),
+                    ("output", depth_camera_points_topic_name_downsampled),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -83,10 +90,7 @@ def generate_launch_description():
                 ],
                 remappings=[
                     ("cloud1", "/lidar/points/downsampled"),
-                    (
-                        "cloud2",
-                        "/camera/depth/image_raw/points/transformed/downsampled",
-                    ),
+                    ("cloud2", depth_camera_points_topic_name_downsampled),
                     ("combined_cloud", "/combined_cloud"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
