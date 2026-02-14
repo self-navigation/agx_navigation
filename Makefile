@@ -17,6 +17,7 @@ CONTROL_RATE ?= 50
 SIM ?= true
 HEADLESS ?= false
 TELEOP_RAW ?= false
+DEBUG ?= false
 
 USE_GPU_RENDER_ACCELERATION ?= true
 
@@ -48,6 +49,12 @@ else
 ASSISTED_TELEOP_START := 
 ASSISTED_TELEOP_END :=
 TELEOP_TOPIC := $(MOTION_CMD_TOPIC_NAME)
+endif
+
+ifeq ($(DEBUG),true)
+DEBUG_INFIX := --debug
+else
+DEBUG_INFIX :=
 endif
 
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
@@ -126,6 +133,7 @@ install-deps:
 		ros-jazzy-imu-filter-madgwick \
 		ros-jazzy-realsense2-camera
 
+
 run: build
 	$(LIFE_PREFIX) \
 		source /opt/ros/jazzy/setup.bash && \
@@ -133,7 +141,7 @@ run: build
 		$(ENV_PREFIX) \
 		$(DISPLAY_PREFIX) \
 		$(GPU_PREFIX) \
-		ros2 launch \
+		ros2 launch $(DEBUG_INFIX) \
 		py_robot_nav main.launch.py \
 		sim:=$(SIM) \
 		odom_topic_name:=$(ODOM_TOPIC_NAME) \
