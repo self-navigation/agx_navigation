@@ -12,7 +12,7 @@ def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
             "sim",
-            default_value="False",
+            default_value="false",
             description="Run in Gazebo sim (spawns the robot and uses sim time).",
         ),
     ]
