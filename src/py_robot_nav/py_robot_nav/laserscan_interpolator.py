@@ -8,16 +8,16 @@ import numpy as np
 
 class Interpolator(Node):
     def __init__(self):
-        super().__init__('laserscan_interpolator')
+        super().__init__("laserscan_interpolator")
         
         # Declare parameters
-        self.declare_parameter('input_topic', '/scan')
-        self.declare_parameter('output_topic', '/interpolated_scan')
-        self.declare_parameter('target_degree_inc', 0.5)
+        self.declare_parameter("input_topic", "/scan")
+        self.declare_parameter("output_topic", "/interpolated_scan")
+        self.declare_parameter("target_degree_inc", 0.5)
         
-        input_topic = self.get_parameter('input_topic').value
-        output_topic = self.get_parameter('output_topic').value
-        self.target_angle_inc = math.radians(self.get_parameter('target_degree_inc').value)
+        input_topic = self.get_parameter("input_topic").value
+        output_topic = self.get_parameter("output_topic").value
+        self.target_angle_inc = math.radians(self.get_parameter("target_degree_inc").value)
 
         self.subscription = self.create_subscription(
             LaserScan,
@@ -42,7 +42,7 @@ class Interpolator(Node):
         if np.sum(valid) < 2:
             return [np.nan] * target_length  # Not enough valid points
 
-        interpolator = interp1d(x_original[valid], source_array[valid], kind='linear', fill_value='extrapolate')
+        interpolator = interp1d(x_original[valid], source_array[valid], kind="linear", fill_value="extrapolate")
         x_new = np.linspace(0, 1, target_length)
         resampled = interpolator(x_new)
         
@@ -63,7 +63,7 @@ class Interpolator(Node):
             new_intensities = self.resample(msg.intensities, interp_factor)
 
         new_inc = (msg.angle_max - msg.angle_min) / (len(new_ranges) - 1)
-        # print(f'{current_inc=} {target_inc=} {interp_factor=} {new_inc=}')
+        # print(f"{current_inc=} {target_inc=} {interp_factor=} {new_inc=}")
         
         new_msg = LaserScan()
         new_msg.header = msg.header
@@ -78,7 +78,7 @@ class Interpolator(Node):
         if new_intensities:
             new_msg.intensities = new_intensities
         
-        # print('received', len(msg.ranges), 'sent', len(new_msg.ranges))
+        # print("received", len(msg.ranges), "sent", len(new_msg.ranges))
         # print(new_msg.ranges)
         self.publisher.publish(new_msg)
 
@@ -93,5 +93,5 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
