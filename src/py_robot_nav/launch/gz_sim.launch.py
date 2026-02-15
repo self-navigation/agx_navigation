@@ -70,7 +70,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "headless",
-            default_value="False",
+            default_value="false",
             description="Enable headless rendering for gz sim.",
         ),
     ]
