@@ -129,7 +129,9 @@ install-deps:
 		ros-jazzy-topic-tools \
 		ros-jazzy-imu-filter-madgwick \
 		ros-jazzy-realsense2-camera \
-		ros-jazzy-realsense2-description
+		ros-jazzy-realsense2-description \
+		ros-jazzy-rslidar-sdk \
+		ros-jazzy-rslidar-msg
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \

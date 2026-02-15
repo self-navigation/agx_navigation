@@ -1,11 +1,3 @@
-[submodule "src/rslidar_msg"]
-	path = src/rslidar_msg
-	url = https://github.com/self-navigation/rslidar_msg.git
-	branch = master
-[submodule "src/rslidar_sdk"]
-	path = src/rslidar_sdk
-	url = https://github.com/self-navigation/rslidar_sdk.git
-	branch = main
 [submodule "src/ugv_sdk"]
 	path = src/ugv_sdk
 	url = https://github.com/agilexrobotics/ugv_sdk.git
