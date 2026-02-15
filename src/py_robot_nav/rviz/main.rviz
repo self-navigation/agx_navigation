@@ -24,7 +24,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: Camera PointCloud2
+    SyncSource: LaserScan
 Visualization Manager:
   Class: ""
   Displays:
@@ -162,8 +162,6 @@ Visualization Manager:
               Value: true
             d435_camera_depth_frame:
               Value: true
-            d435_camera_depth_gz_frame:
-              Value: true
             d435_camera_depth_optical_frame:
               Value: true
             d435_camera_infra1_frame:
@@ -208,8 +206,7 @@ Visualization Manager:
                           {}
                       d435_camera_depth_frame:
                         d435_camera_depth_optical_frame:
-                          d435_camera_depth_gz_frame:
-                            {}
+                          {}
                       d435_camera_infra1_frame:
                         d435_camera_infra1_optical_frame:
                           {}

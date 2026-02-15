@@ -6,6 +6,7 @@ from launch.actions import (
     ExecuteProcess,
     RegisterEventHandler,
     EmitEvent,
+    OpaqueFunction,
 )
 from launch.substitutions import (
     FindExecutable,
@@ -19,6 +20,45 @@ from launch.events import Shutdown
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
+
+
+def launch_gz_sim(context):
+    headless = LaunchConfiguration("headless").perform(context)
+    is_headless = headless.lower() in ["true", "1", "yes"]
+
+    # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
+    world_path = PathJoinSubstitution(
+        [FindPackageShare("rudn_ordjo_building"), "worlds", "ordjo_world.world"]
+    )
+
+    cmd = [FindExecutable(name="gz"), "sim", "-v", "6", "-r", world_path, "-s"]
+    if is_headless:
+        cmd.append("--headless-rendering")
+
+    gz_process_server = ExecuteProcess(
+        cmd=cmd,
+        output="screen",
+        name="gz_sim_server",
+    )
+
+    gz_process_gui = ExecuteProcess(
+        cmd=[FindExecutable(name="gz"), "sim", "-g"],
+        output="screen",
+        name="gz_sim_gui",
+        condition=UnlessCondition(LaunchConfiguration("headless")),
+    )
+
+    shutdown_handler = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gz_process_server, on_exit=[EmitEvent(event=Shutdown())]
+        )
+    )
+
+    return [
+        gz_process_server,
+        gz_process_gui,
+        shutdown_handler,
+    ]
 
 
 def generate_launch_description():
@@ -44,44 +84,17 @@ def generate_launch_description():
             EnvironmentVariable("GZ_SIM_RESOURCE_PATH", default_value=""),
         ],
     )
-
-    world_path = PathJoinSubstitution(
-        [FindPackageShare("rudn_ordjo_building"), "worlds", "ordjo_world.world"]
+    set_gz_system_plugin_path = SetEnvironmentVariable(
+        name="GZ_SIM_SYSTEM_PLUGIN_PATH",
+        value="/opt/ros/jazzy/lib/",
     )
-
-    # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
-    base_cmd = [
-        FindExecutable(name="gz"),
-        "sim",
-        "-v",
-        "6",
-        "-r",
-        world_path,
-    ]
-
-    gz_process_gui = ExecuteProcess(
-        cmd=base_cmd,
-        output="screen",
-        name="gz_sim",
-        condition=UnlessCondition(LaunchConfiguration("headless")),
-    )
-    gz_process_headless = ExecuteProcess(
-        cmd=base_cmd + ["-s", "--headless-rendering"],
-        output="screen",
-        name="gz_sim_headless",
+    set_display = SetEnvironmentVariable(
+        name="DISPLAY",
+        value="",
         condition=IfCondition(LaunchConfiguration("headless")),
     )
 
-    shutdown_handler_gui = RegisterEventHandler(
-        OnProcessExit(
-            target_action=gz_process_gui, on_exit=[EmitEvent(event=Shutdown())]
-        )
-    )
-    shutdown_handler_headless = RegisterEventHandler(
-        OnProcessExit(
-            target_action=gz_process_headless, on_exit=[EmitEvent(event=Shutdown())]
-        )
-    )
+    gz_sim = OpaqueFunction(function=launch_gz_sim)
 
     spawn_floor = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -131,11 +144,10 @@ def generate_launch_description():
         declared_args
         + [
             set_gz_resource_path,
-            gz_process_gui,
-            gz_process_headless,
-            shutdown_handler_gui,
-            shutdown_handler_headless,
-            spawn_floor,
+            set_gz_system_plugin_path,
+            set_display,
+            gz_sim,
             gz_bridge,
+            spawn_floor,
         ]
     )
