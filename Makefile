@@ -1,44 +1,41 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps run teleop rviz
+.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz
 
-ODOM_FRAME ?= odom
-BASE_FRAME ?= base_link
-ODOM_TOPIC_NAME ?= /odom
-MOTION_CMD_TOPIC_NAME ?= /cmd_vel
+SIM := true
+PORT_NAME := can0
+TELEOP_RAW := false
 
-STATUS_TOPIC_NAME ?= /scout_status
-LIGHT_CMD_TOPIC_NAME ?= /light_control
-
-FLOOR_NUMBER ?= 3
-PORT_NAME ?= can0
-SIMULATED_ROBOT ?= false
-CONTROL_RATE ?= 50
-SIM ?= true
-HEADLESS ?= false
-TELEOP_RAW ?= false
 DEBUG ?= false
-
 USE_GPU_RENDER_ACCELERATION ?= true
 
-ENV_PREFIX := GZ_SIM_SYSTEM_PLUGIN_PATH=/opt/ros/jazzy/lib/
+PARAM_VARS := ODOM_FRAME \
+							BASE_FRAME \
+							ODOM_TOPIC_NAME \
+							MOTION_CMD_TOPIC_NAME \
+							STATUS_TOPIC_NAME \
+							LIGHT_CMD_TOPIC_NAME \
+							FLOOR_NUMBER \
+							PORT_NAME \
+							SIM \
+							HEADLESS
+
+define lc
+$(shell echo '$(1)' | tr '[:upper:]' '[:lower:]')
+endef
+
+PARAMS := $(strip \
+	$(foreach var,$(PARAM_VARS), \
+		$(if $($(var)), \
+			$(call lc,$(var)):=$($(var)) \
+		) \
+	) \
+)
 
 ifeq ($(USE_GPU_RENDER_ACCELERATION),true)
 GPU_PREFIX := __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia
 else
 GPU_PREFIX :=
-endif
-
-ifeq ($(HEADLESS),true)
-DISPLAY_PREFIX := DISPLAY=
-else
-DISPLAY_PREFIX :=
-endif
-
-ifeq ($(SIM),false)
-LIFE_PREFIX := sudo ip link set $(PORT_NAME) up type can bitrate 500000 || true &&
-else
-LIFE_PREFIX :=
 endif
 
 ifeq ($(TELEOP_RAW),false)
@@ -48,7 +45,7 @@ TELEOP_TOPIC := /cmd_vel_assisted_teleop
 else
 ASSISTED_TELEOP_START := 
 ASSISTED_TELEOP_END :=
-TELEOP_TOPIC := $(MOTION_CMD_TOPIC_NAME)
+TELEOP_TOPIC := $(or $(MOTION_CMD_TOPIC_NAME), /cmd_vel)
 endif
 
 ifeq ($(DEBUG),true)
@@ -64,7 +61,7 @@ all: build
 build: update-caches .build.stamp
 
 update-caches:
-	-if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
+	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
 		grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
 			file="$$1"; \
 			mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
@@ -134,26 +131,18 @@ install-deps:
 		ros-jazzy-realsense2-camera \
 		ros-jazzy-realsense2-description
 
+can-bus:
+	if [ "$(SIM)" != true ] ; then \
+		sudo ip link set $(PORT_NAME) up type can bitrate 500000; \
+	fi
 
-run: build
-	$(LIFE_PREFIX) \
-		source /opt/ros/jazzy/setup.bash && \
+run: build can-bus
+	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		$(ENV_PREFIX) \
-		$(DISPLAY_PREFIX) \
 		$(GPU_PREFIX) \
 		ros2 launch $(DEBUG_INFIX) \
 		py_robot_nav main.launch.py \
-		sim:=$(SIM) \
-		odom_topic_name:=$(ODOM_TOPIC_NAME) \
-		motion_cmd_topic_name:=$(MOTION_CMD_TOPIC_NAME) \
-		port_name:=$(PORT_NAME) \
-		odom_frame:=$(ODOM_FRAME) \
-		base_frame:=$(BASE_FRAME) \
-		status_topic_name:=$(STATUS_TOPIC_NAME) \
-		light_cmd_topic_name:=$(LIGHT_CMD_TOPIC_NAME) \
-		floor_number:=$(FLOOR_NUMBER) \
-		headless:=$(HEADLESS)
+		$(PARAMS)
 
 teleop:
 	source /opt/ros/jazzy/setup.bash && \
@@ -167,11 +156,13 @@ teleop:
 	source /opt/ros/jazzy/setup.bash && \
 		$(ASSISTED_TELEOP_END) &> /dev/null &
 
-rviz: build
+# Using raw rviz command during development
+# TODO: switch to rviz.launch.py
+# once all visualisations are configured
+rviz:
 	source /opt/ros/jazzy/setup.bash && \
-		source install/setup.bash && \
 		$(GPU_PREFIX) rviz2 \
-		--display-config robot.rviz \
+		--display-config ./src/py_robot_nav/rviz/main.rviz \
 		--ros-args --param use_sim_time:=$(SIM)
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2

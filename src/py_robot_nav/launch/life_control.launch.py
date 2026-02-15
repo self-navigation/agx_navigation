@@ -9,7 +9,6 @@ from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
-    TextSubstitution,
 )
 
 
