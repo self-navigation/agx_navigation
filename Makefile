@@ -166,6 +166,7 @@ teleop:
 # once all visualisations are configured
 rviz:
 	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
 		$(GPU_PREFIX) rviz2 \
 		--display-config ./src/py_robot_nav/rviz/main.rviz \
 		--ros-args --param use_sim_time:=$(SIM)
