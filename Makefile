@@ -2,7 +2,6 @@ SHELL := /bin/bash
 
 .PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz
 
-SIM := true
 PORT_NAME := can0
 TELEOP_RAW := false
 
@@ -135,7 +134,11 @@ install-deps:
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \
-		sudo ip link set $(PORT_NAME) up type can bitrate 500000; \
+		if ! ip link show $(PORT_NAME) up | grep -q "$(PORT_NAME)"; then \
+			sudo ip link set $(PORT_NAME) up type can bitrate 500000; \
+		else \
+			echo "CAN interface $(PORT_NAME) is already up, skipping."; \
+		fi \
 	fi
 
 run: build can-bus
