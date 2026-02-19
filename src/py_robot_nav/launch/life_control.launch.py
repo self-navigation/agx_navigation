@@ -70,16 +70,24 @@ def generate_launch_description():
         ],
     )
 
-    realsense = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
+    realsense_node_name = "d435_camera"
+    realsense = Node(
+        package="realsense2_camera",
+        name=realsense_node_name,
+        namespace="",
+        executable="realsense2_camera_node",
+        parameters=[
             PathJoinSubstitution(
-                [
-                    FindPackageShare("realsense2_camera"),
-                    "launch",
-                    "rs_launch.py",
-                ]
+                [FindPackageShare("py_robot_nav"), "config", "realsense_params.yaml"]
             )
-        )
+        ],
+        output="screen",
+        remappings=[
+            (
+                f"/{realsense_node_name}/depth/color/points",
+                LaunchConfiguration("depth_camera_points_topic_name"),
+            )
+        ],
     )
 
     return LaunchDescription(
