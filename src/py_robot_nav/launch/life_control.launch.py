@@ -70,7 +70,8 @@ def generate_launch_description():
         ],
     )
 
-    realsense_node_name = "d435_camera"
+    # Set to camera to make more topics unify with sim
+    realsense_node_name = "camera"
     realsense = Node(
         package="realsense2_camera",
         name=realsense_node_name,
@@ -85,8 +86,16 @@ def generate_launch_description():
         remappings=[
             (
                 f"/{realsense_node_name}/depth/color/points",
-                LaunchConfiguration("depth_camera_points_topic_name"),
-            )
+                LaunchConfiguration("camera_depth_points_topic"),
+            ),
+            (
+                f"/{realsense_node_name}/color/image_raw",
+                LaunchConfiguration("camera_color_image_topic"),
+            ),
+            (
+                f"/{realsense_node_name}/depth/image_rect_raw",
+                LaunchConfiguration("camera_depth_image_topic"),
+            ),
         ],
     )
 
