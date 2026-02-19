@@ -138,6 +138,19 @@ def generate_launch_description():
                 "use_sim_time": LaunchConfiguration("sim"),
             }
         ],
+        # For sim-to-life unity remapping topics to a common name.
+        # NOTE: not remapping depth pointcloud because there is a separate node
+        # that fixes its transform and outputs it to the correct topic
+        remappings=[
+            (
+                "/camera/color/image_raw",
+                LaunchConfiguration("camera_color_image_topic"),
+            ),
+            (
+                "/camera/depth/image_raw",
+                LaunchConfiguration("camera_depth_image_topic"),
+            ),
+        ]
     )
 
     return LaunchDescription(

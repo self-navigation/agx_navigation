@@ -37,7 +37,7 @@ def generate_launch_description():
     }
 
     depth_camera_points_topic_name = LaunchConfiguration(
-        "depth_camera_points_topic_name"
+        "camera_depth_points_topic"
     )
     depth_camera_points_topic_name_downsampled = PathJoinSubstitution(
         [

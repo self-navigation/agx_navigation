@@ -41,6 +41,9 @@ def generate_launch_description():
             "namespace": "",
             "sim_reduction": "4",
             "sim": LaunchConfiguration("sim"),
+            "camera_depth_points_topic": LaunchConfiguration(
+                "camera_depth_points_topic"
+            ),
         }.items(),
     )
 
