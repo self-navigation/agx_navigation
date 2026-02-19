@@ -2,8 +2,10 @@ SHELL := /bin/bash
 
 .PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz
 
-PORT_NAME := can0
-TELEOP_RAW := false
+SIM ?= true
+HEADLESS ?= false
+PORT_NAME ?= can0
+TELEOP_RAW ?= false
 
 DEBUG ?= false
 USE_GPU_RENDER_ACCELERATION ?= true
