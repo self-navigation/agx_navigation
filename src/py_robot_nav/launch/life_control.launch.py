@@ -71,7 +71,7 @@ def generate_launch_description():
     )
 
     # Set to camera to make more topics unify with sim
-    realsense_node_name = "camera"
+    realsense_node_name = "d435_camera"
     realsense = Node(
         package="realsense2_camera",
         name=realsense_node_name,
