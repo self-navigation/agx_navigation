@@ -121,11 +121,11 @@ def generate_launch_description():
             # Clock
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
             # Camera
-            "/camera/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
-            "/camera/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
-            "/camera/depth/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
-            "/camera/depth/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
-            "/camera/depth/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
+            "/d435_camera/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            "/d435_camera/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/d435_camera/depth/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            "/d435_camera/depth/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/d435_camera/depth/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # LiDAR Point Cloud
             "lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # IMU and Magnetometer
@@ -143,14 +143,14 @@ def generate_launch_description():
         # that fixes its transform and outputs it to the correct topic
         remappings=[
             (
-                "/camera/color/image_raw",
+                "/d435_camera/color/image_raw",
                 LaunchConfiguration("camera_color_image_topic"),
             ),
             (
-                "/camera/depth/image_raw",
+                "/d435_camera/depth/image_raw",
                 LaunchConfiguration("camera_depth_image_topic"),
             ),
-        ]
+        ],
     )
 
     return LaunchDescription(
