@@ -94,7 +94,7 @@ controller_server:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.05 # ~2.9 degrees
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
@@ -149,12 +149,12 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 3.0
-        threshold_to_consider: 0.5
+        threshold_to_consider: 1.4
       PreferForwardCritic:
         enabled: true
         cost_power: 1
         cost_weight: 10.0
-        threshold_to_consider: 0.5
+        threshold_to_consider: 1.4
       CostCritic:
         enabled: true
         cost_power: 1
@@ -179,14 +179,14 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         offset_from_furthest: 5
-        threshold_to_consider: 1.4
+        threshold_to_consider: 0.5
       PathAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 2.0
         offset_from_furthest: 4
         threshold_to_consider: 0.5
-        max_angle_to_furthest: 1.0
+        max_angle_to_furthest: 0.5
         mode: 0
       # TwirlingCritic:
       #   enabled: true
@@ -291,10 +291,22 @@ planner_server:
     planner_plugins: ["GridBased"]
     costmap_update_timeout: 1.0
     GridBased:
-      plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5
-      use_astar: false
+      plugin: "nav2_smac_planner::SmacPlanner2D"
       allow_unknown: true
+      tolerance: 0.125
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      # Critical: no arc planned, MPPI owns final orientation entirely
+      use_final_approach_orientation: false
+      cost_travel_multiplier: 2.0
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 
 smoother_server:
   ros__parameters:
@@ -381,7 +393,7 @@ velocity_smoother:
     odom_topic: ODOM_TOPIC
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
-    velocity_timeout: 1.0
+    velocity_timeout: 3.0
 
 collision_monitor:
   ros__parameters:
@@ -391,10 +403,10 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: ROBOT_CONTROL_TOPIC
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
-    source_timeout: 1.0
+    transform_tolerance: 0.3
+    source_timeout: 3.0
     base_shift_correction: true
-    stop_pub_timeout: 2.0
+    stop_pub_timeout: 3.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
     # and robot footprint for "approach" action type.
     polygons: ["FootprintApproach"]
