@@ -121,7 +121,13 @@ def generate_launch_description():
         name="nav2_container",
         package="rclcpp_components",
         executable="component_container_isolated",
-        parameters=[configured_params, {"autostart": autostart}],
+        parameters=[
+            configured_params,
+            {
+                "autostart": autostart,
+                "use_sim_time": sim,
+            },
+        ],
         remappings=remappings,
         output="screen",
     )
