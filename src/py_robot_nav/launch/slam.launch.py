@@ -1,13 +1,14 @@
 from launch import LaunchDescription
 from launch.actions import (
     IncludeLaunchDescription,
+    RegisterEventHandler,
+    TimerAction,
 )
 from launch.substitutions import (
     PathJoinSubstitution,
     LaunchConfiguration,
-    NotEqualsSubstitution,
 )
-from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -36,9 +37,7 @@ def generate_launch_description():
         "filter_limit_max": 5.0,
     }
 
-    depth_camera_points_topic_name = LaunchConfiguration(
-        "camera_depth_points_topic"
-    )
+    depth_camera_points_topic_name = LaunchConfiguration("camera_depth_points_topic")
     depth_camera_points_topic_name_downsampled = PathJoinSubstitution(
         [
             depth_camera_points_topic_name,
@@ -56,7 +55,10 @@ def generate_launch_description():
                 package="pcl_ros",
                 plugin="pcl_ros::VoxelGrid",
                 name="camera_voxel_grid",
-                parameters=[downsampling_params],
+                parameters=[
+                    downsampling_params,
+                    {"use_sim_time": LaunchConfiguration("sim")},
+                ],
                 remappings=[
                     ("input", depth_camera_points_topic_name),
                     ("output", depth_camera_points_topic_name_downsampled),
@@ -67,7 +69,10 @@ def generate_launch_description():
                 package="pcl_ros",
                 plugin="pcl_ros::VoxelGrid",
                 name="lidar_voxel_grid",
-                parameters=[downsampling_params],
+                parameters=[
+                    downsampling_params,
+                    {"use_sim_time": LaunchConfiguration("sim")},
+                ],
                 remappings=[
                     ("input", "/lidar/points"),
                     ("output", "/lidar/points/downsampled"),
@@ -155,31 +160,23 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [
-                    FindPackageShare("nav2_bringup"),
+                    FindPackageShare("py_robot_nav"),
                     "launch",
-                    "navigation_launch.py",
+                    "nav2.launch.py",
                 ]
             )
         ),
         launch_arguments={
-            "params_file": config_file("nav2_params.yaml"),
-            "use_sim_time": LaunchConfiguration("sim"),
-            "use_composition": True,
-            "use_intra_process_comms": True,
+            "laserscan_topic": "/combined_cloud/laserscan",
+            "pointcloud_topic": "/combined_cloud",
         }.items(),
     )
 
-    # TODO: replace with node level remapping once a custom nav2 launch is written
-    relay_node = Node(
-        package="topic_tools",
-        executable="relay",
-        name="nav_out_cmd_vel_relay",
-        arguments=["/cmd_vel", LaunchConfiguration("motion_cmd_topic_name")],
-        condition=IfCondition(
-            NotEqualsSubstitution(
-                LaunchConfiguration("motion_cmd_topic_name"), "/cmd_vel"
-            )
-        ),
+    delayed_nav2_launch = RegisterEventHandler(
+        OnProcessStart(
+            target_action=rtabmap_node,
+            on_start=[TimerAction(period=5.0, actions=[nav2_launch])],
+        )
     )
 
     return LaunchDescription(
@@ -187,7 +184,6 @@ def generate_launch_description():
         + [
             point_cloud_processor,
             rtabmap_node,
-            # nav2_launch,
-            # relay_node,
+            delayed_nav2_launch,
         ]
     )

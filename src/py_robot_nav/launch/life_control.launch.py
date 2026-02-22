@@ -18,12 +18,6 @@ def generate_launch_description():
             "port_name", default_value="can0", description="CAN bus name, e.g. can0."
         ),
         DeclareLaunchArgument(
-            "odom_frame", default_value="odom", description="Odometry frame id."
-        ),
-        DeclareLaunchArgument(
-            "base_frame", default_value="base_link", description="Base link frame id."
-        ),
-        DeclareLaunchArgument(
             "status_topic_name",
             default_value="/scout_status",
             description="Robot status topic name.",
@@ -43,8 +37,8 @@ def generate_launch_description():
         parameters=[
             {
                 "port_name": LaunchConfiguration("port_name"),
-                "odom_frame": LaunchConfiguration("odom_frame"),
-                "base_frame": LaunchConfiguration("base_frame"),
+                "odom_frame": "odom",
+                "base_frame": "base_link",
                 "odom_topic_name": LaunchConfiguration("odom_topic_name"),
                 "status_topic_name": LaunchConfiguration("status_topic_name"),
                 "motion_cmd_topic_name": LaunchConfiguration("motion_cmd_topic_name"),
@@ -70,7 +64,7 @@ def generate_launch_description():
         ],
     )
 
-    # Set to camera to make more topics unify with sim
+    # Set to d435_camera to make more topics unify with sim
     realsense_node_name = "d435_camera"
     realsense = Node(
         package="realsense2_camera",

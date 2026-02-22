@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    TimerAction,
 )
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import (
@@ -33,6 +34,16 @@ def generate_launch_description():
             "camera_depth_points_topic",
             default_value="/d435_camera/depth/points",
             description="Unified topic name for points received from the depth camera.",
+        ),
+        DeclareLaunchArgument(
+            "motion_cmd_topic_name",
+            default_value="/cmd_vel",
+            description="Motion controls topic name.",
+        ),
+        DeclareLaunchArgument(
+            "odom_topic_name",
+            default_value="/odom",
+            description="Odometry topic name.",
         ),
     ]
 
@@ -83,6 +94,6 @@ def generate_launch_description():
         + [
             gz_sim_launch,
             scout_launch,
-            slam_launch,
+            TimerAction(period=10.0, actions=[slam_launch]),
         ]
     )
