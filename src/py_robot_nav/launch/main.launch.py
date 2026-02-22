@@ -89,11 +89,13 @@ def generate_launch_description():
         }.items(),
     )
 
+    delayed_slam_launch = TimerAction(period=10.0, actions=[slam_launch])
+
     return LaunchDescription(
         declared_args
         + [
             gz_sim_launch,
             scout_launch,
-            TimerAction(period=10.0, actions=[slam_launch]),
+            delayed_slam_launch,
         ]
     )
