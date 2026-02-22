@@ -14,18 +14,7 @@ from launch.substitutions import (
 
 
 def generate_launch_description():
-    declared_args = [
-        DeclareLaunchArgument(
-            "odom_topic_name",
-            default_value="/odom",
-            description="Odometry topic name.",
-        ),
-        DeclareLaunchArgument(
-            "motion_cmd_topic_name",
-            default_value="/cmd_vel",
-            description="Motion controls topic name.",
-        ),
-    ]
+    declared_args = []
 
     scout_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
