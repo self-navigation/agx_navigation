@@ -10,16 +10,22 @@ TELEOP_RAW ?= false
 DEBUG ?= false
 USE_GPU_RENDER_ACCELERATION ?= true
 
-PARAM_VARS := ODOM_FRAME \
-							BASE_FRAME \
-							ODOM_TOPIC_NAME \
+PARAM_VARS := SIM \
+							CAMERA_COLOR_IMAGE_TOPIC \
+							CAMERA_DEPTH_IMAGE_TOPIC \
+							CAMERA_DEPTH_POINTS_TOPIC \
 							MOTION_CMD_TOPIC_NAME \
+							ODOM_TOPIC_NAME \
+							FLOOR_NUMBER \
+							HEADLESS \
+							NAMESPACE \
+							SIM_REDUCTION \
+							PORT_NAME \
 							STATUS_TOPIC_NAME \
 							LIGHT_CMD_TOPIC_NAME \
-							FLOOR_NUMBER \
-							PORT_NAME \
-							SIM \
-							HEADLESS
+							AUTOSTART \
+							LASERSCAN_TOPIC \
+							POINTCLOUD_TOPIC
 
 define lc
 $(shell echo '$(1)' | tr '[:upper:]' '[:lower:]')
