@@ -10,3 +10,7 @@
 	path = src/rudn-ordjo-building
 	url = https://github.com/self-navigation/rudn-ordjo-building.git
 	branch = main
+[submodule "src/ch10x-imu-driver"]
+	path = src/ch10x-imu-driver
+	url = https://github.com/self-navigation/ch10x-imu-driver.git
+	branch = main
