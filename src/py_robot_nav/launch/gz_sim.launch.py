@@ -144,12 +144,16 @@ def generate_launch_description():
             }
         ],
         # For sim-to-life unity remapping topics to a common name.
-        # NOTE: not remapping depth pointcloud because there is a separate node
-        # that fixes its transform and outputs it to the correct topic
+        # NOTE: remapping depth points to an intermediate topic,
+        # because its transform is fixed later in sim_control.launch.py
         remappings=[
             ("/d435_camera/color/image_raw", Topics.CAMERA_COLOR_IMAGE),
             ("/d435_camera/color/camera_info", Topics.CAMERA_COLOR_INFO),
             ("/d435_camera/depth/image_raw", Topics.CAMERA_DEPTH_IMAGE),
+            (
+                "/d435_camera/depth/image_raw/points",
+                Topics.CAMERA_DEPTH_POINTS_SIM_INTERMEDIATE,
+            ),
             ("/d435_camera/depth/camera_info", Topics.CAMERA_DEPTH_INFO),
             ("/magnetic_field", Topics.MAGNETIC_FIELD),
         ],
