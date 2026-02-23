@@ -5,19 +5,27 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
+from py_robot_nav.launch import Topics
 
 
 def generate_launch_description():
     declared_args = []
+
+    sim = LaunchConfiguration("sim")
 
     joint_state_spawner = Node(
         package="controller_manager",
         executable="spawner",
         arguments=[
             "joint_state_broadcaster",
+            "--controller-ros-args",
+            [
+                "--remap joint_states:=",
+                Topics.JOINT_STATES,
+            ],
         ],
         output="screen",
-        parameters=[{"use_sim_time": LaunchConfiguration("sim")}],
+        parameters=[{"use_sim_time": sim}],
     )
 
     diff_drive_spawner = Node(
@@ -37,14 +45,14 @@ def generate_launch_description():
             # Has to be specified with a list to be treated as one argument
             [
                 "--remap diff_drive_controller/odom:=",
-                LaunchConfiguration("odom_topic_name"),
+                Topics.ODOM,
                 " ",
                 "--remap diff_drive_controller/cmd_vel:=",
-                LaunchConfiguration("motion_cmd_topic_name"),
+                Topics.CMD_VEL,
             ],
         ],
         output="screen",
-        parameters=[{"use_sim_time": LaunchConfiguration("sim")}],
+        parameters=[{"use_sim_time": sim}],
     )
 
     robot_spawner = Node(
@@ -56,7 +64,7 @@ def generate_launch_description():
             "-name",
             "scout_mini",
             "-topic",
-            "/robot_description",
+            Topics.ROBOT_DESCRIPTION,
             "-allow_renaming",
             "true",
             "-x",

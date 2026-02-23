@@ -249,7 +249,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /d435_camera/color/camera_info
+            Value: /camera/color/camera_info
           Value: true
         - Alpha: 0.5
           Class: rviz_default_plugins/CameraInfo
@@ -267,7 +267,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /d435_camera/depth/camera_info
+            Value: /camera/depth/camera_info
           Value: true
         - Class: rviz_default_plugins/Image
           Enabled: true
@@ -281,7 +281,7 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /d435_camera/color/image_raw
+            Value: /camera/color/image_raw
           Value: true
         - Class: rviz_default_plugins/Image
           Enabled: true
@@ -295,7 +295,7 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /d435_camera/depth/image_raw
+            Value: /camera/depth/image_raw
           Value: true
       Enabled: true
       Name: cameras
@@ -304,8 +304,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.664156198501587
-            Min Value: -0.25296393036842346
+            Max Value: 1.6464526653289795
+            Min Value: -0.25070738792419434
             Value: true
           Axis: Z
           Channel Name: z
@@ -337,8 +337,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.6599985361099243
-            Min Value: -0.24345538020133972
+            Max Value: 1.6405237913131714
+            Min Value: -0.2436468005180359
             Value: true
           Axis: Z
           Channel Name: z
@@ -370,8 +370,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.7055195569992065
-            Min Value: -0.19956891238689423
+            Max Value: 1.697899580001831
+            Min Value: -0.1995750516653061
             Value: true
           Axis: Z
           Channel Name: z
@@ -396,15 +396,15 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Best Effort
-            Value: /d435_camera/depth/points
+            Value: /camera/depth/points
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.6841460466384888
-            Min Value: -0.19550634920597076
+            Max Value: 1.6915843486785889
+            Min Value: -0.19409646093845367
             Value: true
           Axis: Z
           Channel Name: z
@@ -429,15 +429,15 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /d435_camera/depth/points/downsampled
+            Value: /camera/depth/points/downsampled
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 1.6856684684753418
-            Min Value: -0.24339547753334045
+            Max Value: 1.6892300844192505
+            Min Value: -0.24390459060668945
             Value: true
           Axis: Z
           Channel Name: z
@@ -462,7 +462,7 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /combined_cloud
+            Value: /points
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
@@ -498,7 +498,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /combined_cloud/laserscan
+        Value: /scan
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
@@ -644,7 +644,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /local_costmap/published_footprint
+            Value: /FootprintApproach
           Value: true
       Enabled: true
       Name: navigation
@@ -703,7 +703,7 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 44.30851364135742
+      Scale: 80
       Target Frame: base_link
       Value: TopDownOrtho (rviz_default_plugins)
       X: 0
