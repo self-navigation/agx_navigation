@@ -40,6 +40,24 @@ def generate_launch_description():
         ],
     )
 
+    imu_driver = Node(
+        package="imu_driver",
+        executable="imu_reader",
+        output="screen",
+        parameters=[
+            {
+                "port": "/dev/ttyUSB0",
+                "baud_rate": 115200,
+                "frame_id": "base_link",
+                "use_sim_time": False,
+            }
+        ],
+        remappintgs=[
+            ("imu/data", Topics.IMU),
+            ("imu/mag", Topics.MAGNETIC_FIELD),
+        ],
+    )
+
     rslidar_sdk = Node(
         package="rslidar_sdk",
         executable="rslidar_sdk_node",
@@ -70,6 +88,7 @@ def generate_launch_description():
         declared_args
         + [
             scout_base,
+            imu_driver,
             rslidar_sdk,
             realsense,
         ]
