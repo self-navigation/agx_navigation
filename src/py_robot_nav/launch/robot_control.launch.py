@@ -1,6 +1,5 @@
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument,
     IncludeLaunchDescription,
 )
 from launch.conditions import IfCondition, UnlessCondition
@@ -11,10 +10,13 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
+from py_robot_nav.launch import Topics, cfg_file, launch_file
 
 
 def generate_launch_description():
     declared_args = []
+
+    sim = LaunchConfiguration("sim")
 
     scout_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -29,30 +31,19 @@ def generate_launch_description():
         launch_arguments={
             "namespace": "",
             "sim_reduction": "4",
-            "sim": LaunchConfiguration("sim"),
-            "camera_depth_points_topic": LaunchConfiguration(
-                "camera_depth_points_topic"
-            ),
+            "sim": sim,
+            "camera_depth_points_topic": Topics.CAMERA_DEPTH_POINTS,
         }.items(),
     )
 
     sim_control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("py_robot_nav"), "launch", "sim_control.launch.py"]
-            )
-        ),
-        condition=IfCondition(LaunchConfiguration("sim")),
+        PythonLaunchDescriptionSource(launch_file("sim_control")),
+        condition=IfCondition(sim),
     )
 
     life_control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("py_robot_nav"), "launch", "life_control.launch.py"]
-            )
-        ),
-        launch_arguments={}.items(),
-        condition=UnlessCondition(LaunchConfiguration("sim")),
+        PythonLaunchDescriptionSource(launch_file("life_control")),
+        condition=UnlessCondition(sim),
     )
 
     imu_filter = Node(
@@ -61,15 +52,13 @@ def generate_launch_description():
         name="imu_filter",
         output="screen",
         parameters=[
-            PathJoinSubstitution(
-                [FindPackageShare("py_robot_nav"), "config", "imu_filter_params.yaml"]
-            ),
-            {"use_sim_time": LaunchConfiguration("sim")},
+            cfg_file("imu_filter_params.yaml"),
+            {"use_sim_time": sim},
         ],
         remappings=[
-            ("imu/mag", "/magnetic_field"),
-            ("imu/data_raw", "/imu"),
-            ("imu/data", "/imu/filtered"),
+            ("imu/mag", Topics.MAGNETIC_FIELD),
+            ("imu/data_raw", Topics.IMU),
+            ("imu/data", Topics.IMU_FILTERED),
         ],
     )
 
@@ -79,20 +68,13 @@ def generate_launch_description():
         name="ekf_filter_node",
         output="screen",
         parameters=[
-            PathJoinSubstitution(
-                [FindPackageShare("py_robot_nav"), "config", "ekf_params.yaml"]
-            ),
-            {"use_sim_time": LaunchConfiguration("sim")},
+            cfg_file("ekf_params.yaml"),
+            {"use_sim_time": sim},
         ],
         remappings=[
-            ("odom", LaunchConfiguration("odom_topic_name")),
-            ("imu", "/imu"),
-            (
-                "odometry/filtered",
-                PathJoinSubstitution(
-                    [LaunchConfiguration("odom_topic_name"), "filtered"]
-                ),
-            ),
+            ("odom", Topics.ODOM),
+            ("imu", Topics.IMU),
+            ("odometry/filtered", Topics.ODOM_FILTERED),
         ],
     )
 

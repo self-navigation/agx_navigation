@@ -20,7 +20,6 @@ from launch.actions import (
 )
 from launch.substitutions import (
     LaunchConfiguration,
-    PathJoinSubstitution,
 )
 from launch_ros.actions import (
     Node,
@@ -28,36 +27,12 @@ from launch_ros.actions import (
     SetParameter,
 )
 from launch_ros.descriptions import ComposableNode, ParameterFile
-from launch_ros.substitutions import FindPackageShare
 from py_robot_nav.launch import RewrittenYaml
+from py_robot_nav.launch import Topics, cfg_file
 
 
 def generate_launch_description():
-    declared_args = [
-        DeclareLaunchArgument(
-            "autostart",
-            default_value="true",
-            description="Automatically startup the nav2 stack",
-        ),
-        DeclareLaunchArgument(
-            "laserscan_topic",
-            default_value="/lidar/laserscan",
-            description="LaserScan topic for 2D SLAM",
-        ),
-        DeclareLaunchArgument(
-            "pointcloud_topic",
-            default_value="/lidar/points",
-            description="PointCloud2 topic for 3D SLAM",
-        ),
-    ]
-
-    autostart = LaunchConfiguration("autostart")
-    laserscan_topic = LaunchConfiguration("laserscan_topic")
-    pointcloud_topic = LaunchConfiguration("pointcloud_topic")
-    robot_contro_topic = LaunchConfiguration("motion_cmd_topic_name")
-    odom_topic = PathJoinSubstitution(
-        [LaunchConfiguration("odom_topic_name"), "filtered"]
-    )
+    declared_args = []
     sim = LaunchConfiguration("sim")
 
     lifecycle_nodes = [
@@ -77,18 +52,14 @@ def generate_launch_description():
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
 
     # Create our own temporary YAML files that include substitutions
-    param_substitutions = {"autostart": autostart}
+    param_substitutions = {"autostart": "true"}
 
     yaml_substitutions = {
-        "LASERSCAN_TOPIC": laserscan_topic,
-        "POINTCLOUD": pointcloud_topic,
-        "ROBOT_CONTROL_TOPIC": robot_contro_topic,
-        "ODOM_TOPIC": odom_topic,
+        "LASERSCAN_TOPIC": Topics.SCAN,
+        "POINTCLOUD": Topics.POINTS,
+        "ROBOT_CONTROL_TOPIC": Topics.CMD_VEL,
+        "ODOM_TOPIC": Topics.ODOM_FILTERED,
     }
-
-    params_file = PathJoinSubstitution(
-        [FindPackageShare("py_robot_nav"), "config", "nav2_params.yaml"]
-    )
 
     # RewrittenYaml: Adds namespace to the parameters file as a root key
     # Note: Make sure that all frames are correctly namespaced in the parameters file
@@ -100,7 +71,7 @@ def generate_launch_description():
     # using ReplaceString <robot_namespace>
     configured_params = ParameterFile(
         RewrittenYaml(
-            source_file=params_file,
+            source_file=cfg_file("nav2_params.yaml"),
             root_key="",
             param_rewrites=param_substitutions,
             value_rewrites=yaml_substitutions,
@@ -124,7 +95,7 @@ def generate_launch_description():
         parameters=[
             configured_params,
             {
-                "autostart": autostart,
+                "autostart": True,
                 "use_sim_time": sim,
             },
         ],
@@ -213,7 +184,10 @@ def generate_launch_description():
                         plugin="nav2_lifecycle_manager::LifecycleManager",
                         name="lifecycle_manager_navigation",
                         parameters=[
-                            {"autostart": autostart, "node_names": lifecycle_nodes}
+                            {
+                                "autostart": True,
+                                "node_names": lifecycle_nodes,
+                            }
                         ],
                     ),
                 ],

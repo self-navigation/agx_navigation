@@ -5,29 +5,20 @@ from launch.actions import (
     TimerAction,
 )
 from launch.substitutions import (
-    PathJoinSubstitution,
     LaunchConfiguration,
 )
 from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-from launch_ros.substitutions import FindPackageShare
 import math
-
-
-def config_file(name: str):
-    return PathJoinSubstitution(
-        [
-            FindPackageShare("py_robot_nav"),
-            "config",
-            name,
-        ]
-    )
+from py_robot_nav.launch import Topics, cfg_file, launch_file
 
 
 def generate_launch_description():
     declared_args = []
+
+    sim = LaunchConfiguration("sim")
 
     downsampling_params = {
         "leaf_size": 0.05,
@@ -36,14 +27,6 @@ def generate_launch_description():
         "filter_limit_min": -0.5,
         "filter_limit_max": 5.0,
     }
-
-    depth_camera_points_topic_name = LaunchConfiguration("camera_depth_points_topic")
-    depth_camera_points_topic_name_downsampled = PathJoinSubstitution(
-        [
-            depth_camera_points_topic_name,
-            "downsampled",
-        ]
-    )
 
     point_cloud_processor = ComposableNodeContainer(
         name="point_cloud_processing_container",
@@ -57,11 +40,11 @@ def generate_launch_description():
                 name="camera_voxel_grid",
                 parameters=[
                     downsampling_params,
-                    {"use_sim_time": LaunchConfiguration("sim")},
+                    {"use_sim_time": sim},
                 ],
                 remappings=[
-                    ("input", depth_camera_points_topic_name),
-                    ("output", depth_camera_points_topic_name_downsampled),
+                    ("input", Topics.CAMERA_DEPTH_POINTS),
+                    ("output", f"{Topics.CAMERA_DEPTH_POINTS}/downsampled"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -71,11 +54,11 @@ def generate_launch_description():
                 name="lidar_voxel_grid",
                 parameters=[
                     downsampling_params,
-                    {"use_sim_time": LaunchConfiguration("sim")},
+                    {"use_sim_time": sim},
                 ],
                 remappings=[
-                    ("input", "/lidar/points"),
-                    ("output", "/lidar/points/downsampled"),
+                    ("input", Topics.LIDAR_POINTS),
+                    ("output", f"{Topics.LIDAR_POINTS}/downsampled"),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -90,13 +73,13 @@ def generate_launch_description():
                         # "approx_sync_max_interval": 0.5,
                         "count": 2,
                         "xyz_output": True,
-                        "use_sim_time": LaunchConfiguration("sim"),
+                        "use_sim_time": sim,
                     }
                 ],
                 remappings=[
-                    ("cloud1", "/lidar/points/downsampled"),
-                    ("cloud2", depth_camera_points_topic_name_downsampled),
-                    ("combined_cloud", "/combined_cloud"),
+                    ("cloud1", f"{Topics.LIDAR_POINTS}/downsampled"),
+                    ("cloud2", f"{Topics.CAMERA_DEPTH_POINTS}/downsampled"),
+                    ("combined_cloud", Topics.POINTS),
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
@@ -105,8 +88,8 @@ def generate_launch_description():
                 plugin="pointcloud_to_laserscan::PointCloudToLaserScanNode",
                 name="pointcloud_to_laserscan",
                 remappings=[
-                    ("cloud_in", "/combined_cloud"),
-                    ("scan", "/combined_cloud/laserscan"),
+                    ("cloud_in", Topics.POINTS),
+                    ("scan", Topics.SCAN),
                 ],
                 parameters=[
                     {
@@ -124,7 +107,7 @@ def generate_launch_description():
                         # "inf_epsilon": 0.5,
                         "angle_increment": math.pi / 360 / 3,
                         "concurrency_level": 0,
-                        "use_sim_time": LaunchConfiguration("sim"),
+                        "use_sim_time": sim,
                     }
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
@@ -138,37 +121,24 @@ def generate_launch_description():
         name="rtabmap",
         output="screen",
         parameters=[
-            config_file("rtabmap_params.yaml"),
-            {"use_sim_time": LaunchConfiguration("sim")},
+            cfg_file("rtabmap_params.yaml"),
+            {"use_sim_time": sim},
         ],
         remappings=[
-            ("scan", "/combined_cloud/laserscan"),
-            ("scan_cloud", "/combined_cloud"),
+            ("scan", Topics.SCAN),
+            ("scan_cloud", Topics.POINTS),
             ("map", "/map"),
-            ("imu", "/imu"),
-            (
-                "odom",
-                PathJoinSubstitution(
-                    [LaunchConfiguration("odom_topic_name"), "filtered"]
-                ),
-            ),
+            ("imu", Topics.IMU),
+            ("odom", Topics.ODOM_FILTERED),
         ],
         arguments=["--delete_db_on_start"],
     )
 
     nav2_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [
-                    FindPackageShare("py_robot_nav"),
-                    "launch",
-                    "nav2.launch.py",
-                ]
-            )
-        ),
+        PythonLaunchDescriptionSource(launch_file("nav2")),
         launch_arguments={
-            "laserscan_topic": "/combined_cloud/laserscan",
-            "pointcloud_topic": "/combined_cloud",
+            "laserscan_topic": Topics.POINTS,
+            "pointcloud_topic": Topics.SCAN,
         }.items(),
     )
 

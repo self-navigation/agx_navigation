@@ -20,11 +20,12 @@ from launch.events import Shutdown
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
+from py_robot_nav.launch import Topics
 
 
 def launch_gz_sim(context):
-    headless = LaunchConfiguration("headless").perform(context)
-    is_headless = headless.lower() in ["true", "1", "yes"]
+    headless = LaunchConfiguration("headless")
+    is_headless = headless.perform(context).lower() in ["true", "1", "yes"]
 
     # Directly launch GZ Sim using ExecuteProcess, to hook into process exit
     world_path = PathJoinSubstitution(
@@ -45,7 +46,7 @@ def launch_gz_sim(context):
         cmd=[FindExecutable(name="gz"), "sim", "-g"],
         output="screen",
         name="gz_sim_gui",
-        condition=UnlessCondition(LaunchConfiguration("headless")),
+        condition=UnlessCondition(headless),
     )
 
     shutdown_handler = RegisterEventHandler(
@@ -75,6 +76,10 @@ def generate_launch_description():
         ),
     ]
 
+    headless = LaunchConfiguration("headless")
+    floor_number = LaunchConfiguration("floor_number")
+    sim = LaunchConfiguration("sim")
+
     # Set GZ_SIM_RESOURCE_PATH to enable model:// resolution
     set_gz_resource_path = SetEnvironmentVariable(
         name="GZ_SIM_RESOURCE_PATH",
@@ -91,7 +96,7 @@ def generate_launch_description():
     set_display = SetEnvironmentVariable(
         name="DISPLAY",
         value="",
-        condition=IfCondition(LaunchConfiguration("headless")),
+        condition=IfCondition(headless),
     )
 
     gz_sim = OpaqueFunction(function=launch_gz_sim)
@@ -107,7 +112,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
-            "floor_number": LaunchConfiguration("floor_number"),
+            "floor_number": floor_number,
         }.items(),
     )
 
@@ -127,29 +132,26 @@ def generate_launch_description():
             "/d435_camera/depth/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
             "/d435_camera/depth/image_raw/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # LiDAR Point Cloud
-            "lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
+            "/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # IMU and Magnetometer
-            "imu@sensor_msgs/msg/Imu[gz.msgs.IMU",
-            "magnetic_field@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer",
+            "/imu@sensor_msgs/msg/Imu[gz.msgs.IMU",
+            "/magnetic_field@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer",
         ],
         parameters=[
             {
                 "lazy": True,
-                "use_sim_time": LaunchConfiguration("sim"),
+                "use_sim_time": sim,
             }
         ],
         # For sim-to-life unity remapping topics to a common name.
         # NOTE: not remapping depth pointcloud because there is a separate node
         # that fixes its transform and outputs it to the correct topic
         remappings=[
-            (
-                "/d435_camera/color/image_raw",
-                LaunchConfiguration("camera_color_image_topic"),
-            ),
-            (
-                "/d435_camera/depth/image_raw",
-                LaunchConfiguration("camera_depth_image_topic"),
-            ),
+            ("/d435_camera/color/image_raw", Topics.CAMERA_COLOR_IMAGE),
+            ("/d435_camera/color/camera_info", Topics.CAMERA_COLOR_INFO),
+            ("/d435_camera/depth/image_raw", Topics.CAMERA_DEPTH_IMAGE),
+            ("/d435_camera/depth/camera_info", Topics.CAMERA_DEPTH_INFO),
+            ("/magnetic_field", Topics.MAGNETIC_FIELD),
         ],
     )
 

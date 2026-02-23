@@ -17,6 +17,8 @@ def generate_launch_description():
         ),
     ]
 
+    sim = LaunchConfiguration("sim")
+
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -31,7 +33,7 @@ def generate_launch_description():
                 ]
             ),
         ],
-        parameters=[{"use_sim_time": LaunchConfiguration("sim")}],
+        parameters=[{"use_sim_time": sim}],
         output="screen",
     )
 
