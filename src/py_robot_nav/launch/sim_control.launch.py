@@ -125,21 +125,21 @@ def generate_launch_description():
                 ],
                 extra_arguments=[{"use_intra_process_comms": True}],
             ),
-            ComposableNode(
-                package="depth_image_proc",
-                plugin="depth_image_proc::PointCloudXyzrgbNode",
-                name="depth_point_cloud",
-                parameters=[proc_params],
-                remappings=[
-                    # Inputs
-                    ("depth_registered/image_rect", Topics.CAMERA_RGBD_IMAGE),
-                    ("rgb/camera_info", Topics.CAMERA_COLOR_INFO),
-                    ("rgb/image_rect_color", Topics.CAMERA_COLOR_IMAGE),
-                    # Output
-                    ("points", Topics.CAMERA_RGBD_POINTS),
-                ],
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
+            # ComposableNode(
+            #     package="depth_image_proc",
+            #     plugin="depth_image_proc::PointCloudXyzrgbNode",
+            #     name="depth_point_cloud",
+            #     parameters=[proc_params],
+            #     remappings=[
+            #         # Inputs
+            #         ("depth_registered/image_rect", Topics.CAMERA_RGBD_IMAGE),
+            #         ("rgb/camera_info", Topics.CAMERA_COLOR_INFO),
+            #         ("rgb/image_rect_color", Topics.CAMERA_COLOR_IMAGE),
+            #         # Output
+            #         ("points", Topics.CAMERA_RGBD_POINTS),
+            #     ],
+            #     extra_arguments=[{"use_intra_process_comms": True}],
+            # ),
         ],
     )
 

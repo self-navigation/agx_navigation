@@ -125,8 +125,13 @@ def generate_launch_description():
             {"use_sim_time": sim},
         ],
         remappings=[
+            ("rgb/image", Topics.CAMERA_COLOR_IMAGE),
+            # specifically using rgbd image
+            # that we got from projecting the depth camera image
+            # onto the color camera
+            ("depth/image", Topics.CAMERA_RGBD_IMAGE),
+            ("rgb/camera_info", Topics.CAMERA_COLOR_INFO),
             ("scan", Topics.SCAN),
-            ("scan_cloud", Topics.POINTS),
             ("map", "/map"),
             ("imu", Topics.IMU),
             ("odom", Topics.ODOM_FILTERED),

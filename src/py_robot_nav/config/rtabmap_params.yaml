@@ -6,13 +6,14 @@ rtabmap:
     odom_frame_id: odom
     publish_tf: true
 
-    subscribe_depth: false
+    subscribe_depth: true
     subscribe_odom: true
     subscribe_odom_info: false
-    subscribe_rgb: false
+    subscribe_rgb: true
+    # not using this, because of the 2 camera setup
     subscribe_rgbd: false
     subscribe_scan: true
-    subscribe_scan_cloud: true
+    subscribe_scan_cloud: false
     subscribe_scan_descriptor: false
     subscribe_sensor_data: false
     subscribe_stereo: false
@@ -29,11 +30,12 @@ rtabmap:
     # https://docs.ros.org/en/noetic/api/rtabmap/html/classrtabmap_1_1Parameters.html#ae1e2099039076c0d3c468d46f588f1f2
 
     # Use ICP
-    Reg/Strategy: "1"
+    Reg/Strategy: "2"
 
     # Crucial, needs to be enabled for the metric-slam algo
     # which doesn't rely solely on images
     RGBD/Enabled: "true"
+    # Don't reextract features during ICP validation
     RGBD/LoopClosureReextractFeatures: "false"
     RGBD/ProximityBySpace: "true"
     RGBD/CreateOccupancyGrid: "true"
@@ -42,6 +44,17 @@ rtabmap:
     RGBD/ProximityPathMaxNeighbors: "10"
     RGBD/LinearUpdate: "0.1"
     RGBD/AngularUpdate: "0.1"
+
+    Vis/FeatureType: "2"
+    Vis/MaxFeatures: "500"
+    Vis/MinInliers: "15"
+    Vis/InlierDistance: "0.1"
+
+    Kp/MaxDepth: "0.0"
+    # Same as Vis/FeatureType
+    Kp/DetectorStrategy: "2"
+    Kp/IncrementalDictionary: "true"
+    Kp/MaxFeatures: "500"
 
     Icp/VoxelSize: "0.05"
     Icp/DownsamplingStep: "1"
@@ -83,4 +96,5 @@ rtabmap:
 
     Rtabmap/DetectionRate: "10.0"
     Rtabmap/TimeThr: "0"
+    Rtabmap/LoopThr: "0.11"
     database_path: "~/.ros/rtabmap.db"
