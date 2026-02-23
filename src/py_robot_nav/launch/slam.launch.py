@@ -3,22 +3,25 @@ from launch.actions import (
     IncludeLaunchDescription,
     RegisterEventHandler,
     TimerAction,
+    OpaqueFunction,
 )
-from launch.substitutions import (
-    LaunchConfiguration,
-)
+from launch.substitutions import LaunchConfiguration
 from launch.event_handlers import OnProcessStart
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.actions import (
+    Node,
+    ComposableNodeContainer,
+    LoadComposableNodes,
+)
 from launch_ros.descriptions import ComposableNode
 import math
 from py_robot_nav.launch import Topics, cfg_file, launch_file
 
 
-def generate_launch_description():
-    declared_args = []
-
+def generate_point_cloud_processor(context):
     sim = LaunchConfiguration("sim")
+    is_sim = sim.perform(context).lower() in ["true", "1", "yes"]
 
     downsampling_params = {
         "leaf_size": 0.05,
@@ -28,92 +31,153 @@ def generate_launch_description():
         "filter_limit_max": 5.0,
     }
 
-    point_cloud_processor = ComposableNodeContainer(
-        name="point_cloud_processing_container",
-        namespace="",
-        package="rclcpp_components",
-        executable="component_container",
-        composable_node_descriptions=[
-            ComposableNode(
-                package="pcl_ros",
-                plugin="pcl_ros::VoxelGrid",
-                name="camera_voxel_grid",
-                parameters=[
-                    downsampling_params,
-                    {"use_sim_time": sim},
-                ],
-                remappings=[
-                    ("input", Topics.CAMERA_DEPTH_POINTS),
-                    ("output", f"{Topics.CAMERA_DEPTH_POINTS}/downsampled"),
-                ],
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
-            ComposableNode(
-                package="pcl_ros",
-                plugin="pcl_ros::VoxelGrid",
-                name="lidar_voxel_grid",
-                parameters=[
-                    downsampling_params,
-                    {"use_sim_time": sim},
-                ],
-                remappings=[
-                    ("input", Topics.LIDAR_POINTS),
-                    ("output", f"{Topics.LIDAR_POINTS}/downsampled"),
-                ],
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
-            ComposableNode(
-                package="rtabmap_util",
-                plugin="rtabmap_util::PointCloudAggregator",
-                name="point_cloud_aggregator",
-                parameters=[
-                    {
-                        "fixed_frame_id": "base_link",
-                        "approx_sync": True,
-                        # "approx_sync_max_interval": 0.5,
-                        "count": 2,
-                        "xyz_output": True,
-                        "use_sim_time": sim,
-                    }
-                ],
-                remappings=[
-                    ("cloud1", f"{Topics.LIDAR_POINTS}/downsampled"),
-                    ("cloud2", f"{Topics.CAMERA_DEPTH_POINTS}/downsampled"),
-                    ("combined_cloud", Topics.POINTS),
-                ],
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
-            ComposableNode(
-                package="pointcloud_to_laserscan",
-                plugin="pointcloud_to_laserscan::PointCloudToLaserScanNode",
-                name="pointcloud_to_laserscan",
-                remappings=[
-                    ("cloud_in", Topics.POINTS),
-                    ("scan", Topics.SCAN),
-                ],
-                parameters=[
-                    {
-                        "target_frame": "",
-                        "transform_tolerance": 0.1,
-                        "min_height": 0.1,
-                        "max_height": 1.0,
-                        "angle_min": -3.14159,
-                        "angle_max": 3.14159,
-                        "scan_time": 0.1,
-                        "scan_delay": 0.1,
-                        "range_min": 0.2,
-                        "range_max": 150.0,
-                        "use_inf": True,
-                        # "inf_epsilon": 0.5,
-                        "angle_increment": math.pi / 360 / 3,
-                        "concurrency_level": 0,
-                        "use_sim_time": sim,
-                    }
-                ],
-                extra_arguments=[{"use_intra_process_comms": True}],
-            ),
-        ],
-    )
+    if is_sim:
+        lidar_deskewed = Topics.LIDAR_POINTS
+        camera_deskewed = Topics.CAMERA_DEPTH_POINTS
+    else:
+        lidar_deskewed = f"{Topics.LIDAR_POINTS}/deskewed"
+        camera_deskewed = f"{Topics.CAMERA_DEPTH_POINTS}/deskewed"
+
+    lidar_downsampled = f"{lidar_deskewed}/downsampled"
+    camera_downsampled = f"{camera_deskewed}/downsampled"
+
+    return [
+        ComposableNodeContainer(
+            name="point_cloud_processing_container",
+            namespace="",
+            package="rclcpp_components",
+            executable="component_container",
+            composable_node_descriptions=[
+                ComposableNode(
+                    package="pcl_ros",
+                    plugin="pcl_ros::VoxelGrid",
+                    name="camera_voxel_grid",
+                    parameters=[
+                        downsampling_params,
+                        {"use_sim_time": sim},
+                    ],
+                    remappings=[
+                        ("input", camera_deskewed),
+                        ("output", camera_downsampled),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="pcl_ros",
+                    plugin="pcl_ros::VoxelGrid",
+                    name="lidar_voxel_grid",
+                    parameters=[
+                        downsampling_params,
+                        {"use_sim_time": sim},
+                    ],
+                    remappings=[
+                        ("input", lidar_deskewed),
+                        ("output", lidar_downsampled),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="rtabmap_util",
+                    plugin="rtabmap_util::PointCloudAggregator",
+                    name="point_cloud_aggregator",
+                    parameters=[
+                        {
+                            "fixed_frame_id": "base_link",
+                            "approx_sync": True,
+                            "count": 2,
+                            "xyz_output": True,
+                            "use_sim_time": sim,
+                        }
+                    ],
+                    remappings=[
+                        ("cloud1", lidar_downsampled),
+                        ("cloud2", camera_downsampled),
+                        ("combined_cloud", Topics.POINTS),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="pointcloud_to_laserscan",
+                    plugin="pointcloud_to_laserscan::PointCloudToLaserScanNode",
+                    name="pointcloud_to_laserscan",
+                    remappings=[
+                        ("cloud_in", Topics.POINTS),
+                        ("scan", Topics.SCAN),
+                    ],
+                    parameters=[
+                        {
+                            "target_frame": "",
+                            "transform_tolerance": 0.1,
+                            "min_height": 0.1,
+                            "max_height": 1.0,
+                            "angle_min": -3.14159,
+                            "angle_max": 3.14159,
+                            "scan_time": 0.1,
+                            "scan_delay": 0.1,
+                            "range_min": 0.2,
+                            "range_max": 150.0,
+                            "use_inf": True,
+                            "angle_increment": math.pi / 360 / 3,
+                            "concurrency_level": 0,
+                            "use_sim_time": sim,
+                        }
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+            ],
+        ),
+        # Deskewing is done for the real hardware only.
+        # In sim all points are geometrically perfect so deskewing is a no-op
+        # and Gazebo doesn't return timestamps for them
+        LoadComposableNodes(
+            target_container="point_cloud_processing_container",
+            condition=UnlessCondition(sim),
+            composable_node_descriptions=[
+                ComposableNode(
+                    package="rtabmap_util",
+                    plugin="rtabmap_util::LidarDeskewing",
+                    name="camera_deskew",
+                    parameters=[
+                        {
+                            "fixed_frame_id": "odom",
+                            "wait_for_transform": 0.2,
+                            "use_sim_time": sim,
+                        }
+                    ],
+                    remappings=[
+                        ("input", Topics.CAMERA_DEPTH_POINTS),
+                        ("output", camera_deskewed),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="rtabmap_util",
+                    plugin="rtabmap_util::LidarDeskewing",
+                    name="lidar_deskew",
+                    parameters=[
+                        {
+                            "fixed_frame_id": "odom",
+                            "wait_for_transform": 0.2,
+                            "use_sim_time": sim,
+                        }
+                    ],
+                    remappings=[
+                        ("input", Topics.LIDAR_POINTS),
+                        ("output", lidar_deskewed),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+            ],
+        ),
+    ]
+
+
+def generate_launch_description():
+    declared_args = []
+
+    sim = LaunchConfiguration("sim")
+
+    point_cloud_processor = OpaqueFunction(function=generate_point_cloud_processor)
 
     rtabmap_node = Node(
         package="rtabmap_slam",
