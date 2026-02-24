@@ -155,7 +155,7 @@ def generate_launch_description():
                 Topics.CAMERA_DEPTH_POINTS_SIM_INTERMEDIATE,
             ),
             ("/d435_camera/depth/camera_info", Topics.CAMERA_DEPTH_INFO),
-            ("/imu/data", Topics.MAGNETIC_FIELD),
+            ("/imu/data", Topics.IMU),
             ("/imu/mag", Topics.MAGNETIC_FIELD),
         ],
     )
