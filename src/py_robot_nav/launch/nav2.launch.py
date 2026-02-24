@@ -14,7 +14,6 @@
 
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument,
     GroupAction,
     SetEnvironmentVariable,
 )
@@ -27,8 +26,7 @@ from launch_ros.actions import (
     SetParameter,
 )
 from launch_ros.descriptions import ComposableNode, ParameterFile
-from py_robot_nav.launch import RewrittenYaml
-from py_robot_nav.launch import Topics, cfg_file
+from py_robot_nav.launch import RewrittenYaml, Topics, cfg_file
 
 
 def generate_launch_description():
