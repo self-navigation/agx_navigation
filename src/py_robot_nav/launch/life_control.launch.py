@@ -51,7 +51,7 @@ def generate_launch_description():
             {
                 "port": "/dev/ttyUSB0",
                 "baud_rate": 115200,
-                "frame_id": "base_link",
+                "frame_id": "imu_link",
                 "use_sim_time": False,
             }
         ],
