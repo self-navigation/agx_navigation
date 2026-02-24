@@ -6,7 +6,8 @@ from launch.substitutions import (
     LaunchConfiguration,
 )
 from launch_ros.actions import Node
-from py_robot_nav.launch import Topics, cfg_file
+from launch_ros.descriptions import ParameterFile
+from py_robot_nav.launch import RewrittenYaml, Topics, cfg_file
 
 
 def generate_launch_description():
@@ -58,11 +59,22 @@ def generate_launch_description():
         ],
     )
 
+    rslidar_params = ParameterFile(
+        RewrittenYaml(
+            source_file=cfg_file("rslidar_config.yaml"),
+            root_key="",
+            param_rewrites={},
+            value_rewrites={
+                "POINTCLOUD": Topics.LIDAR_POINTS,
+            },
+        )
+    )
+
     rslidar_sdk = Node(
         package="rslidar_sdk",
         executable="rslidar_sdk_node",
         output="screen",
-        parameters=[{"config_path": cfg_file("rslidar_config.yaml")}],
+        parameters=[{"config_path": rslidar_params}],
     )
 
     # Set to d435_camera to make more topics unify with sim
