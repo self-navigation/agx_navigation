@@ -25,10 +25,10 @@ class Topics:
     ODOM = "/odom"
     ODOM_FILTERED = "/odom/filtered"
 
-    IMU = "/imu"
-    IMU_FILTERED = f"/imu/filtered"
+    IMU = "/imu/data"
+    IMU_FILTERED = f"/imu/data/filtered"
 
-    MAGNETIC_FIELD = "/magnetic_field"
+    MAGNETIC_FIELD = "/imu/mag"
 
     # --------------
     #    STATUS

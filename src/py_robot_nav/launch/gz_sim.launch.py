@@ -134,8 +134,8 @@ def generate_launch_description():
             # LiDAR Point Cloud
             "/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             # IMU and Magnetometer
-            "/imu@sensor_msgs/msg/Imu[gz.msgs.IMU",
-            "/magnetic_field@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer",
+            "/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU",
+            "/imu/mag@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer",
         ],
         parameters=[
             {
@@ -155,7 +155,8 @@ def generate_launch_description():
                 Topics.CAMERA_DEPTH_POINTS_SIM_INTERMEDIATE,
             ),
             ("/d435_camera/depth/camera_info", Topics.CAMERA_DEPTH_INFO),
-            ("/magnetic_field", Topics.MAGNETIC_FIELD),
+            ("/imu/data", Topics.MAGNETIC_FIELD),
+            ("/imu/mag", Topics.MAGNETIC_FIELD),
         ],
     )
 
