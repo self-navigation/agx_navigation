@@ -40,5 +40,5 @@ lidar:
       ros_recv_packet_topic: /lidar/packets       # Topic used to receive lidar packets from ROS
       ros_send_packet_topic: /lidar/packets       # Topic used to send lidar packets through ROS
       ros_send_imu_data_topic: /lidar/imu         # Topic used to send imu data through ROS
-      ros_send_point_cloud_topic: /lidar/points   # Topic used to send point cloud through ROS
+      ros_send_point_cloud_topic: POINTCLOUD      # Topic used to send point cloud through ROS
       ros_queue_length: 100                       # Topic QoS history depth
