@@ -37,6 +37,8 @@ def generate_launch_description():
                 "is_omni_wheel": False,
                 "simulated_robot": False,
                 "use_sim_time": False,
+                "use_stamped_cmd_vel": True,
+                "publish_tf": False,
             }
         ],
     )
