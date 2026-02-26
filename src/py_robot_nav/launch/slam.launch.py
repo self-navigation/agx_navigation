@@ -114,7 +114,7 @@ def generate_point_cloud_processor(context):
                             "range_min": 0.2,
                             "range_max": 150.0,
                             "use_inf": True,
-                            "angle_increment": math.pi / 360 / 3,
+                            "angle_increment": (2 * math.pi) / 360 / 2,
                             "concurrency_level": 0,
                             "use_sim_time": sim,
                         }
