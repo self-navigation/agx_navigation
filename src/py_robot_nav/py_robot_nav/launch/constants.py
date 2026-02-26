@@ -8,6 +8,7 @@ class Topics:
     CAMERA_DEPTH_IMAGE = "/camera/depth/image_raw"
     CAMERA_DEPTH_POINTS_SIM_INTERMEDIATE = "/camera/depth/points/skewed"
     CAMERA_DEPTH_POINTS = "/camera/depth/points"
+    CAMERA_DEPTH_DOWNSAMPLED = "/camera/depth/points/downsampled"
     CAMERA_DEPTH_INFO = "/camera/depth/camera_info"
 
     CAMERA_RGBD_IMAGE = "/camera/rgbd/image_raw"
@@ -15,6 +16,7 @@ class Topics:
     CAMERA_RGBD_INFO = "/camera/rgbd/camera_info"
 
     LIDAR_POINTS = "/lidar/points"
+    LIDAR_DOWNSAMPLED = "/lidar/points/downsampled"
 
     POINTS = "/points"
     SCAN = "/scan"

@@ -53,23 +53,23 @@ def generate_launch_description():
                 "baud_rate": 115200,
                 "frame_id": "imu_link",
                 "use_sim_time": False,
+                "publish_euler": True,
             }
         ],
-        remappintgs=[
+        remappings=[
             ("imu/data", Topics.IMU),
             ("imu/mag", Topics.MAGNETIC_FIELD),
         ],
     )
 
-    rslidar_params = ParameterFile(
-        RewrittenYaml(
-            source_file=cfg_file("rslidar_config.yaml"),
-            root_key="",
-            param_rewrites={},
-            value_rewrites={
-                "POINTCLOUD": Topics.LIDAR_POINTS,
-            },
-        )
+    rslidar_params = RewrittenYaml(
+        source_file=cfg_file("rslidar_config.yaml"),
+        root_key="",
+        param_rewrites={},
+        value_rewrites={
+            "POINTCLOUD": Topics.LIDAR_POINTS,
+        },
+        convert_types=True,
     )
 
     rslidar_sdk = Node(
@@ -89,11 +89,24 @@ def generate_launch_description():
         parameters=[cfg_file("realsense_params.yaml")],
         output="screen",
         remappings=[
-            (f"/{realsense_node_name}/depth/color/points", Topics.CAMERA_DEPTH_POINTS),
+            # Color
             (f"/{realsense_node_name}/color/image_raw", Topics.CAMERA_COLOR_IMAGE),
+            (f"/{realsense_node_name}/color/camera_info", Topics.CAMERA_COLOR_INFO),
+            # Depth
+            (f"/{realsense_node_name}/depth/color/points", Topics.CAMERA_DEPTH_POINTS),
+            (f"/{realsense_node_name}/depth/camera_info", Topics.CAMERA_DEPTH_INFO),
             (
                 f"/{realsense_node_name}/depth/image_rect_raw",
                 Topics.CAMERA_DEPTH_IMAGE,
+            ),
+            # RGBD
+            (
+                f"/{realsense_node_name}/aligned_depth_to_color/image_raw",
+                Topics.CAMERA_RGBD_IMAGE,
+            ),
+            (
+                f"/{realsense_node_name}/aligned_depth_to_color/camera_info",
+                Topics.CAMERA_RGBD_INFO,
             ),
         ],
     )

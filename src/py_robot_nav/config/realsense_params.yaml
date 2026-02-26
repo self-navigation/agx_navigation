@@ -1,4 +1,6 @@
-camera:
+d435_camera:
   ros__parameters:
+    align_depth:
+      enable: true
     pointcloud__neon_:
       enable: true
