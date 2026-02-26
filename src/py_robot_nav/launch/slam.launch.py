@@ -31,15 +31,12 @@ def generate_point_cloud_processor(context):
         "filter_limit_max": 5.0,
     }
 
-    if is_sim:
-        lidar_deskewed = Topics.LIDAR_POINTS
-        camera_deskewed = Topics.CAMERA_DEPTH_POINTS
-    else:
-        lidar_deskewed = f"{Topics.LIDAR_POINTS}/deskewed"
-        camera_deskewed = f"{Topics.CAMERA_DEPTH_POINTS}/deskewed"
-
-    lidar_downsampled = f"{lidar_deskewed}/downsampled"
-    camera_downsampled = f"{camera_deskewed}/downsampled"
+    # if is_sim:
+    lidar_deskewed = Topics.LIDAR_POINTS
+    camera_deskewed = Topics.CAMERA_DEPTH_POINTS
+    # else:
+    #     lidar_deskewed = f"{Topics.LIDAR_POINTS}/deskewed"
+    #     camera_deskewed = f"{Topics.CAMERA_DEPTH_POINTS}/deskewed"
 
     return [
         ComposableNodeContainer(
@@ -58,7 +55,7 @@ def generate_point_cloud_processor(context):
                     ],
                     remappings=[
                         ("input", camera_deskewed),
-                        ("output", camera_downsampled),
+                        ("output", Topics.CAMERA_DEPTH_DOWNSAMPLED),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
                 ),
@@ -72,7 +69,7 @@ def generate_point_cloud_processor(context):
                     ],
                     remappings=[
                         ("input", lidar_deskewed),
-                        ("output", lidar_downsampled),
+                        ("output", Topics.LIDAR_DOWNSAMPLED),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
                 ),
@@ -90,8 +87,8 @@ def generate_point_cloud_processor(context):
                         }
                     ],
                     remappings=[
-                        ("cloud1", lidar_downsampled),
-                        ("cloud2", camera_downsampled),
+                        ("cloud1", Topics.LIDAR_DOWNSAMPLED),
+                        ("cloud2", Topics.CAMERA_DEPTH_DOWNSAMPLED),
                         ("combined_cloud", Topics.POINTS),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
@@ -109,7 +106,7 @@ def generate_point_cloud_processor(context):
                             "target_frame": "",
                             "transform_tolerance": 0.1,
                             "min_height": 0.1,
-                            "max_height": 1.0,
+                            "max_height": 0.7,
                             "angle_min": -3.14159,
                             "angle_max": 3.14159,
                             "scan_time": 0.1,
@@ -129,46 +126,46 @@ def generate_point_cloud_processor(context):
         # Deskewing is done for the real hardware only.
         # In sim all points are geometrically perfect so deskewing is a no-op
         # and Gazebo doesn't return timestamps for them
-        LoadComposableNodes(
-            target_container="point_cloud_processing_container",
-            condition=UnlessCondition(sim),
-            composable_node_descriptions=[
-                ComposableNode(
-                    package="rtabmap_util",
-                    plugin="rtabmap_util::LidarDeskewing",
-                    name="camera_deskew",
-                    parameters=[
-                        {
-                            "fixed_frame_id": "odom",
-                            "wait_for_transform": 0.2,
-                            "use_sim_time": sim,
-                        }
-                    ],
-                    remappings=[
-                        ("input", Topics.CAMERA_DEPTH_POINTS),
-                        ("output", camera_deskewed),
-                    ],
-                    extra_arguments=[{"use_intra_process_comms": True}],
-                ),
-                ComposableNode(
-                    package="rtabmap_util",
-                    plugin="rtabmap_util::LidarDeskewing",
-                    name="lidar_deskew",
-                    parameters=[
-                        {
-                            "fixed_frame_id": "odom",
-                            "wait_for_transform": 0.2,
-                            "use_sim_time": sim,
-                        }
-                    ],
-                    remappings=[
-                        ("input", Topics.LIDAR_POINTS),
-                        ("output", lidar_deskewed),
-                    ],
-                    extra_arguments=[{"use_intra_process_comms": True}],
-                ),
-            ],
-        ),
+        # LoadComposableNodes(
+        #     target_container="point_cloud_processing_container",
+        #     condition=UnlessCondition(sim),
+        #     composable_node_descriptions=[
+        #         ComposableNode(
+        #             package="rtabmap_util",
+        #             plugin="rtabmap_util::LidarDeskewing",
+        #             name="camera_deskew",
+        #             parameters=[
+        #                 {
+        #                     "fixed_frame_id": "odom",
+        #                     "wait_for_transform": 0.2,
+        #                     "use_sim_time": sim,
+        #                 }
+        #             ],
+        #             remappings=[
+        #                 ("input_cloud", Topics.CAMERA_DEPTH_POINTS),
+        #                 ("input_cloud/deskewed", camera_deskewed),
+        #             ],
+        #             extra_arguments=[{"use_intra_process_comms": True}],
+        #         ),
+        #         ComposableNode(
+        #             package="rtabmap_util",
+        #             plugin="rtabmap_util::LidarDeskewing",
+        #             name="lidar_deskew",
+        #             parameters=[
+        #                 {
+        #                     "fixed_frame_id": "odom",
+        #                     "wait_for_transform": 0.2,
+        #                     "use_sim_time": sim,
+        #                 }
+        #             ],
+        #             remappings=[
+        #                 ("input_cloud", Topics.LIDAR_POINTS),
+        #                 ("input_cloud/deskewed", lidar_deskewed),
+        #             ],
+        #             extra_arguments=[{"use_intra_process_comms": True}],
+        #         ),
+        #     ],
+        # ),
     ]
 
 
