@@ -113,6 +113,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             "floor_number": floor_number,
+            "x": "23",
+            "y": "5",
         }.items(),
     )
 
