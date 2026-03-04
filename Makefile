@@ -13,6 +13,7 @@ USE_GPU_RENDER_ACCELERATION ?= true
 PARAM_VARS := SIM \
 							FLOOR_NUMBER \
 							HEADLESS \
+							NAV_MODE \
 							PORT_NAME
 
 define lc

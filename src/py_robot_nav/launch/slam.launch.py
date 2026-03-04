@@ -7,12 +7,10 @@ from launch.actions import (
 )
 from launch.substitutions import LaunchConfiguration
 from launch.event_handlers import OnProcessStart
-from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import (
     Node,
     ComposableNodeContainer,
-    LoadComposableNodes,
 )
 from launch_ros.descriptions import ComposableNode
 import math
@@ -200,18 +198,14 @@ def generate_launch_description():
         arguments=["--delete_db_on_start"],
     )
 
-    nav2_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(launch_file("nav2")),
-        launch_arguments={
-            "laserscan_topic": Topics.POINTS,
-            "pointcloud_topic": Topics.SCAN,
-        }.items(),
+    nav_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(launch_file("nav")),
     )
 
-    delayed_nav2_launch = RegisterEventHandler(
+    delayed_nav_launch = RegisterEventHandler(
         OnProcessStart(
             target_action=rtabmap_node,
-            on_start=[TimerAction(period=5.0, actions=[nav2_launch])],
+            on_start=[TimerAction(period=5.0, actions=[nav_launch])],
         )
     )
 
@@ -220,6 +214,6 @@ def generate_launch_description():
         + [
             point_cloud_processor,
             rtabmap_node,
-            delayed_nav2_launch,
+            delayed_nav_launch,
         ]
     )
