@@ -20,7 +20,7 @@ from launch.events import Shutdown
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
-from py_robot_nav.launch import Topics
+from agx_bringup import Topics
 
 
 def launch_gz_sim(context):

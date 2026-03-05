@@ -7,7 +7,7 @@ from launch.substitutions import (
 )
 from launch_ros.actions import Node
 from launch_ros.descriptions import ParameterFile
-from py_robot_nav.launch import RewrittenYaml, Topics, cfg_file
+from agx_bringup import RewrittenYaml, Topics, cfg_file
 
 
 def generate_launch_description():

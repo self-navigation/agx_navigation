@@ -6,7 +6,7 @@ from launch.substitutions import (
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.descriptions import ComposableNode
-from py_robot_nav.launch import Topics
+from agx_bringup import Topics
 
 
 def generate_launch_description():

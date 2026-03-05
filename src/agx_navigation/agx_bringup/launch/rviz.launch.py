@@ -1,11 +1,8 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import (
-    PathJoinSubstitution,
-    LaunchConfiguration,
-)
-from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from agx_bringup import rviz_file
 
 
 def generate_launch_description():
@@ -23,16 +20,7 @@ def generate_launch_description():
         package="rviz2",
         executable="rviz2",
         name="rviz2",
-        arguments=[
-            "--display-config",
-            PathJoinSubstitution(
-                [
-                    FindPackageShare("py_robot_nav"),
-                    "rviz",
-                    "main.rviz",
-                ]
-            ),
-        ],
+        arguments=["--display-config", rviz_file("main")],
         parameters=[{"use_sim_time": sim}],
         output="screen",
     )

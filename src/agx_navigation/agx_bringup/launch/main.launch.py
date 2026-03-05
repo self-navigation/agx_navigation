@@ -9,7 +9,7 @@ from launch.substitutions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
-from py_robot_nav.launch import launch_file
+from agx_bringup import launch_file
 
 
 def generate_launch_description():

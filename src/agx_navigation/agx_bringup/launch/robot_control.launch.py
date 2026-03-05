@@ -10,7 +10,7 @@ from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
 )
-from py_robot_nav.launch import Topics, cfg_file, launch_file
+from agx_bringup import Topics, cfg_file, launch_file
 
 
 def generate_launch_description():
