@@ -126,7 +126,6 @@ install-deps:
 		ros-jazzy-imu-filter-madgwick \
 		ros-jazzy-realsense2-camera \
 		ros-jazzy-realsense2-description \
-		ros-jazzy-rslidar-sdk \
 		ros-jazzy-rslidar-msg \
 		ros-jazzy-depth-image-proc
 
