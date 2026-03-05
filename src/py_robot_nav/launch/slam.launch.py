@@ -10,8 +10,10 @@ from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import (
     Node,
+    LoadComposableNodes,
     ComposableNodeContainer,
 )
+from launch.conditions import UnlessCondition
 from launch_ros.descriptions import ComposableNode
 import math
 from py_robot_nav.launch import Topics, cfg_file, launch_file
@@ -29,12 +31,10 @@ def generate_point_cloud_processor(context):
         "filter_limit_max": 5.0,
     }
 
-    # if is_sim:
-    lidar_deskewed = Topics.LIDAR_POINTS
-    camera_deskewed = Topics.CAMERA_DEPTH_POINTS
-    # else:
-    #     lidar_deskewed = f"{Topics.LIDAR_POINTS}/deskewed"
-    #     camera_deskewed = f"{Topics.CAMERA_DEPTH_POINTS}/deskewed"
+    if is_sim:
+        lidar_deskewed = Topics.LIDAR_POINTS
+    else:
+        lidar_deskewed = f"{Topics.LIDAR_POINTS}/deskewed"
 
     return [
         ComposableNodeContainer(
@@ -52,7 +52,7 @@ def generate_point_cloud_processor(context):
                         {"use_sim_time": sim},
                     ],
                     remappings=[
-                        ("input", camera_deskewed),
+                        ("input", Topics.CAMERA_DEPTH_POINTS),
                         ("output", Topics.CAMERA_DEPTH_DOWNSAMPLED),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
@@ -124,46 +124,46 @@ def generate_point_cloud_processor(context):
         # Deskewing is done for the real hardware only.
         # In sim all points are geometrically perfect so deskewing is a no-op
         # and Gazebo doesn't return timestamps for them
-        # LoadComposableNodes(
-        #     target_container="point_cloud_processing_container",
-        #     condition=UnlessCondition(sim),
-        #     composable_node_descriptions=[
-        #         ComposableNode(
-        #             package="rtabmap_util",
-        #             plugin="rtabmap_util::LidarDeskewing",
-        #             name="camera_deskew",
-        #             parameters=[
-        #                 {
-        #                     "fixed_frame_id": "odom",
-        #                     "wait_for_transform": 0.2,
-        #                     "use_sim_time": sim,
-        #                 }
-        #             ],
-        #             remappings=[
-        #                 ("input_cloud", Topics.CAMERA_DEPTH_POINTS),
-        #                 ("input_cloud/deskewed", camera_deskewed),
-        #             ],
-        #             extra_arguments=[{"use_intra_process_comms": True}],
-        #         ),
-        #         ComposableNode(
-        #             package="rtabmap_util",
-        #             plugin="rtabmap_util::LidarDeskewing",
-        #             name="lidar_deskew",
-        #             parameters=[
-        #                 {
-        #                     "fixed_frame_id": "odom",
-        #                     "wait_for_transform": 0.2,
-        #                     "use_sim_time": sim,
-        #                 }
-        #             ],
-        #             remappings=[
-        #                 ("input_cloud", Topics.LIDAR_POINTS),
-        #                 ("input_cloud/deskewed", lidar_deskewed),
-        #             ],
-        #             extra_arguments=[{"use_intra_process_comms": True}],
-        #         ),
-        #     ],
-        # ),
+        LoadComposableNodes(
+            target_container="point_cloud_processing_container",
+            condition=UnlessCondition(sim),
+            composable_node_descriptions=[
+                ComposableNode(
+                    package="rtabmap_util",
+                    plugin="rtabmap_util::LidarDeskewing",
+                    name="lidar_deskew",
+                    parameters=[
+                        {
+                            "fixed_frame_id": "odom",
+                            "slerp": True,
+                            "wait_for_transform": 0.2,
+                            "use_sim_time": sim,
+                        }
+                    ],
+                    remappings=[
+                        ("input_cloud", Topics.LIDAR_POINTS),
+                        (
+                            # This node changes its output topic based on input topic like /<input_cloud>/deskewed.
+                            # Renaming this to a slightly different name
+                            f"{Topics.LIDAR_POINTS}/deskewed",
+                            f"{Topics.LIDAR_POINTS}/deskewed_raw",
+                        ),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="pointcloud_utils",
+                    plugin="pointcloud_utils::PointCloudFieldStripper",
+                    name="lidar_field_stripper",
+                    parameters=[{"use_sim_time": sim}],
+                    remappings=[
+                        ("input", f"{Topics.LIDAR_POINTS}/deskewed_raw"),
+                        ("output", lidar_deskewed),
+                    ],
+                    extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+            ],
+        ),
     ]
 
 
