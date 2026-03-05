@@ -165,7 +165,7 @@ rviz:
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(GPU_PREFIX) rviz2 \
-		--display-config ./src/py_robot_nav/rviz/main.rviz \
+		--display-config ./src/agx_navigation/py_robot_nav/rviz/main.rviz \
 		--ros-args --param use_sim_time:=$(SIM)
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
