@@ -7,6 +7,23 @@
   <maintainer email="contact@gmatiukhin.site">gmatiukhin</maintainer>
   <license>MIT</license>
 
+  <depend>ros_gz</depend>
+  <depend>navigation2</depend>
+  <depend>nav2_bringup</depend>
+  <depend>rtabmap</depend>
+  <depend>rtabmap_slam</depend>
+  <depend>pointcloud_to_laserscan</depend>
+  <depend>topic_tools</depend>
+  <depend>imu_filter_madgwick</depend>
+  <depend>realsense2_camera</depend>
+  <depend>realsense2_description</depend>
+  <depend>rslidar_msg</depend>
+  <depend>depth_image_proc</depend>
+
+  <depend>py_robot_nav</depend>
+  <depend>scout_description</depend>
+  <depend>scout_base</depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

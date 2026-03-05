@@ -54,7 +54,7 @@ SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
 
 all: build
 
-build: update-caches .build.stamp
+build: update-caches ros-deps .build.stamp
 
 update-caches:
 	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
@@ -77,7 +77,7 @@ update-caches:
 clean:
 	rm -rf install build log .*.stamp .last_build_user
 
-setup: install-ros install-gazebo install-deps
+setup: install-ros install-gazebo system-deps ros-deps
 
 install-ros:
 	sudo apt update
@@ -101,7 +101,7 @@ install-gazebo:
 	sudo apt update
 	sudo apt install gz-harmonic
 
-install-deps:
+system-deps:
 	sudo mkdir -p /etc/apt/keyrings
 	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
 	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
@@ -111,23 +111,10 @@ install-deps:
 		libasio-dev \
 		libpcap-dev \
 		librealsense2-dev \
-		librealsense2-utils \
-		ros-jazzy-ros-gz \
-		ros-jazzy-gz-ros2-control \
-		ros-jazzy-ros2-controllers \
-		ros-jazzy-ros2-control \
-		ros-jazzy-diff-drive-controller \
-		ros-jazzy-navigation2 \
-		ros-jazzy-nav2-bringup \
-		ros-jazzy-rtabmap \
-		ros-jazzy-rtabmap-slam \
-		ros-jazzy-pointcloud-to-laserscan \
-		ros-jazzy-topic-tools \
-		ros-jazzy-imu-filter-madgwick \
-		ros-jazzy-realsense2-camera \
-		ros-jazzy-realsense2-description \
-		ros-jazzy-rslidar-msg \
-		ros-jazzy-depth-image-proc
+		librealsense2-utils
+
+ros-deps:
+	rosdep install --from-paths src --ignore-src -r -y
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \
