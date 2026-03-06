@@ -119,6 +119,21 @@ def generate_point_cloud_processor(context):
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
                 ),
+                # ComposableNode(
+                #     package="pointcloud_utils",
+                #     plugin="pointcloud_utils::LaserScanInterpolator",
+                #     name="laserscan_interpolator",
+                #     parameters=[
+                #         {
+                #             "input_topic": f"{Topics.SCAN}/raw",
+                #             "output_topic": Topics.SCAN,
+                #             "target_angle_increment": (2 * math.pi) / 360 / 2,
+                #             "distance_threshold": 0.5,
+                #             "use_sim_time": sim,
+                #         }
+                #     ],
+                #     extra_arguments=[{"use_intra_process_comms": True}],
+                # ),
             ],
         ),
         # Deskewing is done for the real hardware only.
@@ -146,7 +161,7 @@ def generate_point_cloud_processor(context):
                             # This node changes its output topic based on input topic like /<input_cloud>/deskewed.
                             # Renaming this to a slightly different name
                             f"{Topics.LIDAR_POINTS}/deskewed",
-                            f"{Topics.LIDAR_POINTS}/deskewed_raw",
+                            f"{Topics.LIDAR_POINTS}/deskewed/raw",
                         ),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
@@ -157,7 +172,7 @@ def generate_point_cloud_processor(context):
                     name="lidar_field_stripper",
                     parameters=[{"use_sim_time": sim}],
                     remappings=[
-                        ("input", f"{Topics.LIDAR_POINTS}/deskewed_raw"),
+                        ("input", f"{Topics.LIDAR_POINTS}/deskewed/raw"),
                         ("output", lidar_deskewed),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],

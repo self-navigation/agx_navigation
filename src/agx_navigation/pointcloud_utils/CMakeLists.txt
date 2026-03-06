@@ -5,43 +5,48 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
-add_library(pointcloud_field_stripper SHARED
-  src/pointcloud_field_stripper.cpp
+macro(add_component LIB_NAME SOURCE_FILE PLUGIN_CLASS)
+  add_library(${LIB_NAME} SHARED src/${SOURCE_FILE})
+  target_include_directories(${LIB_NAME} PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(${LIB_NAME}
+    rclcpp rclcpp_components sensor_msgs
+  )
+  rclcpp_components_register_node(${LIB_NAME}
+    PLUGIN "${PLUGIN_CLASS}"
+    EXECUTABLE ${LIB_NAME}_node
+  )
+endmacro()
+
+add_component(pointcloud_field_stripper
+  pointcloud_field_stripper.cpp
+  "pointcloud_utils::PointCloudFieldStripper"
 )
-target_include_directories(pointcloud_field_stripper PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
+add_component(laserscan_interpolator
+  laserscan_interpolator.cpp
+  "pointcloud_utils::LaserScanInterpolator"
 )
-ament_target_dependencies(pointcloud_field_stripper
-  rclcpp rclcpp_components sensor_msgs
-)
-rclcpp_components_register_node(pointcloud_field_stripper
-  PLUGIN "pointcloud_utils::PointCloudFieldStripper"
-  EXECUTABLE pointcloud_field_stripper_node
-)
-install(TARGETS pointcloud_field_stripper
+
+install(TARGETS pointcloud_field_stripper laserscan_interpolator
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
+
 install(DIRECTORY include/
   DESTINATION include
 )
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
