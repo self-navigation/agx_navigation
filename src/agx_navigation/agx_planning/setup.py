@@ -1,10 +1,6 @@
 from setuptools import find_packages, setup
 
-# https://robotics.stackexchange.com/a/25014
-import os
-from glob import glob
-
-package_name = "py_robot_nav"
+package_name = "agx_planning"
 
 setup(
     name=package_name,
@@ -27,10 +23,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "agx_nav = py_robot_nav.agx_nav:main",
-            "agx_odometry_publisher = py_robot_nav.agx_odometry_publisher:main",
-            "sim_point_cloud_fixup = py_robot_nav.sim_point_cloud_fixup:main",
-            "frontier_explorer = py_robot_nav.frontier_explorer:main",
+            f"frontier_explorer = {package_name}.frontier_explorer:main",
         ],
     },
 )
