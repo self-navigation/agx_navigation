@@ -20,7 +20,7 @@
   <depend>rslidar_msg</depend>
   <depend>depth_image_proc</depend>
 
-  <depend>py_robot_nav</depend>
+  <depend>agx_planning</depend>
   <depend>scout_description</depend>
   <depend>scout_base</depend>
 
