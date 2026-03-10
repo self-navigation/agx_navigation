@@ -6,7 +6,6 @@ from launch.substitutions import (
     LaunchConfiguration,
 )
 from launch_ros.actions import Node
-from launch_ros.descriptions import ParameterFile
 from agx_bringup import RewrittenYaml, Topics, cfg_file
 
 
@@ -19,9 +18,27 @@ def generate_launch_description():
 
     port_name = LaunchConfiguration("port_name")
 
+    cmd_vel_repeater = Node(
+        package="scout_utils",
+        executable="cmd_vel_repeater",
+        name="cmd_vel_repeater",
+        output="screen",
+        parameters=[
+            {
+                "input_topic": Topics.CMD_VEL,
+                "output_topic": Topics.CMD_VEL_RAW,
+                "publish_rate_hz": 10.0,
+                "input_timeout_sec": 3.0,
+                "use_stamped_cmd_vel": True,
+                "use_sim_time": False,
+            }
+        ],
+    )
+
     scout_base = Node(
         package="scout_base",
         executable="scout_base_node",
+        name="scout",
         output="screen",
         emulate_tty=True,
         parameters=[
@@ -31,7 +48,7 @@ def generate_launch_description():
                 "base_frame": "base_link",
                 "odom_topic_name": Topics.ODOM,
                 "status_topic_name": Topics.STATUS,
-                "motion_cmd_topic_name": Topics.CMD_VEL,
+                "motion_cmd_topic_name": Topics.CMD_VEL_RAW,
                 "light_cmd_topic_name": Topics.CMD_LIGHT,
                 "is_scout_mini": True,
                 "is_omni_wheel": False,
@@ -114,6 +131,7 @@ def generate_launch_description():
     return LaunchDescription(
         declared_args
         + [
+            cmd_vel_repeater,
             scout_base,
             imu_driver,
             rslidar_sdk,

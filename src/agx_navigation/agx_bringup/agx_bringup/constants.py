@@ -42,5 +42,10 @@ class Topics:
     # --------------
     #    CONTROL
     # --------------
+    # Base cmd_vel that goes directly to the scout node
+    CMD_VEL_RAW = "/cmd_vel_raw"
+    # cmd_vel that is listened by the repeater to circumwent autostop in the chassis
     CMD_VEL = "/cmd_vel"
+    # cmd_vel that is listened by the nav2 behavior server for collision-safe movement
+    CMD_VEL_ASSISTED = "/cmd_vel_assisted_teleop"
     CMD_LIGHT = "/light_control"
