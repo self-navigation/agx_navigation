@@ -10,6 +10,7 @@ from launch.substitutions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
+from launch_ros.actions import Node
 from agx_bringup import RewrittenYaml, Topics, cfg_file, launch_file
 
 NAV2_NAV_MODE = "nav2"
@@ -75,6 +76,16 @@ def generate_launch_description():
             EqualsSubstitution(LaunchConfiguration("nav_mode"), CUSTOM_NAV_MODE)
         ),
     )
+    frontier_explorer = Node(
+        package="agx_planning",
+        executable="frontier_explorer",
+        name="frontier_explorer",
+        parameters=[{"use_stamped_cmd_vel": True}],
+        remappings=[
+            ("/cmd_vel", Topics.CMD_VEL),
+        ],
+        output="screen",
+    )
 
     return LaunchDescription(
         declared_args
@@ -82,5 +93,6 @@ def generate_launch_description():
             stdout_linebuf_envvar,
             launch_nav2,
             launch_custom,
+            frontier_explorer,
         ]
     )
