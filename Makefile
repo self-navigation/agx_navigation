@@ -148,7 +148,7 @@ teleop:
 # Using raw rviz command during development
 # TODO: switch to rviz.launch.py
 # once all visualisations are configured
-rviz:
+rviz: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(GPU_PREFIX) rviz2 \
