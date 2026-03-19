@@ -66,38 +66,6 @@ Visualization Manager:
               Alpha: 1
               Show Axes: false
               Show Trail: false
-            d435_camera_color_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_color_optical_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_depth_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_depth_optical_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_infra1_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_infra1_optical_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_infra2_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
-            d435_camera_infra2_optical_frame:
-              Alpha: 1
-              Show Axes: false
-              Show Trail: false
             d435_camera_link:
               Alpha: 1
               Show Axes: false
@@ -113,6 +81,10 @@ Visualization Manager:
               Show Axes: false
               Show Trail: false
               Value: true
+            imu_link:
+              Alpha: 1
+              Show Axes: false
+              Show Trail: false
             laser_link:
               Alpha: 1
               Show Axes: false
@@ -152,31 +124,35 @@ Visualization Manager:
               Value: true
             box_link:
               Value: true
+            camera_aligned_depth_to_infra1_frame:
+              Value: true
+            camera_color_frame:
+              Value: true
+            camera_color_optical_frame:
+              Value: true
+            camera_depth_frame:
+              Value: true
+            camera_depth_optical_frame:
+              Value: true
+            camera_infra1_frame:
+              Value: true
+            camera_infra1_optical_frame:
+              Value: true
+            camera_infra2_frame:
+              Value: true
+            camera_infra2_optical_frame:
+              Value: true
             camera_link:
               Value: true
             d435_camera_bottom_screw_frame:
-              Value: true
-            d435_camera_color_frame:
-              Value: true
-            d435_camera_color_optical_frame:
-              Value: true
-            d435_camera_depth_frame:
-              Value: true
-            d435_camera_depth_optical_frame:
-              Value: true
-            d435_camera_infra1_frame:
-              Value: true
-            d435_camera_infra1_optical_frame:
-              Value: true
-            d435_camera_infra2_frame:
-              Value: true
-            d435_camera_infra2_optical_frame:
               Value: true
             d435_camera_link:
               Value: true
             front_left_wheel_link:
               Value: true
             front_right_wheel_link:
+              Value: true
+            imu_link:
               Value: true
             laser_link:
               Value: true
@@ -197,37 +173,41 @@ Visualization Manager:
           Show Names: false
           Tree:
             map:
-              {}
-            odom:
-              base_link:
-                box_link:
-                  camera_link:
-                    d435_camera_bottom_screw_frame:
-                      d435_camera_link:
-                        d435_camera_color_frame:
-                          d435_camera_color_optical_frame:
-                            {}
-                        d435_camera_depth_frame:
-                          d435_camera_depth_optical_frame:
-                            {}
-                        d435_camera_infra1_frame:
-                          d435_camera_infra1_optical_frame:
-                            {}
-                        d435_camera_infra2_frame:
-                          d435_camera_infra2_optical_frame:
-                            {}
-                  laser_link:
+              odom:
+                base_link:
+                  box_link:
+                    camera_link:
+                      camera_aligned_depth_to_infra1_frame:
+                        camera_infra1_optical_frame:
+                          {}
+                      camera_color_frame:
+                        camera_color_optical_frame:
+                          {}
+                      camera_depth_frame:
+                        camera_depth_optical_frame:
+                          {}
+                      camera_infra1_frame:
+                        {}
+                      camera_infra2_frame:
+                        camera_infra2_optical_frame:
+                          {}
+                      d435_camera_bottom_screw_frame:
+                        d435_camera_link:
+                          {}
+                    imu_link:
+                      {}
+                    laser_link:
+                      {}
+                    monitor_link:
+                      {}
+                  front_left_wheel_link:
                     {}
-                  monitor_link:
+                  front_right_wheel_link:
                     {}
-                front_left_wheel_link:
-                  {}
-                front_right_wheel_link:
-                  {}
-                rear_left_wheel_link:
-                  {}
-                rear_right_wheel_link:
-                  {}
+                  rear_left_wheel_link:
+                    {}
+                  rear_right_wheel_link:
+                    {}
           Update Interval: 0
           Value: true
       Enabled: true
@@ -714,6 +694,18 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: navigation
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /frontier_debug
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -827,7 +819,7 @@ Window Geometry:
     collapsed: true
   Width: 1872
   X: 0
-  Y: 32
+  Y: 3
   camera color view:
     collapsed: false
   camera depth view:

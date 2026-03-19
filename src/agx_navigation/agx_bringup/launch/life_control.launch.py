@@ -22,7 +22,6 @@ def generate_launch_description():
         package="scout_utils",
         executable="cmd_vel_repeater",
         name="cmd_vel_repeater",
-        output="screen",
         parameters=[
             {
                 "input_topic": Topics.CMD_VEL,
