@@ -42,8 +42,8 @@ rtabmap:
     RGBD/NeighborLinkRefining: "true"
     RGBD/OptimizeFromGraphEnd: "false"
     RGBD/ProximityPathMaxNeighbors: "10"
-    RGBD/LinearUpdate: "0.1"
-    RGBD/AngularUpdate: "0.1"
+    RGBD/LinearUpdate: "0.2"
+    RGBD/AngularUpdate: "0.2"
 
     Vis/FeatureType: "2"
     Vis/MaxFeatures: "500"
@@ -89,12 +89,12 @@ rtabmap:
     Grid/RayTracing: "true"
     Grid/Scan2dUnknownSpaceFilled: "true"
 
-    GridGlobal/MinSize: "0.0"
+    GridGlobal/MinSize: "20.0"
     GridGlobal/ProbHit: "0.8"
     GridGlobal/ProbMiss: "0.3"
     GridGlobal/UpdateError: "0.05"
 
-    Rtabmap/DetectionRate: "10.0"
+    Rtabmap/DetectionRate: "1.0"
     Rtabmap/TimeThr: "0"
     Rtabmap/LoopThr: "0.11"
     database_path: "~/.ros/rtabmap.db"

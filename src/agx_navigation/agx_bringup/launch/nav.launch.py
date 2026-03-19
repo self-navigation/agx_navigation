@@ -34,6 +34,7 @@ def generate_launch_description():
         "ROBOT_CONTROL_TOPIC": Topics.CMD_VEL,
         "ODOM_TOPIC": Topics.ODOM_FILTERED,
         "ASSISTED_TELEOP_TOPIC": Topics.CMD_VEL_ASSISTED,
+        "DEPTH_CAMERA_TOPIC": f"{Topics.CAMERA_DEPTH_POINTS}/downsampled",
     }
 
     # RewrittenYaml: Adds namespace to the parameters file as a root key
