@@ -80,7 +80,16 @@ def generate_launch_description():
         package="agx_planning",
         executable="frontier_explorer",
         name="frontier_explorer",
-        parameters=[{"use_stamped_cmd_vel": True}],
+        parameters=[
+            {
+                "min_goal_distance": 0.5,
+                "min_segment_length": 0.1,
+                "blacklist_radius": 0.5,
+                "max_navigable_cost": 50,
+                "heading_bias_weight": 0.3,
+                "debug_markers": True,
+            }
+        ],
         remappings=[
             ("/cmd_vel", Topics.CMD_VEL),
         ],
