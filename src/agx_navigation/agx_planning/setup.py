@@ -10,7 +10,11 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools"],
+    install_requires=[
+        "setuptools",
+        "scikit-fmm",
+        "numpy",
+    ],
     zip_safe=True,
     maintainer="agilex",
     maintainer_email="you@example.com",
@@ -23,7 +27,11 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            f"frontier_explorer = {package_name}.frontier_explorer:main",
+            f"{name} = {package_name}.{name}:main"
+            for name in [
+                "frontier_explorer",
+                "vector_field",
+            ]
         ],
     },
 )

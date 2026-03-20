@@ -111,10 +111,14 @@ system-deps:
 		libasio-dev \
 		libpcap-dev \
 		librealsense2-dev \
-		librealsense2-utils
+		librealsense2-utils \
+		python3-pip
 
 ros-deps:
 	rosdep install --from-paths src --ignore-src -r -y
+	@find src -name "setup.py" -printf '%h\n' | while read pkg_dir; do \
+		pip install --break-system-packages "$$pkg_dir"; \
+	done
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \

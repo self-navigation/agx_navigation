@@ -69,9 +69,26 @@ def generate_launch_description():
         ],
     )
 
+    vector_field = Node(
+        package="agx_planning",
+        executable="vector_field",
+        output="screen",
+        name="vector_field",
+        parameters=[
+            {
+                "map_frame": "map",
+                "robot_frame": "base_link",
+                "allow_unknown": True,
+                "viz_subsample": 4,
+                "use_sim_time": sim,
+            }
+        ],
+    )
+
     return LaunchDescription(
         declared_args
         + [
             costmaps,
+            vector_field,
         ]
     )
