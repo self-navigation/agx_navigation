@@ -6,3 +6,4 @@ install
 log
 .catkin*
 .vscode
+*.egg-info
