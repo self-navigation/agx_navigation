@@ -97,7 +97,7 @@ def generate_point_cloud_processor(context):
                     name="pointcloud_to_laserscan",
                     remappings=[
                         ("cloud_in", Topics.POINTS),
-                        ("scan", f"{Topics.SCAN}/raw"),
+                        ("scan", Topics.SCAN),
                     ],
                     parameters=[
                         {
@@ -119,21 +119,21 @@ def generate_point_cloud_processor(context):
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
                 ),
-                ComposableNode(
-                    package="pointcloud_utils",
-                    plugin="pointcloud_utils::LaserScanInterpolator",
-                    name="laserscan_interpolator",
-                    parameters=[
-                        {
-                            "input_topic": f"{Topics.SCAN}/raw",
-                            "output_topic": Topics.SCAN,
-                            "target_angle_increment": (2 * math.pi) / 360 / 4,
-                            "distance_threshold": 0.5,
-                            "use_sim_time": sim,
-                        }
-                    ],
-                    extra_arguments=[{"use_intra_process_comms": True}],
-                ),
+                # ComposableNode(
+                #     package="pointcloud_utils",
+                #     plugin="pointcloud_utils::LaserScanInterpolator",
+                #     name="laserscan_interpolator",
+                #     parameters=[
+                #         {
+                #             "input_topic": f"{Topics.SCAN}/raw",
+                #             "output_topic": Topics.SCAN,
+                #             "target_angle_increment": (2 * math.pi) / 360 / 4,
+                #             "distance_threshold": 0.5,
+                #             "use_sim_time": sim,
+                #         }
+                #     ],
+                #     extra_arguments=[{"use_intra_process_comms": True}],
+                # ),
             ],
         ),
         # Deskewing is done for the real hardware only.

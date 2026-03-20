@@ -18,11 +18,12 @@ class FrontierExplorer(Node):
 
         # --- State ---
         self.active = False
-        self.exploring = False
         self.current_goal_handle = None
         self.costmap_data = None
         self.robot_pose = None  # (x, y) in map frame
         self.robot_yaw = 0.0
+        self.replan_timer = None
+        self.blacklisted_goals = []
 
         # --- Toggle subscription ---
         self.toggle_sub = self.create_subscription(
@@ -42,33 +43,33 @@ class FrontierExplorer(Node):
         self.nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
 
         # --- Parameters ---
+        self.declare_parameter("traversable_cost_threshold", 50)  # 0–100
         self.declare_parameter("min_goal_distance", 1.0)  # metres
-        self.declare_parameter("min_segment_length", 0.3)  # metres
         self.declare_parameter("blacklist_radius", 0.5)  # metres
-        self.declare_parameter("max_navigable_cost", 50)  # 0–100 costmap scale
         self.declare_parameter("heading_bias_weight", 0.3)  # 0 = off
+        self.declare_parameter("replan_interval", 2.0)  # seconds
         self.declare_parameter("debug_markers", True)
 
+        self.traversable_threshold = (
+            self.get_parameter("traversable_cost_threshold")
+            .get_parameter_value()
+            .integer_value
+        )
         self.min_goal_distance = (
             self.get_parameter("min_goal_distance").get_parameter_value().double_value
-        )
-        self.min_segment_length = (
-            self.get_parameter("min_segment_length").get_parameter_value().double_value
         )
         self.blacklist_radius = (
             self.get_parameter("blacklist_radius").get_parameter_value().double_value
         )
-        self.max_navigable_cost = (
-            self.get_parameter("max_navigable_cost").get_parameter_value().integer_value
-        )
         self.heading_bias_weight = (
             self.get_parameter("heading_bias_weight").get_parameter_value().double_value
+        )
+        self.replan_interval = (
+            self.get_parameter("replan_interval").get_parameter_value().double_value
         )
         self.debug_markers = (
             self.get_parameter("debug_markers").get_parameter_value().bool_value
         )
-
-        self.blacklisted_goals = []
 
         # --- Visualisation publishers ---
         self.goal_pub = self.create_publisher(PoseStamped, "/exploration_goal", 10)
@@ -91,38 +92,47 @@ class FrontierExplorer(Node):
         if self.active:
             self.get_logger().info("Exploration ACTIVATED.")
             self.blacklisted_goals.clear()
-            if self.costmap_data:
-                self.update_robot_pose()
-                if self.robot_pose:
-                    self.explore()
+            self.replan_timer = self.create_timer(
+                self.replan_interval, self.replan_callback
+            )
+            # Immediate first replan
+            self.replan_callback()
         else:
             self.get_logger().info("Exploration DEACTIVATED – stopping robot.")
-            self.stop_robot()
+            self.stop()
 
-    def stop_robot(self):
-        """Cancel any active Nav2 goal – Nav2 handles stopping the robot."""
+    def stop(self):
+        """Cancel the active Nav2 goal and stop the replan timer."""
+        if self.replan_timer is not None:
+            self.replan_timer.cancel()
+            self.destroy_timer(self.replan_timer)
+            self.replan_timer = None
+
         if self.current_goal_handle is not None:
             self.get_logger().info("Cancelling current Nav2 goal…")
-            cancel_future = self.current_goal_handle.cancel_goal_async()
-            cancel_future.add_done_callback(self.cancel_done_callback)
-        else:
-            self.exploring = False
+            self.current_goal_handle.cancel_goal_async()
+            self.current_goal_handle = None
 
-    def cancel_done_callback(self, future):
-        self.get_logger().info("Nav2 goal cancel acknowledged.")
-        self.current_goal_handle = None
-        self.exploring = False
+        self.publish_debug_markers(
+            np.empty((0, 2), dtype=int), np.empty((0, 2), dtype=int), None
+        )
 
     # ------------------------------------------------------------------ #
-    #  Costmap callback
+    #  Costmap callback – just store data
     # ------------------------------------------------------------------ #
     def costmap_callback(self, msg):
         self.costmap_data = msg
-        if not self.active or self.exploring:
+
+    # ------------------------------------------------------------------ #
+    #  Periodic replan
+    # ------------------------------------------------------------------ #
+    def replan_callback(self):
+        if not self.active or self.costmap_data is None:
             return
         self.update_robot_pose()
-        if self.robot_pose:
-            self.explore()
+        if self.robot_pose is None:
+            return
+        self.explore()
 
     # ------------------------------------------------------------------ #
     #  Robot pose (position + yaw)
@@ -144,48 +154,65 @@ class FrontierExplorer(Node):
             self.robot_pose = None
 
     # ------------------------------------------------------------------ #
-    #  Exploration – border-segment on costmap
+    #  Exploration – flood-fill on costmap
     # ------------------------------------------------------------------ #
     def explore(self):
         if not self.costmap_data or not self.active:
             return
-
-        self.exploring = True
 
         info = self.costmap_data.info
         res = info.resolution
         ox, oy = info.origin.position.x, info.origin.position.y
         h, w = info.height, info.width
 
-        # Costmap OccupancyGrid: -1 = unknown, 0 = free, 100 = lethal
         grid = np.array(self.costmap_data.data, dtype=np.int8).reshape((h, w))
 
         unknown = grid == -1
+        traversable = (grid >= 0) & (grid <= self.traversable_threshold)
 
-        # Navigable = not unknown AND cost below threshold
-        navigable = (grid >= 0) & (grid <= self.max_navigable_cost)
+        # ---- 1. Find robot cell, snap to nearest traversable if needed ----
+        rx, ry = self.robot_pose
+        robot_col = int((rx - ox) / res)
+        robot_row = int((ry - oy) / res)
 
-        # ---- 1. Raw frontier: ANY non-unknown cell adjacent to unknown ----
-        #         (for debug visualisation only)
-        any_known = grid != -1
-        raw_frontier_mask = (
-            (np.roll(unknown, 1, axis=0) & any_known)
-            | (np.roll(unknown, -1, axis=0) & any_known)
-            | (np.roll(unknown, 1, axis=1) & any_known)
-            | (np.roll(unknown, -1, axis=1) & any_known)
-        )
-        raw_frontier_mask[0, :] = False
-        raw_frontier_mask[-1, :] = False
-        raw_frontier_mask[:, 0] = False
-        raw_frontier_mask[:, -1] = False
-        raw_frontier_cells = np.argwhere(raw_frontier_mask)
+        robot_col = np.clip(robot_col, 0, w - 1)
+        robot_row = np.clip(robot_row, 0, h - 1)
 
-        # ---- 2. Navigable frontier: navigable cells adjacent to unknown ----
+        if not traversable[robot_row, robot_col]:
+            # Snap to nearest traversable cell in a small search window
+            snap_r = 10  # cells
+            r_lo = max(0, robot_row - snap_r)
+            r_hi = min(h, robot_row + snap_r + 1)
+            c_lo = max(0, robot_col - snap_r)
+            c_hi = min(w, robot_col + snap_r + 1)
+            local = traversable[r_lo:r_hi, c_lo:c_hi]
+            if not np.any(local):
+                self.get_logger().warn("Robot not on traversable cell, " "cannot plan.")
+                return
+            local_pts = np.argwhere(local)
+            dists = (local_pts[:, 0] - (robot_row - r_lo)) ** 2 + (
+                local_pts[:, 1] - (robot_col - c_lo)
+            ) ** 2
+            best = local_pts[np.argmin(dists)]
+            robot_row = best[0] + r_lo
+            robot_col = best[1] + c_lo
+
+        # ---- 2. Flood fill: find the connected traversable region ----
+        labeled, num_components = label(traversable)
+        robot_label = labeled[robot_row, robot_col]
+
+        if robot_label == 0:
+            self.get_logger().warn("Robot cell has no traversable component.")
+            return
+
+        reachable = labeled == robot_label
+
+        # ---- 3. Frontier: unknown cells adjacent to the reachable region ----
         frontier_mask = (
-            (np.roll(unknown, 1, axis=0) & navigable)
-            | (np.roll(unknown, -1, axis=0) & navigable)
-            | (np.roll(unknown, 1, axis=1) & navigable)
-            | (np.roll(unknown, -1, axis=1) & navigable)
+            (np.roll(reachable, 1, axis=0) & unknown)
+            | (np.roll(reachable, -1, axis=0) & unknown)
+            | (np.roll(reachable, 1, axis=1) & unknown)
+            | (np.roll(reachable, -1, axis=1) & unknown)
         )
         frontier_mask[0, :] = False
         frontier_mask[-1, :] = False
@@ -193,26 +220,22 @@ class FrontierExplorer(Node):
         frontier_mask[:, -1] = False
 
         if not np.any(frontier_mask):
-            self.get_logger().info("No navigable frontiers! Exploration complete.")
+            self.get_logger().info("No more frontiers! Exploration complete.")
             self.publish_debug_markers(
-                raw_frontier_cells, np.empty((0, 2), dtype=int), None, res, ox, oy
+                np.argwhere(reachable), np.empty((0, 2), dtype=int), None
             )
-            self.exploring = False
             return
 
-        # ---- 3. Segment extraction ----
-        labeled, num_segments = label(frontier_mask)
+        frontier_cells = np.argwhere(frontier_mask)
 
-        rx, ry = self.robot_pose
-        min_cells = max(1, int(self.min_segment_length / res))
+        # ---- 4. Cluster frontier cells into segments ----
+        frontier_labeled, num_segments = label(frontier_mask)
 
-        # ---- 4. Score each border segment ----
+        # ---- 5. Score each segment ----
         segments = []
         for i in range(1, num_segments + 1):
-            points = np.argwhere(labeled == i)  # (row, col)
+            points = np.argwhere(frontier_labeled == i)
             size = len(points)
-            if size < min_cells:
-                continue
 
             mid_row = points[:, 0].mean()
             mid_col = points[:, 1].mean()
@@ -229,17 +252,17 @@ class FrontierExplorer(Node):
             ):
                 continue
 
-            # Snap midpoint to nearest actual frontier cell
+            # Snap midpoint to nearest frontier cell in this segment
             d2 = (points[:, 1] - mid_col) ** 2 + (points[:, 0] - mid_row) ** 2
             snap_idx = int(np.argmin(d2))
             snap_row, snap_col = points[snap_idx]
-            snap_wx = ox + snap_col * res
-            snap_wy = oy + snap_row * res
+            goal_wx = ox + snap_col * res
+            goal_wy = oy + snap_row * res
 
             seg_length = size * res
 
             # Heading bias
-            angle_to_goal = math.atan2(snap_wy - ry, snap_wx - rx)
+            angle_to_goal = math.atan2(goal_wy - ry, goal_wx - rx)
             angle_diff = abs(
                 math.atan2(
                     math.sin(angle_to_goal - self.robot_yaw),
@@ -250,14 +273,13 @@ class FrontierExplorer(Node):
                 1.0 - math.cos(angle_diff)
             )
 
-            snap_dist = math.sqrt((snap_wx - rx) ** 2 + (snap_wy - ry) ** 2)
-            score = snap_dist * heading_penalty / math.log2(seg_length + 1.0)
+            goal_dist = math.sqrt((goal_wx - rx) ** 2 + (goal_wy - ry) ** 2)
+            score = goal_dist * heading_penalty / math.log2(seg_length + 1.0)
 
             segments.append(
                 {
-                    "points": points,
-                    "snap_wx": snap_wx,
-                    "snap_wy": snap_wy,
+                    "goal_wx": goal_wx,
+                    "goal_wy": goal_wy,
                     "score": score,
                     "length": seg_length,
                     "size": size,
@@ -267,23 +289,22 @@ class FrontierExplorer(Node):
         if not segments:
             self.get_logger().info("No reachable frontier segments.")
             self.publish_debug_markers(
-                raw_frontier_cells, np.empty((0, 2), dtype=int), None, res, ox, oy
+                frontier_cells, np.empty((0, 2), dtype=int), None
             )
-            self.exploring = False
             return
 
-        # ---- 5. Select best ----
+        # ---- 6. Select best ----
         segments.sort(key=lambda s: s["score"])
         best = segments[0]
 
-        goal_x, goal_y = best["snap_wx"], best["snap_wy"]
+        goal_x, goal_y = best["goal_wx"], best["goal_wy"]
         self.get_logger().info(
             f"Selected border: ({goal_x:.2f}, {goal_y:.2f}), "
             f'score={best["score"]:.2f}, length={best["length"]:.2f}m, '
             f'cells={best["size"]}'
         )
 
-        # ---- 6. Goal with orientation toward target ----
+        # ---- 7. Goal with orientation toward target ----
         yaw = math.atan2(goal_y - ry, goal_x - rx)
         goal = PoseStamped()
         goal.header.frame_id = "map"
@@ -293,71 +314,51 @@ class FrontierExplorer(Node):
         goal.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.orientation.w = math.cos(yaw / 2.0)
 
-        # ---- 7. Debug markers ----
-        all_seg_cells = (
-            np.vstack([s["points"] for s in segments]) if segments else np.empty((0, 2))
-        )
-        self.publish_debug_markers(
-            raw_frontier_cells, all_seg_cells, (goal_x, goal_y), res, ox, oy
-        )
+        # ---- 8. Debug markers ----
+        self.publish_debug_markers(frontier_cells, frontier_cells, (goal_x, goal_y))
 
         self.send_nav_goal(goal)
 
     # ------------------------------------------------------------------ #
     #  RViz debug markers
     # ------------------------------------------------------------------ #
-    def publish_debug_markers(self, raw_cells, navigable_cells, goal_xy, res, ox, oy):
-        """Publish three marker layers to /frontier_debug.
+    def publish_debug_markers(self, frontier_cells, segment_cells, goal_xy):
+        """Publish two marker layers to /frontier_debug.
 
-        - Red points:  raw boundary (all known cells touching unknown)
-        - Cyan points: navigable frontier segments (cost < threshold)
-        - Green sphere: selected goal
+        - Cyan points:  reachable frontier border
+        - Green sphere:  selected goal
         """
         if not self.debug_markers:
             return
 
+        info = self.costmap_data.info if self.costmap_data else None
+        if info is None:
+            return
+        res = info.resolution
+        ox, oy = info.origin.position.x, info.origin.position.y
+
         stamp = self.get_clock().now().to_msg()
         markers = MarkerArray()
 
-        # -- Raw boundary: faint red --
-        m_raw = Marker()
-        m_raw.header.frame_id = "map"
-        m_raw.header.stamp = stamp
-        m_raw.ns = "frontier_raw"
-        m_raw.id = 0
-        m_raw.type = Marker.POINTS
-        m_raw.action = Marker.ADD
-        m_raw.scale.x = res * 0.8
-        m_raw.scale.y = res * 0.8
-        m_raw.color = ColorRGBA(r=1.0, g=0.3, b=0.3, a=0.35)
-        m_raw.pose.orientation.w = 1.0
-        for row, col in raw_cells:
-            p = Point()
-            p.x = ox + col * res
-            p.y = oy + row * res
-            p.z = 0.02
-            m_raw.points.append(p)
-        markers.markers.append(m_raw)
-
-        # -- Navigable frontier segments: bright cyan --
-        m_nav = Marker()
-        m_nav.header.frame_id = "map"
-        m_nav.header.stamp = stamp
-        m_nav.ns = "frontier_navigable"
-        m_nav.id = 0
-        m_nav.type = Marker.POINTS
-        m_nav.action = Marker.ADD
-        m_nav.scale.x = res * 1.2
-        m_nav.scale.y = res * 1.2
-        m_nav.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.9)
-        m_nav.pose.orientation.w = 1.0
-        for row, col in navigable_cells:
+        # -- Frontier border: cyan --
+        m_front = Marker()
+        m_front.header.frame_id = "map"
+        m_front.header.stamp = stamp
+        m_front.ns = "frontier_border"
+        m_front.id = 0
+        m_front.type = Marker.POINTS
+        m_front.action = Marker.ADD
+        m_front.scale.x = res * 1.2
+        m_front.scale.y = res * 1.2
+        m_front.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.9)
+        m_front.pose.orientation.w = 1.0
+        for row, col in frontier_cells:
             p = Point()
             p.x = ox + col * res
             p.y = oy + row * res
             p.z = 0.03
-            m_nav.points.append(p)
-        markers.markers.append(m_nav)
+            m_front.points.append(p)
+        markers.markers.append(m_front)
 
         # -- Selected goal: green sphere --
         m_goal = Marker()
@@ -386,7 +387,6 @@ class FrontierExplorer(Node):
     def send_nav_goal(self, goal_pose):
         if not self.nav_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Nav2 action server not available!")
-            self.exploring = False
             return
 
         self.last_goal_pose = goal_pose
@@ -406,31 +406,26 @@ class FrontierExplorer(Node):
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.get_logger().warn("Nav2 goal rejected!")
-            self.current_goal_handle = None
-            self.exploring = False
             return
 
-        self.get_logger().info("Nav2 goal accepted.")
         self.current_goal_handle = goal_handle
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.nav_result_callback)
 
     def nav_result_callback(self, future):
+        """Blacklist goals that Nav2 failed to reach."""
         result = future.result().result
         self.current_goal_handle = None
 
-        if result:
-            self.get_logger().info("Reached frontier! Checking for new ones.")
-        else:
-            self.get_logger().warn("Failed to reach frontier – blacklisting.")
-            if hasattr(self, "last_goal_pose"):
-                bx = self.last_goal_pose.pose.position.x
-                by = self.last_goal_pose.pose.position.y
-                self.blacklisted_goals.append((bx, by))
-                if len(self.blacklisted_goals) > 50:
-                    self.blacklisted_goals.pop(0)
-
-        self.exploring = False
+        if not result and hasattr(self, "last_goal_pose"):
+            bx = self.last_goal_pose.pose.position.x
+            by = self.last_goal_pose.pose.position.y
+            self.get_logger().warn(
+                f"Nav2 failed to reach ({bx:.2f}, {by:.2f}) – blacklisting."
+            )
+            self.blacklisted_goals.append((bx, by))
+            if len(self.blacklisted_goals) > 50:
+                self.blacklisted_goals.pop(0)
 
 
 def main(args=None):

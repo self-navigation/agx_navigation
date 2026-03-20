@@ -82,16 +82,14 @@ def generate_launch_description():
         name="frontier_explorer",
         parameters=[
             {
-                "min_goal_distance": 0.5,
-                "min_segment_length": 0.1,
+                "traversable_cost_threshold": 50,
+                "min_goal_distance": 1.0,
                 "blacklist_radius": 0.5,
-                "max_navigable_cost": 50,
                 "heading_bias_weight": 0.3,
+                "replan_interval": 0.5,
+                "unknown_filter_size": 2,
                 "debug_markers": True,
             }
-        ],
-        remappings=[
-            ("/cmd_vel", Topics.CMD_VEL),
         ],
         output="screen",
     )
