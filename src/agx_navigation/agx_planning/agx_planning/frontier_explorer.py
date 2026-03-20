@@ -48,6 +48,9 @@ class FrontierExplorer(Node):
         self.declare_parameter("blacklist_radius", 0.5)  # metres
         self.declare_parameter("heading_bias_weight", 0.3)  # 0 = off
         self.declare_parameter("replan_interval", 2.0)  # seconds
+        self.declare_parameter(
+            "unknown_filter_size", 50
+        )  # cells – discard unknown patches smaller than this
         self.declare_parameter("debug_markers", True)
 
         self.traversable_threshold = (
@@ -66,6 +69,11 @@ class FrontierExplorer(Node):
         )
         self.replan_interval = (
             self.get_parameter("replan_interval").get_parameter_value().double_value
+        )
+        self.unknown_filter_size = (
+            self.get_parameter("unknown_filter_size")
+            .get_parameter_value()
+            .integer_value
         )
         self.debug_markers = (
             self.get_parameter("debug_markers").get_parameter_value().bool_value
@@ -207,7 +215,20 @@ class FrontierExplorer(Node):
 
         reachable = labeled == robot_label
 
-        # ---- 3. Frontier: unknown cells adjacent to the reachable region ----
+        # ---- 3. Filter unknown: discard small interior patches ----
+        # RTABmap produces dithered unknown patches inside explored space.
+        # Label connected components of the unknown mask and keep only
+        # those large enough to be real unexplored regions.
+        if self.unknown_filter_size > 0:
+            unknown_labeled, num_unknown = label(unknown)
+            # Count pixels per component using bincount (fast)
+            sizes = np.bincount(unknown_labeled.ravel())
+            # sizes[0] is background (not unknown), skip it
+            keep = sizes >= self.unknown_filter_size
+            keep[0] = False  # background is never unknown
+            unknown = keep[unknown_labeled]
+
+        # ---- 4. Frontier: unknown cells adjacent to the reachable region ----
         frontier_mask = (
             (np.roll(reachable, 1, axis=0) & unknown)
             | (np.roll(reachable, -1, axis=0) & unknown)
@@ -228,10 +249,10 @@ class FrontierExplorer(Node):
 
         frontier_cells = np.argwhere(frontier_mask)
 
-        # ---- 4. Cluster frontier cells into segments ----
+        # ---- 5. Cluster frontier cells into segments ----
         frontier_labeled, num_segments = label(frontier_mask)
 
-        # ---- 5. Score each segment ----
+        # ---- 6. Score each segment ----
         segments = []
         for i in range(1, num_segments + 1):
             points = np.argwhere(frontier_labeled == i)
@@ -293,7 +314,7 @@ class FrontierExplorer(Node):
             )
             return
 
-        # ---- 6. Select best ----
+        # ---- 7. Select best ----
         segments.sort(key=lambda s: s["score"])
         best = segments[0]
 
@@ -304,7 +325,7 @@ class FrontierExplorer(Node):
             f'cells={best["size"]}'
         )
 
-        # ---- 7. Goal with orientation toward target ----
+        # ---- 8. Goal with orientation toward target ----
         yaw = math.atan2(goal_y - ry, goal_x - rx)
         goal = PoseStamped()
         goal.header.frame_id = "map"
@@ -314,7 +335,7 @@ class FrontierExplorer(Node):
         goal.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.orientation.w = math.cos(yaw / 2.0)
 
-        # ---- 8. Debug markers ----
+        # ---- 9. Debug markers ----
         self.publish_debug_markers(frontier_cells, frontier_cells, (goal_x, goal_y))
 
         self.send_nav_goal(goal)

@@ -87,7 +87,7 @@ def generate_launch_description():
                 "blacklist_radius": 0.5,
                 "heading_bias_weight": 0.3,
                 "replan_interval": 0.5,
-                "unknown_filter_size": 2,
+                "unknown_filter_size": 50,
                 "debug_markers": True,
             }
         ],
