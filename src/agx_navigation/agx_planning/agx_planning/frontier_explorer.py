@@ -8,8 +8,69 @@ from std_msgs.msg import Empty, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformListener, Buffer
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_dilation
 import math
+
+# ====================================================================== #
+#  Scoring heuristics
+#
+#  Each heuristic is a standalone function:
+#      (segment, context) -> float
+#
+#  - Returns a score *component* (lower = better).
+#  - `segment` is a dict with at least: goal_wx, goal_wy, size, length.
+#  - `context` is a dict with: rx, ry, robot_yaw, and any params.
+#
+#  To add a new heuristic:
+#    1. Write a function below following the same signature.
+#    2. Add it to HEURISTICS with a name, a default weight, and
+#       a default enabled flag.
+#    3. That's it — the node picks it up automatically.
+#       Weight and enabled are exposed as ROS parameters:
+#         heuristic.<name>.enabled  (bool)
+#         heuristic.<name>.weight   (float)
+# ====================================================================== #
+
+
+def heuristic_distance(segment, context):
+    """Prefer closer frontiers.  Returns Euclidean distance in metres."""
+    dx = segment["goal_wx"] - context["rx"]
+    dy = segment["goal_wy"] - context["ry"]
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def heuristic_heading(segment, context):
+    """Penalise frontiers behind the robot (maintains corridor momentum).
+    Returns a value in [1.0, 2.0]:  1.0 = straight ahead, 2.0 = directly behind."""
+    dx = segment["goal_wx"] - context["rx"]
+    dy = segment["goal_wy"] - context["ry"]
+    angle_to_goal = math.atan2(dy, dx)
+    angle_diff = abs(
+        math.atan2(
+            math.sin(angle_to_goal - context["robot_yaw"]),
+            math.cos(angle_to_goal - context["robot_yaw"]),
+        )
+    )
+    return 1.0 + (1.0 - math.cos(angle_diff))
+
+
+def heuristic_segment_size(segment, context):
+    """Prefer larger frontier segments (wider openings / more info gain).
+    Returns a divisor-style value: 1/log2(length+1), so larger = lower = better."""
+    return 1.0 / math.log2(segment["length"] + 1.0)
+
+
+# Registry: (name, function, default_weight, default_enabled)
+HEURISTICS = [
+    ("distance", heuristic_distance, 1.0, True),
+    ("heading", heuristic_heading, 0.3, True),
+    ("segment_size", heuristic_segment_size, 1.0, True),
+]
+
+
+# ====================================================================== #
+#  Node
+# ====================================================================== #
 
 
 class FrontierExplorer(Node):
@@ -23,7 +84,7 @@ class FrontierExplorer(Node):
         self.robot_pose = None  # (x, y) in map frame
         self.robot_yaw = 0.0
         self.replan_timer = None
-        self.blacklisted_goals = []
+        self.current_goal_xy = None
 
         # --- Toggle subscription ---
         self.toggle_sub = self.create_subscription(
@@ -42,42 +103,54 @@ class FrontierExplorer(Node):
         # --- Nav2 action client ---
         self.nav_client = ActionClient(self, NavigateToPose, "/navigate_to_pose")
 
-        # --- Parameters ---
-        self.declare_parameter("traversable_cost_threshold", 50)  # 0–100
-        self.declare_parameter("min_goal_distance", 1.0)  # metres
-        self.declare_parameter("blacklist_radius", 0.5)  # metres
-        self.declare_parameter("heading_bias_weight", 0.3)  # 0 = off
-        self.declare_parameter("replan_interval", 2.0)  # seconds
+        # --- Core parameters ---
+        self.declare_parameter("traversable_cost_threshold", 50)
+        self.declare_parameter("replan_frequency", 0.5)  # Hz
         self.declare_parameter(
-            "unknown_filter_size", 50
-        )  # cells – discard unknown patches smaller than this
-        self.declare_parameter("debug_markers", True)
+            "known_space_dilation", 3
+        )  # cells – fills inter-ray gaps
+        self.declare_parameter("goal_switch_threshold", 0.3)
 
         self.traversable_threshold = (
             self.get_parameter("traversable_cost_threshold")
             .get_parameter_value()
             .integer_value
         )
-        self.min_goal_distance = (
-            self.get_parameter("min_goal_distance").get_parameter_value().double_value
+        self.replan_frequency = (
+            self.get_parameter("replan_frequency").get_parameter_value().double_value
         )
-        self.blacklist_radius = (
-            self.get_parameter("blacklist_radius").get_parameter_value().double_value
-        )
-        self.heading_bias_weight = (
-            self.get_parameter("heading_bias_weight").get_parameter_value().double_value
-        )
-        self.replan_interval = (
-            self.get_parameter("replan_interval").get_parameter_value().double_value
-        )
-        self.unknown_filter_size = (
-            self.get_parameter("unknown_filter_size")
+        self.known_space_dilation = (
+            self.get_parameter("known_space_dilation")
             .get_parameter_value()
             .integer_value
         )
-        self.debug_markers = (
-            self.get_parameter("debug_markers").get_parameter_value().bool_value
+        self.goal_switch_threshold = (
+            self.get_parameter("goal_switch_threshold")
+            .get_parameter_value()
+            .double_value
         )
+
+        # --- Heuristic parameters (auto-registered from HEURISTICS) ---
+        self.scoring_heuristics = []
+        for name, func, default_weight, default_enabled in HEURISTICS:
+            param_enabled = f"heuristic.{name}.enabled"
+            param_weight = f"heuristic.{name}.weight"
+            self.declare_parameter(param_enabled, default_enabled)
+            self.declare_parameter(param_weight, default_weight)
+            enabled = self.get_parameter(param_enabled).get_parameter_value().bool_value
+            weight = self.get_parameter(param_weight).get_parameter_value().double_value
+            self.scoring_heuristics.append(
+                {
+                    "name": name,
+                    "func": func,
+                    "weight": weight,
+                    "enabled": enabled,
+                }
+            )
+            status = "ON" if enabled else "OFF"
+            self.get_logger().info(
+                f'  Heuristic "{name}": {status}, weight={weight:.2f}'
+            )
 
         # --- Visualisation publishers ---
         self.goal_pub = self.create_publisher(PoseStamped, "/exploration_goal", 10)
@@ -93,24 +166,33 @@ class FrontierExplorer(Node):
         )
 
     # ------------------------------------------------------------------ #
+    #  Scoring
+    # ------------------------------------------------------------------ #
+    def score_segment(self, segment, context):
+        """Compute a composite score for a frontier segment.
+        Lower = better.  Each enabled heuristic contributes multiplicatively."""
+        score = 1.0
+        for h in self.scoring_heuristics:
+            if h["enabled"]:
+                value = h["func"](segment, context)
+                score *= value ** h["weight"]
+        return score
+
+    # ------------------------------------------------------------------ #
     #  Toggle
     # ------------------------------------------------------------------ #
     def toggle_callback(self, msg):
         self.active = not self.active
         if self.active:
             self.get_logger().info("Exploration ACTIVATED.")
-            self.blacklisted_goals.clear()
-            self.replan_timer = self.create_timer(
-                self.replan_interval, self.replan_callback
-            )
-            # Immediate first replan
+            replan_period = 1.0 / self.replan_frequency
+            self.replan_timer = self.create_timer(replan_period, self.replan_callback)
             self.replan_callback()
         else:
             self.get_logger().info("Exploration DEACTIVATED – stopping robot.")
             self.stop()
 
     def stop(self):
-        """Cancel the active Nav2 goal and stop the replan timer."""
         if self.replan_timer is not None:
             self.replan_timer.cancel()
             self.destroy_timer(self.replan_timer)
@@ -121,12 +203,11 @@ class FrontierExplorer(Node):
             self.current_goal_handle.cancel_goal_async()
             self.current_goal_handle = None
 
-        self.publish_debug_markers(
-            np.empty((0, 2), dtype=int), np.empty((0, 2), dtype=int), None
-        )
+        self.current_goal_xy = None
+        self.publish_debug_markers([], None)
 
     # ------------------------------------------------------------------ #
-    #  Costmap callback – just store data
+    #  Costmap callback
     # ------------------------------------------------------------------ #
     def costmap_callback(self, msg):
         self.costmap_data = msg
@@ -143,7 +224,7 @@ class FrontierExplorer(Node):
         self.explore()
 
     # ------------------------------------------------------------------ #
-    #  Robot pose (position + yaw)
+    #  Robot pose
     # ------------------------------------------------------------------ #
     def update_robot_pose(self):
         try:
@@ -162,7 +243,7 @@ class FrontierExplorer(Node):
             self.robot_pose = None
 
     # ------------------------------------------------------------------ #
-    #  Exploration – flood-fill on costmap
+    #  Exploration
     # ------------------------------------------------------------------ #
     def explore(self):
         if not self.costmap_data or not self.active:
@@ -175,27 +256,33 @@ class FrontierExplorer(Node):
 
         grid = np.array(self.costmap_data.data, dtype=np.int8).reshape((h, w))
 
-        unknown = grid == -1
+        occupied = grid > self.traversable_threshold
         traversable = (grid >= 0) & (grid <= self.traversable_threshold)
 
-        # ---- 1. Find robot cell, snap to nearest traversable if needed ----
+        # ---- 1. Build smoothed "known" region ----
+        if self.known_space_dilation > 0:
+            k = 2 * self.known_space_dilation + 1
+            known = binary_dilation(traversable, structure=np.ones((k, k)))
+            known = known & ~occupied
+        else:
+            known = traversable
+
+        # ---- 2. Find robot cell ----
         rx, ry = self.robot_pose
         robot_col = int((rx - ox) / res)
         robot_row = int((ry - oy) / res)
-
         robot_col = np.clip(robot_col, 0, w - 1)
         robot_row = np.clip(robot_row, 0, h - 1)
 
-        if not traversable[robot_row, robot_col]:
-            # Snap to nearest traversable cell in a small search window
-            snap_r = 10  # cells
+        if not known[robot_row, robot_col]:
+            snap_r = 10
             r_lo = max(0, robot_row - snap_r)
             r_hi = min(h, robot_row + snap_r + 1)
             c_lo = max(0, robot_col - snap_r)
             c_hi = min(w, robot_col + snap_r + 1)
-            local = traversable[r_lo:r_hi, c_lo:c_hi]
+            local = known[r_lo:r_hi, c_lo:c_hi]
             if not np.any(local):
-                self.get_logger().warn("Robot not on traversable cell, " "cannot plan.")
+                self.get_logger().warn("Robot not on known cell.")
                 return
             local_pts = np.argwhere(local)
             dists = (local_pts[:, 0] - (robot_row - r_lo)) ** 2 + (
@@ -205,30 +292,24 @@ class FrontierExplorer(Node):
             robot_row = best[0] + r_lo
             robot_col = best[1] + c_lo
 
-        # ---- 2. Flood fill: find the connected traversable region ----
-        labeled, num_components = label(traversable)
+        # ---- 3. Flood fill on smoothed known region ----
+        labeled, _ = label(known)
         robot_label = labeled[robot_row, robot_col]
-
         if robot_label == 0:
-            self.get_logger().warn("Robot cell has no traversable component.")
+            self.get_logger().warn("Robot cell has no known component.")
             return
-
         reachable = labeled == robot_label
 
-        # ---- 3. Filter unknown: discard small interior patches ----
-        # RTABmap produces dithered unknown patches inside explored space.
-        # Label connected components of the unknown mask and keep only
-        # those large enough to be real unexplored regions.
-        if self.unknown_filter_size > 0:
-            unknown_labeled, num_unknown = label(unknown)
-            # Count pixels per component using bincount (fast)
-            sizes = np.bincount(unknown_labeled.ravel())
-            # sizes[0] is background (not unknown), skip it
-            keep = sizes >= self.unknown_filter_size
-            keep[0] = False  # background is never unknown
-            unknown = keep[unknown_labeled]
+        # ---- 4. Derive synthetic unknown ----
+        unknown = ~reachable & ~occupied
 
-        # ---- 4. Frontier: unknown cells adjacent to the reachable region ----
+        self.get_logger().debug(
+            f"Grid: {h}x{w}, occupied={int(np.sum(occupied))}, "
+            f"known={int(np.sum(known))}, reachable={int(np.sum(reachable))}, "
+            f"synthetic_unknown={int(np.sum(unknown))}"
+        )
+
+        # ---- 5. Frontier detection ----
         frontier_mask = (
             (np.roll(reachable, 1, axis=0) & unknown)
             | (np.roll(reachable, -1, axis=0) & unknown)
@@ -242,17 +323,19 @@ class FrontierExplorer(Node):
 
         if not np.any(frontier_mask):
             self.get_logger().info("No more frontiers! Exploration complete.")
-            self.publish_debug_markers(
-                np.argwhere(reachable), np.empty((0, 2), dtype=int), None
-            )
+            self.publish_debug_markers([], None)
             return
 
-        frontier_cells = np.argwhere(frontier_mask)
+        # ---- 6. Segment extraction (8-connectivity) ----
+        frontier_labeled, num_segments = label(frontier_mask, structure=np.ones((3, 3)))
 
-        # ---- 5. Cluster frontier cells into segments ----
-        frontier_labeled, num_segments = label(frontier_mask)
+        # ---- 7. Build segment list with metadata ----
+        context = {
+            "rx": rx,
+            "ry": ry,
+            "robot_yaw": self.robot_yaw,
+        }
 
-        # ---- 6. Score each segment ----
         segments = []
         for i in range(1, num_segments + 1):
             points = np.argwhere(frontier_labeled == i)
@@ -260,72 +343,59 @@ class FrontierExplorer(Node):
 
             mid_row = points[:, 0].mean()
             mid_col = points[:, 1].mean()
-            wx = ox + mid_col * res
-            wy = oy + mid_row * res
 
-            dist = math.sqrt((wx - rx) ** 2 + (wy - ry) ** 2)
-            if dist < self.min_goal_distance:
-                continue
-
-            if any(
-                math.sqrt((wx - bx) ** 2 + (wy - by) ** 2) < self.blacklist_radius
-                for bx, by in self.blacklisted_goals
-            ):
-                continue
-
-            # Snap midpoint to nearest frontier cell in this segment
+            # Snap midpoint to nearest frontier cell
             d2 = (points[:, 1] - mid_col) ** 2 + (points[:, 0] - mid_row) ** 2
             snap_idx = int(np.argmin(d2))
             snap_row, snap_col = points[snap_idx]
-            goal_wx = ox + snap_col * res
-            goal_wy = oy + snap_row * res
 
-            seg_length = size * res
+            segment = {
+                "goal_wx": ox + snap_col * res,
+                "goal_wy": oy + snap_row * res,
+                "size": size,
+                "length": size * res,
+                "points": points,
+            }
 
-            # Heading bias
-            angle_to_goal = math.atan2(goal_wy - ry, goal_wx - rx)
-            angle_diff = abs(
-                math.atan2(
-                    math.sin(angle_to_goal - self.robot_yaw),
-                    math.cos(angle_to_goal - self.robot_yaw),
-                )
-            )
-            heading_penalty = 1.0 + self.heading_bias_weight * (
-                1.0 - math.cos(angle_diff)
-            )
-
-            goal_dist = math.sqrt((goal_wx - rx) ** 2 + (goal_wy - ry) ** 2)
-            score = goal_dist * heading_penalty / math.log2(seg_length + 1.0)
-
-            segments.append(
-                {
-                    "goal_wx": goal_wx,
-                    "goal_wy": goal_wy,
-                    "score": score,
-                    "length": seg_length,
-                    "size": size,
-                }
-            )
+            segment["score"] = self.score_segment(segment, context)
+            segments.append(segment)
 
         if not segments:
             self.get_logger().info("No reachable frontier segments.")
-            self.publish_debug_markers(
-                frontier_cells, np.empty((0, 2), dtype=int), None
-            )
+            self.current_goal_xy = None
+            self.publish_debug_markers([], None)
             return
 
-        # ---- 7. Select best ----
+        # ---- 8. Select best with hysteresis ----
         segments.sort(key=lambda s: s["score"])
-        best = segments[0]
+        best_new = segments[0]
+        chosen = best_new
 
-        goal_x, goal_y = best["goal_wx"], best["goal_wy"]
+        if self.current_goal_xy is not None:
+            cgx, cgy = self.current_goal_xy
+            current_seg = None
+            best_match_dist = float("inf")
+            for seg in segments:
+                d = math.sqrt((seg["goal_wx"] - cgx) ** 2 + (seg["goal_wy"] - cgy) ** 2)
+                if d < best_match_dist:
+                    best_match_dist = d
+                    current_seg = seg
+
+            if current_seg is not None and best_match_dist < 1.0:
+                improvement = 1.0 - best_new["score"] / current_seg["score"]
+                if improvement < self.goal_switch_threshold:
+                    chosen = current_seg
+
+        goal_x, goal_y = chosen["goal_wx"], chosen["goal_wy"]
+        self.current_goal_xy = (goal_x, goal_y)
+
         self.get_logger().info(
             f"Selected border: ({goal_x:.2f}, {goal_y:.2f}), "
-            f'score={best["score"]:.2f}, length={best["length"]:.2f}m, '
-            f'cells={best["size"]}'
+            f'score={chosen["score"]:.2f}, length={chosen["length"]:.2f}m, '
+            f'cells={chosen["size"]}'
         )
 
-        # ---- 8. Goal with orientation toward target ----
+        # ---- 9. Goal with orientation toward target ----
         yaw = math.atan2(goal_y - ry, goal_x - rx)
         goal = PoseStamped()
         goal.header.frame_id = "map"
@@ -335,23 +405,28 @@ class FrontierExplorer(Node):
         goal.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.orientation.w = math.cos(yaw / 2.0)
 
-        # ---- 9. Debug markers ----
-        self.publish_debug_markers(frontier_cells, frontier_cells, (goal_x, goal_y))
-
+        # ---- 10. Debug markers ----
+        self.publish_debug_markers(segments, (goal_x, goal_y))
         self.send_nav_goal(goal)
 
     # ------------------------------------------------------------------ #
     #  RViz debug markers
     # ------------------------------------------------------------------ #
-    def publish_debug_markers(self, frontier_cells, segment_cells, goal_xy):
-        """Publish two marker layers to /frontier_debug.
+    # Distinct colour palette (no yellow — reserved for laserscan)
+    SEGMENT_COLORS = [
+        ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.9),  # cyan
+        ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.9),  # orange
+        ColorRGBA(r=0.6, g=0.2, b=1.0, a=0.9),  # purple
+        ColorRGBA(r=1.0, g=0.0, b=0.5, a=0.9),  # pink
+        ColorRGBA(r=0.0, g=0.7, b=1.0, a=0.9),  # sky blue
+        ColorRGBA(r=0.0, g=1.0, b=0.4, a=0.9),  # mint
+        ColorRGBA(r=1.0, g=0.2, b=0.2, a=0.9),  # red
+        ColorRGBA(r=0.5, g=1.0, b=0.0, a=0.9),  # lime
+        ColorRGBA(r=1.0, g=0.0, b=1.0, a=0.9),  # magenta
+        ColorRGBA(r=0.3, g=0.5, b=1.0, a=0.9),  # cornflower
+    ]
 
-        - Cyan points:  reachable frontier border
-        - Green sphere:  selected goal
-        """
-        if not self.debug_markers:
-            return
-
+    def publish_debug_markers(self, segments, goal_xy):
         info = self.costmap_data.info if self.costmap_data else None
         if info is None:
             return
@@ -361,24 +436,43 @@ class FrontierExplorer(Node):
         stamp = self.get_clock().now().to_msg()
         markers = MarkerArray()
 
-        # -- Frontier border: cyan --
+        # -- Clean up stale markers from previous versions --
+        for ns in (
+            "smoothing_debug",
+            "frontier_border",
+            "frontier_raw",
+            "frontier_navigable",
+        ):
+            m = Marker()
+            m.header.frame_id = "map"
+            m.header.stamp = stamp
+            m.ns = ns
+            m.id = 0
+            m.action = Marker.DELETE
+            markers.markers.append(m)
+
+        # -- Frontier segments: per-point colour --
         m_front = Marker()
         m_front.header.frame_id = "map"
         m_front.header.stamp = stamp
-        m_front.ns = "frontier_border"
+        m_front.ns = "frontier_segments"
         m_front.id = 0
         m_front.type = Marker.POINTS
         m_front.action = Marker.ADD
         m_front.scale.x = res * 1.2
         m_front.scale.y = res * 1.2
-        m_front.color = ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.9)
         m_front.pose.orientation.w = 1.0
-        for row, col in frontier_cells:
-            p = Point()
-            p.x = ox + col * res
-            p.y = oy + row * res
-            p.z = 0.03
-            m_front.points.append(p)
+
+        palette = self.SEGMENT_COLORS
+        for seg_idx, seg in enumerate(segments):
+            color = palette[seg_idx % len(palette)]
+            for row, col in seg["points"]:
+                p = Point()
+                p.x = ox + col * res
+                p.y = oy + row * res
+                p.z = 0.03
+                m_front.points.append(p)
+                m_front.colors.append(color)
         markers.markers.append(m_front)
 
         # -- Selected goal: green sphere --
@@ -410,8 +504,6 @@ class FrontierExplorer(Node):
             self.get_logger().error("Nav2 action server not available!")
             return
 
-        self.last_goal_pose = goal_pose
-
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = goal_pose
         self.goal_pub.publish(goal_pose)
@@ -434,19 +526,7 @@ class FrontierExplorer(Node):
         result_future.add_done_callback(self.nav_result_callback)
 
     def nav_result_callback(self, future):
-        """Blacklist goals that Nav2 failed to reach."""
-        result = future.result().result
         self.current_goal_handle = None
-
-        if not result and hasattr(self, "last_goal_pose"):
-            bx = self.last_goal_pose.pose.position.x
-            by = self.last_goal_pose.pose.position.y
-            self.get_logger().warn(
-                f"Nav2 failed to reach ({bx:.2f}, {by:.2f}) – blacklisting."
-            )
-            self.blacklisted_goals.append((bx, by))
-            if len(self.blacklisted_goals) > 50:
-                self.blacklisted_goals.pop(0)
 
 
 def main(args=None):
