@@ -51,10 +51,12 @@ DEBUG_INFIX :=
 endif
 
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
+PYTHON_SETUP_FILES := $(shell find src -name "setup.py")
+PYTHON_PACKAGES := $(dir $(PYTHON_SETUP_FILES))
 
 all: build
 
-build: update-caches ros-deps .build.stamp
+build: update-caches deps .build.stamp
 
 update-caches:
 	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
@@ -77,7 +79,7 @@ update-caches:
 clean:
 	rm -rf install build log .*.stamp .last_build_user
 
-setup: install-ros install-gazebo system-deps ros-deps
+setup: install-ros install-gazebo system-deps deps
 
 install-ros:
 	sudo apt update
@@ -116,9 +118,11 @@ system-deps:
 
 ros-deps:
 	rosdep install --from-paths src --ignore-src -r -y
-	@find src -name "setup.py" -printf '%h\n' | while read pkg_dir; do \
-		pip install --break-system-packages "$$pkg_dir"; \
-	done
+
+python-deps: $(PYTHON_SETUP_FILES)
+	pip install --break-system-packages $(PYTHON_PACKAGES)
+
+deps: ros-deps python-deps
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \
