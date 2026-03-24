@@ -82,8 +82,9 @@ def generate_launch_description():
         name="frontier_explorer",
         parameters=[
             {
-                "traversable_cost_threshold": 50,
+                "traversable_cost_threshold": 60,
                 "replan_frequency": 2.0,
+                "known_space_dilation": 4,
             }
         ],
         output="screen",
