@@ -53,9 +53,26 @@ def generate_point_cloud_processor(context):
                     ],
                     remappings=[
                         ("input", Topics.CAMERA_DEPTH_POINTS),
-                        ("output", Topics.CAMERA_DEPTH_DOWNSAMPLED),
+                        ("output", f"{Topics.CAMERA_DEPTH_DOWNSAMPLED}/unfiltered"),
                     ],
                     extra_arguments=[{"use_intra_process_comms": True}],
+                ),
+                ComposableNode(
+                    package="pcl_ros",
+                    plugin="pcl_ros::PassThrough",
+                    name="min_distance_filter",
+                    remappings=[
+                        ("input", f"{Topics.CAMERA_DEPTH_DOWNSAMPLED}/unfiltered"),
+                        ("output", Topics.CAMERA_DEPTH_DOWNSAMPLED),
+                    ],
+                    parameters=[
+                        {
+                            "filter_field_name": "z",
+                            "filter_limit_min": 0.6,
+                            "filter_limit_max": 10.0,
+                            "filter_limit_negative": False,
+                        }
+                    ],
                 ),
                 ComposableNode(
                     package="pcl_ros",
@@ -101,9 +118,9 @@ def generate_point_cloud_processor(context):
                     ],
                     parameters=[
                         {
-                            "target_frame": "",
+                            "target_frame": "base_link",
                             "transform_tolerance": 0.1,
-                            "min_height": 0.1,
+                            "min_height": 0.05,
                             "max_height": 0.7,
                             "angle_min": -3.14159,
                             "angle_max": 3.14159,
