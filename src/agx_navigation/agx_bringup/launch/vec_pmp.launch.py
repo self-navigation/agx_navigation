@@ -79,7 +79,6 @@ def generate_launch_description():
                 "map_frame": "map",
                 "robot_frame": "base_link",
                 "allow_unknown": True,
-                "viz_subsample": 4,
                 "use_sim_time": sim,
             }
         ],
