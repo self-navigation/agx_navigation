@@ -25,7 +25,7 @@ import math
 #    1. Write a function below following the same signature.
 #    2. Add it to HEURISTICS with a name, a default weight, and
 #       a default enabled flag.
-#    3. That's it — the node picks it up automatically.
+#    3. That's it - the node picks it up automatically.
 #       Weight and enabled are exposed as ROS parameters:
 #         heuristic.<name>.enabled  (bool)
 #         heuristic.<name>.weight   (float)
@@ -85,6 +85,7 @@ class FrontierExplorer(Node):
         self.robot_yaw = 0.0
         self.replan_timer = None
         self.current_goal_xy = None
+        self._debug_reachable = None
 
         # --- Toggle subscription ---
         self.toggle_sub = self.create_subscription(
@@ -300,6 +301,8 @@ class FrontierExplorer(Node):
             return
         reachable = labeled == robot_label
 
+        self._debug_reachable = reachable
+
         # ---- 4. Derive synthetic unknown ----
         unknown = ~reachable & ~occupied
 
@@ -412,7 +415,7 @@ class FrontierExplorer(Node):
     # ------------------------------------------------------------------ #
     #  RViz debug markers
     # ------------------------------------------------------------------ #
-    # Distinct colour palette (no yellow — reserved for laserscan)
+    # Distinct colour palette (no yellow - reserved for laserscan)
     SEGMENT_COLORS = [
         ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.9),  # cyan
         ColorRGBA(r=1.0, g=0.5, b=0.0, a=0.9),  # orange
@@ -450,6 +453,29 @@ class FrontierExplorer(Node):
             m.id = 0
             m.action = Marker.DELETE
             markers.markers.append(m)
+
+        # -- Known space debug: full reachable region (faint blue) --
+        m_known = Marker()
+        m_known.header.frame_id = "map"
+        m_known.header.stamp = stamp
+        m_known.ns = "dilation_debug"
+        m_known.id = 0
+        m_known.type = Marker.POINTS
+        m_known.action = Marker.ADD
+        m_known.scale.x = res
+        m_known.scale.y = res
+        m_known.pose.orientation.w = 1.0
+        m_known.color = ColorRGBA(r=0.2, g=0.3, b=1.0, a=0.3)
+
+        if self._debug_reachable is not None and np.any(self._debug_reachable):
+            reachable_cells = np.argwhere(self._debug_reachable)
+            for row, col in reachable_cells:
+                p = Point()
+                p.x = ox + col * res
+                p.y = oy + row * res
+                p.z = 0.01
+                m_known.points.append(p)
+        markers.markers.append(m_known)
 
         # -- Frontier segments: per-point colour --
         m_front = Marker()
