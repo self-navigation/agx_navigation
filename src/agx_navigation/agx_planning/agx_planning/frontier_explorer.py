@@ -5,6 +5,7 @@ from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PoseStamped, Point
 from nav2_msgs.action import NavigateToPose
 from std_msgs.msg import Empty, ColorRGBA
+from std_srvs.srv import SetBool
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformListener, Buffer
 import numpy as np
@@ -87,9 +88,9 @@ class FrontierExplorer(Node):
         self.current_goal_xy = None
         self._debug_reachable = None
 
-        # --- Toggle subscription ---
-        self.toggle_sub = self.create_subscription(
-            Empty, "/toggle_exploration", self.toggle_callback, 10
+        # --- Toggle service ---
+        self.toggle_srv = self.create_service(
+            SetBool, "/toggle_exploration", self.toggle_service_callback
         )
 
         # --- Costmap subscription ---
@@ -163,7 +164,7 @@ class FrontierExplorer(Node):
 
         self.get_logger().info(
             f"Frontier explorer ready (dormant), listening on {costmap_topic}. "
-            "Publish to /toggle_exploration to start/stop."
+            "Call /toggle_exploration service to start/stop."
         )
 
     # ------------------------------------------------------------------ #
@@ -182,16 +183,21 @@ class FrontierExplorer(Node):
     # ------------------------------------------------------------------ #
     #  Toggle
     # ------------------------------------------------------------------ #
-    def toggle_callback(self, msg):
-        self.active = not self.active
+    def toggle_service_callback(self, request, response):
+        self.active = request.data
         if self.active:
             self.get_logger().info("Exploration ACTIVATED.")
             replan_period = 1.0 / self.replan_frequency
             self.replan_timer = self.create_timer(replan_period, self.replan_callback)
             self.replan_callback()
+            response.success = True
+            response.message = "Exploration activated"
         else:
             self.get_logger().info("Exploration DEACTIVATED – stopping robot.")
             self.stop()
+            response.success = True
+            response.message = "Exploration deactivated"
+        return response
 
     def stop(self):
         if self.replan_timer is not None:
