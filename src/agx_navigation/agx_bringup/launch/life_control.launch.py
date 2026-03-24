@@ -18,19 +18,29 @@ def generate_launch_description():
 
     port_name = LaunchConfiguration("port_name")
 
+    # cmd_vel_repeater = Node(
+    #     package="scout_utils",
+    #     executable="cmd_vel_repeater",
+    #     name="cmd_vel_repeater",
+    #     parameters=[
+    #         {
+    #             "input_topic": Topics.CMD_VEL,
+    #             "output_topic": Topics.CMD_VEL_RAW,
+    #             "publish_rate_hz": 10.0,
+    #             "input_timeout_sec": 3.0,
+    #             "use_stamped_cmd_vel": True,
+    #             "use_sim_time": False,
+    #         }
+    #     ],
+    # )
+
     cmd_vel_repeater = Node(
-        package="scout_utils",
-        executable="cmd_vel_repeater",
-        name="cmd_vel_repeater",
+        package="topic_tools",
+        executable="relay",
+        name="my_relay",
         parameters=[
-            {
-                "input_topic": Topics.CMD_VEL,
-                "output_topic": Topics.CMD_VEL_RAW,
-                "publish_rate_hz": 10.0,
-                "input_timeout_sec": 3.0,
-                "use_stamped_cmd_vel": True,
-                "use_sim_time": False,
-            }
+            {"input_topic": Topics.CMD_VEL},
+            {"output_topic": Topics.CMD_VEL_RAW},
         ],
     )
 
