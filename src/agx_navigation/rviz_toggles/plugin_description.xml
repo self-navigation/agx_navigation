@@ -1,0 +1,8 @@
+<library path="rviz_toggles">
+  <class type="rviz_toggles::MyCommandPanel"
+         base_class_type="rviz_common::Panel">
+    <description>
+      Custom panel for Nav2 and RTABMap commands.
+    </description>
+  </class>
+</library>
