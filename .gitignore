@@ -7,3 +7,5 @@ log
 .catkin*
 .vscode
 *.egg-info
+c_generated_code
+skid_steer_vfield.json

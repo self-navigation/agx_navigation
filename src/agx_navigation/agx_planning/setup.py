@@ -31,6 +31,7 @@ setup(
             for name in [
                 "frontier_explorer",
                 "vector_field",
+                "pmp_planner",
             ]
         ],
     },
