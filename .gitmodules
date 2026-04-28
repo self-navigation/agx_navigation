@@ -17,3 +17,9 @@
 [submodule "src/rslidar_sdk"]
 	path = src/rslidar_sdk
 	url = https://github.com/self-navigation/rslidar_sdk.git
+[submodule "acados/acados"]
+	path = acados/acados
+	url = https://github.com/acados/acados.git
+[submodule "acados/tera_renderer"]
+	path = acados/tera_renderer
+	url = https://github.com/acados/tera_renderer.git

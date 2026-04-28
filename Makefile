@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz
+.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz acados-build acados-python
 
 SIM ?= true
 HEADLESS ?= false
@@ -50,6 +50,11 @@ else
 DEBUG_INFIX :=
 endif
 
+ACADOS_ROOT := $(CURDIR)/acados/acados
+ACADOS_LIB  := $(ACADOS_ROOT)/lib
+ACADOS_BIN  := $(ACADOS_ROOT)/bin
+TERA_RENDERER_ROOT := $(CURDIR)/acados/tera_renderer
+
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
 PYTHON_SETUP_FILES := $(shell find src -name "setup.py")
 PYTHON_PACKAGES := $(dir $(PYTHON_SETUP_FILES))
@@ -73,11 +78,13 @@ update-caches:
 
 .build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
-		colcon build
+		colcon build --base-paths src
 	touch $@
 
 clean:
 	rm -rf install build log .*.stamp .last_build_user
+	rm -rf $(ACADOS_ROOT)/build
+	cd $(TERA_RENDERER_ROOT) && cargo clean
 
 setup: install-ros install-gazebo system-deps deps
 
@@ -119,10 +126,35 @@ system-deps:
 ros-deps:
 	rosdep install --from-paths src --ignore-src -r -y
 
-python-deps: $(PYTHON_SETUP_FILES)
+.ros_python_deps.stamp: $(PYTHON_SETUP_FILES)
 	pip install --break-system-packages $(PYTHON_PACKAGES)
+	touch $@
 
-deps: ros-deps python-deps
+deps: ros-deps .ros_python_deps.stamp .acados_python.stamp
+
+acados-build: .acados_build.stamp $(ACADOS_BIN)/t_renderer
+acados-python: .acados_python.stamp
+
+.acados_build.stamp: $(ACADOS_ROOT)/CMakeLists.txt
+	mkdir -p $(ACADOS_ROOT)/build
+	cd $(ACADOS_ROOT)/build && \
+		cmake .. \
+			-DACADOS_WITH_QPOASES=ON \
+			-DBUILD_SHARED_LIBS=ON \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=$(ACADOS_ROOT)
+	$(MAKE) -C $(ACADOS_ROOT)/build install
+	touch $@
+
+.acados_python.stamp: .acados_build.stamp $(ACADOS_ROOT)/interfaces/acados_template/setup.py
+	pip install --break-system-packages -e $(ACADOS_ROOT)/interfaces/acados_template
+	touch $@
+
+$(ACADOS_BIN)/t_renderer:
+	cd $(TERA_RENDERER_ROOT) && \
+		cargo build --release && \
+		mkdir -p $(ACADOS_BIN) && \
+		cp $(TERA_RENDERER_ROOT)/target/release/t_renderer $(ACADOS_BIN)
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \
@@ -136,7 +168,7 @@ can-bus:
 run: build can-bus
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
-		$(GPU_PREFIX) \
+		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
 		$(PARAMS)

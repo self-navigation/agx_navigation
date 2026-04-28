@@ -78,7 +78,21 @@ def generate_launch_description():
             {
                 "map_frame": "map",
                 "robot_frame": "base_link",
+                "obstacle_slope_factor": 400.0,
                 "allow_unknown": True,
+                "use_sim_time": sim,
+            }
+        ],
+    )
+
+    pmp_planner = Node(
+        package="agx_planning",
+        executable="pmp_planner",
+        output="screen",
+        name="pmp_planner",
+        parameters=[
+            {
+                "enable_stamped_cmd_vel": True,
                 "use_sim_time": sim,
             }
         ],
@@ -89,5 +103,6 @@ def generate_launch_description():
         + [
             costmaps,
             vector_field,
+            pmp_planner,
         ]
     )
