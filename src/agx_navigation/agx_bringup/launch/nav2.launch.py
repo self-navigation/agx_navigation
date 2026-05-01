@@ -15,7 +15,7 @@
 from launch import LaunchDescription
 from launch.actions import (
     GroupAction,
-    DeclareLaunchArgument,
+    SetEnvironmentVariable,
 )
 from launch.substitutions import (
     LaunchConfiguration,
@@ -27,19 +27,13 @@ from launch_ros.actions import (
 )
 from launch_ros.descriptions import ComposableNode, ParameterFile
 
+from agx_bringup import RewrittenYaml, Topics, cfg_file
+
 
 def generate_launch_description():
-    declared_args = [
-        DeclareLaunchArgument(
-            "configured_params",
-            description="Ready-to-use ros2 params file for all nodes.",
-        ),
-    ]
+    declared_args = []
+
     sim = LaunchConfiguration("sim")
-    configured_params = ParameterFile(
-        LaunchConfiguration("configured_params"),
-        allow_substs=True,
-    )
 
     lifecycle_nodes = [
         "controller_server",
@@ -56,6 +50,41 @@ def generate_launch_description():
 
     # Map fully qualified names to relative ones so the node's namespace can be prepended.
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
+
+    # Create our own temporary YAML files that include substitutions
+    param_substitutions = {"autostart": "true"}
+
+    yaml_substitutions = {
+        "LASERSCAN_TOPIC": Topics.SCAN,
+        "POINTCLOUD": Topics.POINTS,
+        "ROBOT_CONTROL_TOPIC": Topics.CMD_VEL,
+        "ODOM_TOPIC": Topics.ODOM_FILTERED,
+        "ASSISTED_TELEOP_TOPIC": Topics.CMD_VEL_ASSISTED,
+        "DEPTH_CAMERA_TOPIC": f"{Topics.CAMERA_DEPTH_POINTS}/downsampled",
+    }
+
+    # RewrittenYaml: Adds namespace to the parameters file as a root key
+    # Note: Make sure that all frames are correctly namespaced in the parameters file
+    # Do not add namespace to topics in the parameters file, as they will be remapped
+    # by the root key only if they are not prefixed with a forward slash.
+    # e.g. 'map' will be remapped to '/<namespace>/map', but '/map' will not be remapped.
+    # IMPORTANT: to make your yaml file dynamic you can refer to humble branch under
+    # nav2_bringup/launch/bringup_launch.py to see how the parameters file is configured
+    # using ReplaceString <robot_namespace>
+    configured_params = ParameterFile(
+        RewrittenYaml(
+            source_file=cfg_file("nav2_params.yaml"),
+            root_key="",
+            param_rewrites=param_substitutions,
+            value_rewrites=yaml_substitutions,
+            convert_types=True,
+        ),
+        allow_substs=True,
+    )
+
+    stdout_linebuf_envvar = SetEnvironmentVariable(
+        "RCUTILS_LOGGING_BUFFERED_STREAM", "1"
+    )
 
     # WARN: starting container node separately (not with ComposableNodeContainer)
     # so that parameter file values propagate correctly.
@@ -171,6 +200,7 @@ def generate_launch_description():
     return LaunchDescription(
         declared_args
         + [
+            stdout_linebuf_envvar,
             nav2_container,
             load_composable_nodes,
         ]
