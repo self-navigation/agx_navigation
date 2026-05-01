@@ -168,6 +168,7 @@ can-bus:
 run: build can-bus
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
+		$(GPU_PREFIX) \
 		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
