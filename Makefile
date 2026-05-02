@@ -82,7 +82,10 @@ update-caches:
 	touch $@
 
 clean:
-	rm -rf install build log .*.stamp .last_build_user
+	rm -rf \
+		install build log \
+		.*.stamp .last_build_user \
+		skid_steer_vfield.json c_generated_code
 	rm -rf $(ACADOS_ROOT)/build
 	cd $(TERA_RENDERER_ROOT) && cargo clean
 
