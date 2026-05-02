@@ -17,10 +17,14 @@ def generate_launch_description():
             {
                 "map_frame": "map",
                 "robot_frame": "base_link",
-                "obstacle_slope_factor": 400.0,
                 "allow_unknown": True,
+                "speed_profile": "exponential",
+                "smooth_T_before_grad": False,
                 "use_sim_time": sim,
             }
+        ],
+        remappings=[
+            ("/vector_field/optimal_path", "/plan"),
         ],
     )
 
@@ -32,8 +36,12 @@ def generate_launch_description():
         parameters=[
             {
                 "enable_stamped_cmd_vel": True,
+                "enable_confidence_weighting": False,
                 "use_sim_time": sim,
             }
+        ],
+        remappings=[
+            ("/pmp_planner/trajectory", "/optimal_trajectory"),
         ],
     )
 
