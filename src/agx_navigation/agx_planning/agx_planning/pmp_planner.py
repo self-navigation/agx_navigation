@@ -1,5 +1,33 @@
+"""Vector-field guided NMPC for a skid-steer unicycle (v4).
+
+Key design points addressed in this revision:
+
+  1. Stage cost has a direct positional gradient via a cross-track residual
+     against a per-cycle reference path. Without this, in a uniform field
+     the optimizer is free to oscillate heading within an equally-cost cone
+     and the projected trajectory wanders even though the robot moves OK.
+
+  2. The reference path is regenerated every control cycle by integrating a
+     field-following inner-loop from the current pose. This puts the SQP
+     warm-start far from the heading-180 saddle of the alignment cost, where
+     both cross- and inner-product residuals lose their gradient and HPIPM
+     fails with ACADOS_MINSTEP.
+
+  3. Speed regulation is alignment-adapted: r_speed = v - v_ref * (F . h).
+     Naturally requests v = v_ref when forward-aligned, v = 0 when heading
+     is perpendicular to F (turn-in-place), and v = -v_ref when heading is
+     flipped (reverse). All three modes the user wanted are expressed in one
+     residual without explicit logic.
+
+  4. Terminal cost-to-go T(p_N) is linearised around the reference terminal
+     node and clipped so its squared form stays comparable in magnitude to
+     the summed stage cost regardless of map size.
+
+See planner_refactor_notes.md for the full mapping from v3.
+"""
+
 from dataclasses import dataclass
-from math import hypot
+from math import hypot, tanh, atan2, pi, cos, sin
 from typing import Optional
 
 import numpy as np
@@ -9,126 +37,102 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float32MultiArray
-from scipy.interpolate import RegularGridInterpolator
 from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, TransformException
 
 import casadi as ca
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class PlannerConfig:
-    # horizon
-    N: int = 40
-    T_horizon: float = 4.0   # [s]
-    control_rate: float = 20.0  # [Hz]
+    # Horizon: ~2 s of preview at 20 Hz replanning. dt = 0.08 s is fine
+    # for ERK4 on this 5-state explicit ODE.
+    N: int = 25
+    T_horizon: float = 2.0
+    control_rate: float = 20.0
 
-    # kinematic limits
-    a_max: float = 1.0       # [m/s^2]
-    alpha_max: float = 1.0   # [rad/s^2]
-    v_max: float = 0.5       # [m/s]
-    omega_max: float = 0.8   # [rad/s]
+    # Kinematic limits. Symmetric on v: backward motion is allowed but
+    # discouraged by the alignment-adapted speed reference.
+    a_max: float = 1.0
+    alpha_max: float = 2.0
+    v_max: float = 0.5
+    omega_max: float = 1.5
 
-    # running cost weights
-    w_field_mag: float = 15.0   # T_lin gradient: primary obstacle-avoidance signal
-    w_heading: float = 3.0      # heading alignment
-    w_progress: float = 3.0     # forward progress along field
-    w_accel: float = 0.5        # longitudinal acceleration effort
-    w_ang_accel: float = 1.5    # angular acceleration effort
-    w_omega: float = 4.0        # yaw rate damping (raised from 2.0 to damp wall-following wave)
+    # Speed reference scale. v_ref(d_goal) = v_max * tanh(d_goal / L_brake)
+    # decelerates smoothly inside one L_brake of the goal.
+    L_brake: float = 0.5
 
-    # cross-track error penalty
-    # T_lin has zero first-order lateral gradient (dT_lin/de_cross = 0 analytically),
-    # so the robot can drift sideways at zero marginal cost. The only lateral correction
-    # from the heading term is delayed by omega/alpha limits, which produces the wave.
-    # e_cross = -sin(theta_V)*(px-px_warm) + cos(theta_V)*(py-py_warm) is the signed
-    # perpendicular displacement from the warm-start path. The quadratic penalty gives
-    # a direct restoring force without heading-chain delay.
-    # Hessian contribution is PSD; LM=10 remains sufficient.
-    w_lateral: float = 10.0     # cross-track weight (running)
-    w_T_lateral: float = 5.0    # cross-track weight (terminal)
+    # Reference-path generator (inner-loop field-follower) gains.
+    ref_K_omega: float = 2.0  # P-gain on heading error
+    ref_brake_cos: float = 0.0  # min cos(heading_err) before v target -> 0
 
-    # terminal cost weights
-    # w_T_pos MUST stay 0. T_lin linearises V_norm around the warm-start, so a terminal
-    # node that shortcuts through an obstacle underestimates its true cost by 10-80x.
-    # A Euclidean pull comparable in magnitude to that underestimation rewards placing the
-    # terminal node closer to the goal through the obstacle. Empirically: shortcut total
-    # 388 vs correct-path total 516 with w_T_pos=2, i.e. the optimizer takes the shortcut.
-    # Restore to 0.1 only if the robot fails to converge in the last 0.2 m.
-    w_T_pos: float = 0.0
-    w_T_field: float = 40.0
-    w_T_heading: float = 10.0
-    w_T_vel: float = 5.0
-    w_T_omega: float = 5.0
+    # Cap T_ref before squaring at the terminal node. Without this cap, on
+    # a large map T_ref can be 20+ m and (T_lin)^2 dominates the cost by
+    # orders of magnitude, suppressing the stage cost shape entirely.
+    # 5 m corresponds to roughly the maximum useful preview distance at
+    # v_max = 0.5 m/s over a 2 s horizon plus margin.
+    T_ref_cap: float = 5.0
 
-    # warm-start safety thresholds
-    # corner_v_ratio: switch _shift_warm_start to field-following when any predicted
-    # node's V_norm exceeds this multiple of the robot's current V_norm. Compared
-    # against the robot (constant reference) rather than the previous node (sliding),
-    # so gradual drift is caught: 15x 1.3x steps total 50x but the old consecutive
-    # check never triggered. The 5th node at 3.7x robot V_norm does.
-    corner_v_ratio: float = 3.0
-    # drift_v_ratio: full re-seed when mean warm-start V_norm exceeds this multiple
-    # of the robot's V_norm. Backup to corner_v_ratio for slower-accumulating drift.
-    drift_v_ratio: float = 3.0
+    # ---- Stage cost weights ----
+    # Heading and lateral are the two dominant shaping terms. Their ratio
+    # sets the heading-priority character; their absolute magnitudes set
+    # how aggressive the planner is.
+    w_heading: float = 1.5  # r1 = F x h         (cross product, signed lateral)
+    w_align: float = 4.0  # r2 = 1 - F . h     (forward gating, breaks -F basin)
+    w_speed: float = 1.0  # r_speed = v - v_ref * (F . h)
+    w_xtrack: float = 4.0  # r_lat = perpendicular distance to reference line
+    w_omega: float = 0.2  # mild yaw-rate damping
+    w_a: float = 0.05  # control effort
+    w_alpha: float = 0.1  # control effort
 
-    # solver
-    # EXACT hessian required: the w_progress * v * cos(theta - theta_V) term makes
-    # the Hessian indefinite w.r.t. theta. GAUSS_NEWTON hands HPIPM an indefinite QP.
-    # Worst-case negative eigenvalue: -(w_heading + w_progress * v_max) = -(3 + 1.5) = -4.5.
-    # LM must exceed this; 10.0 gives comfortable margin.
-    hessian_approx: str = "EXACT"
-    levenberg_marquardt: float = 10.0
-    integrator_type: str = "ERK"
-    erk_stages: int = 4
-    qp_solver: str = "PARTIAL_CONDENSING_HPIPM"
+    # ---- Terminal cost weights ----
+    w_T_field: float = 1.0  # squared T_lin (capped)
+    w_T_v: float = 0.5  # v_N -> 0
+    w_T_omega: float = 0.5  # omega_N -> 0
 
-    goal_tolerance: float = 0.05  # [m]
+    goal_tolerance: float = 0.05
 
     @property
     def dt(self) -> float:
         return self.T_horizon / self.N
 
 
+# ---------------------------------------------------------------------------
+# Solver build (called once at startup, cached on disk by acados)
+# ---------------------------------------------------------------------------
+
+
 def build_ocp_solver(cfg: PlannerConfig) -> AcadosOcpSolver:
-    """Build and compile the acados OCP. Expensive (~seconds); called once at startup.
-    Generated C code is cached on disk for subsequent runs.
-    """
-    p_x   = ca.SX.sym("p_x")
-    p_y   = ca.SX.sym("p_y")
+    # State and control symbols for the dynamic unicycle model.
+    p_x = ca.SX.sym("p_x")
+    p_y = ca.SX.sym("p_y")
     theta = ca.SX.sym("theta")
-    v     = ca.SX.sym("v")
+    v = ca.SX.sym("v")
     omega = ca.SX.sym("omega")
     x = ca.vertcat(p_x, p_y, theta, v, omega)
 
-    a     = ca.SX.sym("a")      # longitudinal acceleration [m/s^2]
-    alpha = ca.SX.sym("alpha")  # angular acceleration      [rad/s^2]
+    a = ca.SX.sym("a")
+    alpha = ca.SX.sym("alpha")
     u = ca.vertcat(a, alpha)
 
-    # Runtime parameters, set per shooting node each MPC cycle:
-    #   [0] V_norm   - FMM travel-time at the warm-start position
-    #   [1] theta_V  - field direction atan2(gy, gx)
-    #   [2] g_x      - goal x
-    #   [3] g_y      - goal y
-    #   [4] g_th     - goal heading
-    #   [5] px_warm  - warm-start x at this node (linearisation centre)
-    #   [6] py_warm  - warm-start y at this node
-    # px_warm/py_warm give L a proper state gradient via T_lin:
-    #   dL/dpx = -w_field_mag * cos(theta_V)
-    #   dL/dpy = -w_field_mag * sin(theta_V)
-    # Without this V_norm is a constant and the solver has no positional gradient,
-    # causing it to drive straight through obstacles to minimise terminal distance.
-    V_norm  = ca.SX.sym("V_norm")
-    theta_V = ca.SX.sym("theta_V")
-    g_x     = ca.SX.sym("g_x")
-    g_y     = ca.SX.sym("g_y")
-    g_th    = ca.SX.sym("g_th")
-    px_warm = ca.SX.sym("px_warm")
-    py_warm = ca.SX.sym("py_warm")
-    p = ca.vertcat(V_norm, theta_V, g_x, g_y, g_th, px_warm, py_warm)
+    # Per-stage parameters. The reference position (px_ref, py_ref) and
+    # field direction (Fx, Fy) come from the field-following reference
+    # generator each cycle. T_ref is the (capped) FMM travel time at
+    # (px_ref, py_ref). v_ref is the goal-distance-shaped speed magnitude.
+    Fx = ca.SX.sym("Fx")
+    Fy = ca.SX.sym("Fy")
+    v_ref = ca.SX.sym("v_ref")
+    T_ref = ca.SX.sym("T_ref")
+    px_ref = ca.SX.sym("px_ref")
+    py_ref = ca.SX.sym("py_ref")
+    p = ca.vertcat(Fx, Fy, v_ref, T_ref, px_ref, py_ref)
+    n_params = 6
 
-    # Unicycle with acceleration-level control (depth-2 / Newtonian structure).
     x_dot = ca.vertcat(
         v * ca.cos(theta),
         v * ca.sin(theta),
@@ -137,100 +141,118 @@ def build_ocp_solver(cfg: PlannerConfig) -> AcadosOcpSolver:
         alpha,
     )
 
-    gx_V   = ca.cos(theta_V)
-    gy_V   = ca.sin(theta_V)
-    dtheta = theta - theta_V
+    # ---------------- Stage residual y_stage (target = 0) ----------------
+    cos_t = ca.cos(theta)
+    sin_t = ca.sin(theta)
+    F_dot_h = cos_t * Fx + sin_t * Fy  # F . heading_hat in [-1, 1]
+    F_x_h = sin_t * Fx - cos_t * Fy  # F x heading_hat (2D scalar)
+    dpx = p_x - px_ref
+    dpy = p_y - py_ref
 
-    T_lin = V_norm - gx_V * (p_x - px_warm) - gy_V * (p_y - py_warm)
-
-    # Cross-track error: signed lateral displacement from the warm-start path
-    # (positive = left of field direction). See PlannerConfig.w_lateral.
-    e_cross = -gy_V * (p_x - px_warm) + gx_V * (p_y - py_warm)
-
-    L = (
-        cfg.w_field_mag  * T_lin
-        + cfg.w_lateral  * e_cross**2
-        + cfg.w_heading  * (1.0 - ca.cos(dtheta))
-        - cfg.w_progress * v * ca.cos(dtheta)
-        + 0.5 * cfg.w_accel     * a**2
-        + 0.5 * cfg.w_ang_accel * alpha**2
-        + 0.5 * cfg.w_omega     * omega**2
+    y_stage = ca.vertcat(
+        F_x_h,  # r1: drives heading toward F
+        1.0 - F_dot_h,  # r2: breaks the heading-180 basin
+        v - v_ref * F_dot_h,  # r_speed: alignment-adapted
+        -Fy * dpx + Fx * dpy,  # r_lat: signed perpendicular to reference line
+        omega,  # yaw-rate damping
+        a,  # control effort
+        alpha,  # control effort
     )
 
-    # w_T_pos=0: see PlannerConfig for why a Euclidean pull causes corner-cutting.
-    Phi = (
-        cfg.w_T_field   * T_lin
-        + cfg.w_T_pos     * ((p_x - g_x)**2 + (p_y - g_y)**2)
-        + cfg.w_T_lateral * e_cross**2
-        + cfg.w_T_heading * (1.0 - ca.cos(theta - g_th))
-        + cfg.w_T_vel     * v**2
-        + cfg.w_T_omega   * omega**2
-    )
+    # ---------------- Terminal residual y_terminal (target = 0) ----------------
+    # T_lin is the first-order Taylor expansion of T(p) at the reference
+    # terminal node, using F = -normalize(grad T):
+    #   T(p_N) ~= T_ref + grad(T)|_ref . (p_N - p_ref) ~= T_ref - F . (p_N - p_ref)
+    # Squaring (in NL_LS) gives a Lyapunov-like terminal weight that vanishes
+    # at the goal and is obstacle-aware (T encodes the FMM-routed cost-to-go).
+    # T_ref is clipped at runtime to keep the squared cost well-scaled.
+    T_lin = T_ref - Fx * dpx - Fy * dpy
+    y_terminal = ca.vertcat(T_lin, v, omega)
 
     model = AcadosModel()
     model.name = "skid_steer_vfield"
     model.x = x
     model.u = u
     model.p = p
-    model.f_expl_ode  = x_dot
     model.f_expl_expr = x_dot
-    model.cost_expr_ext_cost   = L
-    model.cost_expr_ext_cost_e = Phi
+    model.cost_y_expr = y_stage
+    model.cost_y_expr_e = y_terminal
 
     ocp = AcadosOcp()
     ocp.model = model
     ocp.solver_options.N_horizon = cfg.N
-    ocp.solver_options.tf        = cfg.T_horizon
-    ocp.parameter_values = np.zeros(7)
-    ocp.cost.cost_type   = "EXTERNAL"
-    ocp.cost.cost_type_e = "EXTERNAL"
+    ocp.solver_options.tf = cfg.T_horizon
+    ocp.parameter_values = np.zeros(n_params)
 
-    ocp.constraints.lbu   = np.array([-cfg.a_max,    -cfg.alpha_max])
-    ocp.constraints.ubu   = np.array([+cfg.a_max,    +cfg.alpha_max])
+    ny = y_stage.shape[0]  # 7
+    ny_e = y_terminal.shape[0]  # 3
+    ocp.cost.cost_type = "NONLINEAR_LS"
+    ocp.cost.cost_type_e = "NONLINEAR_LS"
+    ocp.cost.W = np.diag(
+        [
+            cfg.w_heading,
+            cfg.w_align,
+            cfg.w_speed,
+            cfg.w_xtrack,
+            cfg.w_omega,
+            cfg.w_a,
+            cfg.w_alpha,
+        ]
+    )
+    ocp.cost.W_e = np.diag(
+        [
+            cfg.w_T_field,
+            cfg.w_T_v,
+            cfg.w_T_omega,
+        ]
+    )
+    ocp.cost.yref = np.zeros(ny)
+    ocp.cost.yref_e = np.zeros(ny_e)
+
+    # Bounds. Symmetric v allows reverse and turn-in-place; no |omega|<=k|v|
+    # coupling -- skid-steer can rotate freely.
+    ocp.constraints.lbu = np.array([-cfg.a_max, -cfg.alpha_max])
+    ocp.constraints.ubu = np.array([+cfg.a_max, +cfg.alpha_max])
     ocp.constraints.idxbu = np.array([0, 1])
-
-    # Lower bound on v is 0: no reversing. The optimizer otherwise finds
-    # backing-up-and-turning as locally optimal when blocked.
-    ocp.constraints.lbx   = np.array([0.0, -cfg.omega_max])
-    ocp.constraints.ubx   = np.array([+cfg.v_max, +cfg.omega_max])
+    ocp.constraints.lbx = np.array([-cfg.v_max, -cfg.omega_max])
+    ocp.constraints.ubx = np.array([+cfg.v_max, +cfg.omega_max])
     ocp.constraints.idxbx = np.array([3, 4])
-    ocp.constraints.lbx_e   = np.array([0.0, -cfg.omega_max])
-    ocp.constraints.ubx_e   = np.array([+cfg.v_max, +cfg.omega_max])
+    ocp.constraints.lbx_e = np.array([-cfg.v_max, -cfg.omega_max])
+    ocp.constraints.ubx_e = np.array([+cfg.v_max, +cfg.omega_max])
     ocp.constraints.idxbx_e = np.array([3, 4])
     ocp.constraints.x0 = np.zeros(5)
 
-    ocp.solver_options.qp_solver              = cfg.qp_solver
-    ocp.solver_options.integrator_type        = cfg.integrator_type
-    ocp.solver_options.sim_method_num_stages  = cfg.erk_stages
-    ocp.solver_options.sim_method_num_steps   = 1
-    ocp.solver_options.nlp_solver_type        = "SQP_RTI"
-    # 3 iterations: with bilinear v*cos(theta-theta_V) in the cost, 2 iterations
-    # leave a residual that oscillates between cycles and shows as path wobble.
-    ocp.solver_options.nlp_solver_max_iter    = 3
-    ocp.solver_options.print_level            = 0
-    ocp.solver_options.hessian_approx         = cfg.hessian_approx
-    ocp.solver_options.levenberg_marquardt    = cfg.levenberg_marquardt
+    ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
+    ocp.solver_options.qp_solver_cond_N = max(1, cfg.N // 5)
+    ocp.solver_options.integrator_type = "ERK"
+    ocp.solver_options.sim_method_num_stages = 4
+    ocp.solver_options.sim_method_num_steps = 1
+    ocp.solver_options.nlp_solver_type = "SQP_RTI"
+    ocp.solver_options.nlp_solver_max_iter = 1
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+    ocp.solver_options.levenberg_marquardt = 1e-4
+    ocp.solver_options.print_level = 0
 
     return AcadosOcpSolver(ocp, json_file="skid_steer_vfield.json")
 
 
-class VectorFieldInterpolator:
-    """Queryable representation of the FMM vector field.
+# ---------------------------------------------------------------------------
+# Vector field grid sampler (unchanged from v3)
+# ---------------------------------------------------------------------------
 
-    Builds scipy interpolators over travel_time and the gradient direction.
-    Three correctness requirements:
-      1. Obstacle/unreachable cells carry max cost, not zero.
-      2. Coordinate axes are cell-centred (origin is cell corner; data sits at centre).
-      3. Heading angles are stored as (sin, cos) to avoid the atan2 wrap-around
-         artefact at +/-pi that would yield the wrong interpolated direction.
-    """
+
+class VectorFieldGrid:
+    """Bilinear sampler for the unit field (Fx, Fy) and FMM travel time T."""
 
     def __init__(self):
-        self._interp_cost: Optional[RegularGridInterpolator] = None
-        self._interp_sin:  Optional[RegularGridInterpolator] = None
-        self._interp_cos:  Optional[RegularGridInterpolator] = None
+        self._gx: Optional[np.ndarray] = None
+        self._gy: Optional[np.ndarray] = None
+        self._tt: Optional[np.ndarray] = None
+        self._origin_x = 0.0
+        self._origin_y = 0.0
+        self._res = 1.0
+        self._tt_max = 1.0
         self._ready = False
-        self._obstacle_cost: float = 0.0
 
     @property
     def ready(self) -> bool:
@@ -245,82 +267,195 @@ class VectorFieldInterpolator:
         origin_y: float,
         resolution: float,
     ):
-        """Rebuild interpolators from new field data.
-
-        origin_x/y is the corner of cell (0,0); each cell centre is offset by
-        +0.5*resolution, then spaced by resolution along each axis.
-        """
-        rows, cols = travel_time.shape
-        xs = origin_x + np.arange(cols) * resolution
-        ys = origin_y + np.arange(rows) * resolution
-
-        cost = travel_time.copy().astype(np.float64)
-        obstacle_cost = float(cost.max()) if cost.size > 0 else 1.0
-        self._obstacle_cost = obstacle_cost
-
-        sin_angle = np.sin(np.arctan2(grad_y, grad_x))
-        cos_angle = np.cos(np.arctan2(grad_y, grad_x))
-
-        self._interp_cost = RegularGridInterpolator(
-            (ys, xs), cost,
-            method="linear", bounds_error=False, fill_value=obstacle_cost,
-        )
-        self._interp_sin = RegularGridInterpolator(
-            (ys, xs), sin_angle,
-            method="linear", bounds_error=False, fill_value=0.0,
-        )
-        self._interp_cos = RegularGridInterpolator(
-            (ys, xs), cos_angle,
-            method="linear", bounds_error=False, fill_value=1.0,
-        )
+        self._gx = grad_x.astype(np.float64)
+        self._gy = grad_y.astype(np.float64)
+        self._tt = travel_time.astype(np.float64)
+        self._origin_x = origin_x
+        self._origin_y = origin_y
+        self._res = resolution
+        if self._tt.size:
+            finite = self._tt[np.isfinite(self._tt)]
+            self._tt_max = float(finite.max()) if finite.size else 1.0
+        else:
+            self._tt_max = 1.0
         self._ready = True
 
-    def query(self, px: float, py: float) -> tuple[float, float]:
-        """Return (V_norm, theta_V) at world position (px, py)."""
+    def query(self, px: float, py: float) -> tuple[float, float, float]:
+        """Bilinear (Fx, Fy, T) at world (px, py).
+
+        F is re-normalised after interpolation: bilinear blending of unit
+        vectors does not preserve unit norm, and the (1 - F . h) residual
+        would otherwise have a non-zero floor at perfect heading alignment.
+        """
         if not self._ready:
-            return 0.0, 0.0
-        pt = np.array([[py, px]])
-        v_norm  = float(self._interp_cost(pt))
-        theta_v = float(np.arctan2(self._interp_sin(pt), self._interp_cos(pt)))
-        return v_norm, theta_v
+            return 0.0, 0.0, 0.0
+
+        # Cell centres are at (col + 0.5, row + 0.5) * res + origin.
+        u = (px - self._origin_x) / self._res - 0.5
+        w = (py - self._origin_y) / self._res - 0.5
+
+        rows, cols = self._gx.shape
+        if not (0.0 <= u <= cols - 1.0 and 0.0 <= w <= rows - 1.0):
+            return 0.0, 0.0, self._tt_max
+
+        x0 = min(int(u), cols - 2)
+        y0 = min(int(w), rows - 2)
+        fx = u - x0
+        fy = w - y0
+
+        def _bilerp(arr: np.ndarray) -> float:
+            return float(
+                arr[y0, x0] * (1.0 - fx) * (1.0 - fy)
+                + arr[y0, x0 + 1] * fx * (1.0 - fy)
+                + arr[y0 + 1, x0] * (1.0 - fx) * fy
+                + arr[y0 + 1, x0 + 1] * fx * fy
+            )
+
+        Fx = _bilerp(self._gx)
+        Fy = _bilerp(self._gy)
+        n = (Fx * Fx + Fy * Fy) ** 0.5
+        if n > 1e-6:
+            Fx /= n
+            Fy /= n
+        else:
+            Fx, Fy = 0.0, 0.0
+
+        return Fx, Fy, _bilerp(self._tt)
+
+
+# ---------------------------------------------------------------------------
+# Reference trajectory generator (field-following inner loop)
+# ---------------------------------------------------------------------------
+
+
+def _wrap_to_pi(angle: float) -> float:
+    return (angle + pi) % (2.0 * pi) - pi
+
+
+class ReferenceGenerator:
+    """Forward-integrate a feasible reference trajectory along the field.
+
+    Heading tracks atan2(Fy, Fx) via a saturated proportional controller;
+    forward speed is scaled by max(cos(heading_err), 0) so the robot
+    decelerates and turns in place when sharply misaligned. The output is
+    used both as the SQP warm-start and as the per-stage parameters
+    (px_ref, py_ref, Fx, Fy, T_ref, v_ref) of the cost.
+
+    The reference is regenerated every cycle from the current measured
+    state, so the SQP never inherits oscillation from a previous solution
+    and is always seeded close to the alignment manifold (far from the
+    heading-180 saddle of the cost).
+    """
+
+    def __init__(self, cfg: PlannerConfig, field: VectorFieldGrid):
+        self.cfg = cfg
+        self.field = field
+
+    def generate(
+        self,
+        x0: np.ndarray,
+        goal: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cfg = self.cfg
+        N = cfg.N
+        dt = cfg.dt
+        v_max = cfg.v_max
+        omega_max = cfg.omega_max
+        a_max = cfg.a_max
+        alpha_max = cfg.alpha_max
+        L_brake = cfg.L_brake
+        K_omega = cfg.ref_K_omega
+
+        seed_x = np.zeros((N + 1, 5))
+        seed_u = np.zeros((N, 2))
+        seed_x[0] = x0.copy()
+
+        gx, gy = float(goal[0]), float(goal[1])
+
+        for k in range(N):
+            px, py, th, v, om = seed_x[k]
+            Fx, Fy, _ = self.field.query(px, py)
+            f_norm = (Fx * Fx + Fy * Fy) ** 0.5
+
+            if f_norm < 1e-3:
+                # Field undefined here (out of map / inside obstacle / at goal).
+                # Brake along all axes and hold heading; the QP can do better.
+                a_cmd = max(min(-v / dt, a_max), -a_max)
+                alpha_cmd = max(min(-om / dt, alpha_max), -alpha_max)
+            else:
+                psi_d = atan2(Fy, Fx)
+                e = _wrap_to_pi(psi_d - th)
+
+                # Saturated P on heading; deadbeat alpha to reach it.
+                omega_des = max(min(K_omega * e, omega_max), -omega_max)
+                alpha_cmd = max(min((omega_des - om) / dt, alpha_max), -alpha_max)
+
+                # Forward speed is goal-distance-shaped and gated by alignment.
+                # When |e| > 90 deg the cosine is negative -> v_des = 0 and the
+                # robot turns in place rather than driving sideways through F.
+                d_goal = hypot(px - gx, py - gy)
+                v_target = v_max * tanh(d_goal / L_brake)
+                v_des = v_target * max(cos(e), cfg.ref_brake_cos)
+                a_cmd = max(min((v_des - v) / dt, a_max), -a_max)
+
+            seed_u[k] = (a_cmd, alpha_cmd)
+            seed_x[k + 1] = _rk4_step(seed_x[k], seed_u[k], dt, v_max, omega_max)
+
+        return seed_x, seed_u
+
+
+def _rk4_step(
+    state: np.ndarray,
+    u: np.ndarray,
+    dt: float,
+    v_max: float,
+    omega_max: float,
+) -> np.ndarray:
+    """Single ERK4 step matching the acados internal integrator."""
+    a, al = float(u[0]), float(u[1])
+
+    def f(s: np.ndarray) -> np.ndarray:
+        return np.array([s[3] * np.cos(s[2]), s[3] * np.sin(s[2]), s[4], a, al])
+
+    k1 = f(state)
+    k2 = f(state + 0.5 * dt * k1)
+    k3 = f(state + 0.5 * dt * k2)
+    k4 = f(state + dt * k3)
+    ns = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    ns[3] = float(np.clip(ns[3], -v_max, v_max))
+    ns[4] = float(np.clip(ns[4], -omega_max, omega_max))
+    return ns
+
+
+# ---------------------------------------------------------------------------
+# ROS2 node
+# ---------------------------------------------------------------------------
 
 
 class PlannerNode(Node):
 
     def __init__(self):
         super().__init__("pmp_planner")
-
         self.cfg = PlannerConfig()
 
-        self.declare_parameter("map_frame",   "map")
+        self.declare_parameter("map_frame", "map")
         self.declare_parameter("robot_frame", "base_link")
-        self._map_frame   = self.get_parameter("map_frame").value
+        self.declare_parameter("enable_stamped_cmd_vel", False)
+        self._map_frame = self.get_parameter("map_frame").value
         self._robot_frame = self.get_parameter("robot_frame").value
+        self._stamped_cmd = self.get_parameter("enable_stamped_cmd_vel").value
 
-        # Pose from TF map->base_link, not from /odom. The odom frame drifts relative
-        # to the map frame as SLAM makes loop-closure corrections; using /odom directly
-        # puts the planner in a different frame from the vector field and costmap.
-        self._tf_buffer   = Buffer()
+        self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        self._xi   = np.zeros(5)
+        self._xi: np.ndarray = np.zeros(5)
         self._goal: Optional[np.ndarray] = None
-        self._field = VectorFieldInterpolator()
-        self._warm_started      = False
+        self._field = VectorFieldGrid()
         self._waiting_for_field = False
-
-        # Low-pass filter for velocity output.
-        # v: heavier smoothing to absorb fore-aft oscillation.
-        # omega: light smoothing only -- heavy filtering delays turns, causing
-        # the MPC to compensate with larger omega commands next cycle.
-        self._smooth_v:     float = 0.0
-        self._smooth_omega: float = 0.0
-        _dt = self.cfg.dt
-        self._smooth_alpha_v     = _dt / (0.15 + _dt)   # tau=0.15s
-        self._smooth_alpha_omega = _dt / (0.04 + _dt)   # tau=0.04s
 
         self.get_logger().info("Compiling acados solver...")
         self._solver = build_ocp_solver(self.cfg)
+        self._reference = ReferenceGenerator(self.cfg, self._field)
         self.get_logger().info("Solver ready.")
 
         qos = QoSProfile(
@@ -328,42 +463,40 @@ class PlannerNode(Node):
             durability=DurabilityPolicy.VOLATILE,
             depth=1,
         )
-        self.create_subscription(Odometry,          "/odom",                     self._on_odom,  qos)
-        self.create_subscription(PoseStamped,        "/goal_pose",               self._on_goal,  qos)
-        self.create_subscription(Float32MultiArray,  "/vector_field/planner_data", self._on_field, qos)
-
-        self.declare_parameter("enable_stamped_cmd_vel", False)
-        self._stamped_cmd = self.get_parameter("enable_stamped_cmd_vel").get_parameter_value().bool_value
+        self.create_subscription(Odometry, "/odom", self._on_odom, qos)
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
+        self.create_subscription(
+            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
+        )
 
         if self._stamped_cmd:
             self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
         else:
             self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-
         self._traj_pub = self.create_publisher(Path, "/pmp_planner/trajectory", 10)
 
-        self._timer = self.create_timer(1.0 / self.cfg.control_rate, self._control_loop)
-
+        self.create_timer(1.0 / self.cfg.control_rate, self._control_loop)
         self.get_logger().info(
             f"Running at {self.cfg.control_rate} Hz, "
             f"horizon {self.cfg.T_horizon}s / {self.cfg.N} nodes."
         )
 
-    def _on_odom(self, msg: Odometry):
-        # Velocity from odometry body-frame twist (accurate, frame-independent).
-        # Position from TF map->base_link (SLAM-corrected).
-        v     = msg.twist.twist.linear.x
-        omega = msg.twist.twist.angular.z
+    # ---------------- Subscriptions ----------------
 
+    def _on_odom(self, msg: Odometry):
+        v_body = msg.twist.twist.linear.x
+        omega_b = msg.twist.twist.angular.z
         try:
             t = self._tf_buffer.lookup_transform(
-                self._map_frame, self._robot_frame, rclpy.time.Time(),
+                self._map_frame,
+                self._robot_frame,
+                rclpy.time.Time(),
             )
-            tx  = t.transform.translation.x
-            ty  = t.transform.translation.y
-            q   = t.transform.rotation
+            tx = t.transform.translation.x
+            ty = t.transform.translation.y
+            q = t.transform.rotation
             _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-            self._xi = np.array([tx, ty, yaw, v, omega])
+            self._xi = np.array([tx, ty, yaw, v_body, omega_b])
         except TransformException as e:
             self.get_logger().warn(
                 f"TF {self._map_frame}->{self._robot_frame} unavailable: {e}",
@@ -372,415 +505,170 @@ class PlannerNode(Node):
 
     def _on_goal(self, msg: PoseStamped):
         pos = msg.pose.position
-        q   = msg.pose.orientation
+        q = msg.pose.orientation
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
         self._goal = np.array([pos.x, pos.y, yaw])
-        # Pause planning until the new field arrives; seeding on the old field
-        # would produce a path toward the old goal.
-        self._warm_started      = False
+        # Hold output until the new field arrives. Solving on the old field
+        # with a new goal would steer toward the previous goal location.
         self._waiting_for_field = True
         self.get_logger().info(f"Goal: ({pos.x:.2f}, {pos.y:.2f})")
 
     def _on_field(self, msg: Float32MultiArray):
-        """Parse packed field from FMMVectorFieldNode.
-
-        Layout: [height, width, origin_x, origin_y, resolution,
-                 travel_time (H*W), grad_x (H*W), grad_y (H*W)]
-        """
-        data = np.array(msg.data, dtype=np.float32)
-        if len(data) < 5:
+        # Layout: [h, w, origin_x, origin_y, resolution, T(H*W), gx(H*W), gy(H*W)]
+        data = np.asarray(msg.data, dtype=np.float32)
+        if data.size < 5:
             return
-
-        h          = int(data[0])
-        w          = int(data[1])
-        origin_x   = float(data[2])
-        origin_y   = float(data[3])
+        h = int(data[0])
+        w = int(data[1])
+        origin_x = float(data[2])
+        origin_y = float(data[3])
         resolution = float(data[4])
         n = h * w
-
-        if len(data) != 5 + 3 * n:
+        if data.size != 5 + 3 * n:
             self.get_logger().warn(
-                f"Field size mismatch: got {len(data)}, expected {5 + 3*n}",
+                f"Field size mismatch: got {data.size}, expected {5 + 3 * n}",
                 throttle_duration_sec=5.0,
             )
             return
-
-        travel_time = data[5       : 5 +     n].reshape(h, w)
-        grad_x      = data[5 +     n : 5 + 2*n].reshape(h, w)
-        grad_y      = data[5 + 2 * n : 5 + 3*n].reshape(h, w)
-
-        self._field.update(travel_time, grad_x, grad_y, origin_x, origin_y, resolution)
+        tt = data[5 : 5 + n].reshape(h, w)
+        gx = data[5 + n : 5 + 2 * n].reshape(h, w)
+        gy = data[5 + 2 * n : 5 + 3 * n].reshape(h, w)
+        self._field.update(tt, gx, gy, origin_x, origin_y, resolution)
         self._waiting_for_field = False
+
+    # ---------------- Control loop ----------------
 
     def _control_loop(self):
         if self._goal is None:
             return
-
         if not self._field.ready:
             self.get_logger().warn(
-                "Vector field not yet received -- waiting.", throttle_duration_sec=2.0,
+                "Vector field not yet received -- waiting.",
+                throttle_duration_sec=2.0,
             )
             return
-
         if self._waiting_for_field:
             self._publish_twist(0.0, 0.0)
-            self.get_logger().info(
-                "Waiting for updated vector field...", throttle_duration_sec=1.0,
-            )
             return
 
-        dx = self._xi[0] - self._goal[0]
-        dy = self._xi[1] - self._goal[1]
-        if hypot(dx, dy) < self.cfg.goal_tolerance:
+        d_goal = hypot(self._xi[0] - self._goal[0], self._xi[1] - self._goal[1])
+        if d_goal < self.cfg.goal_tolerance:
             self._publish_twist(0.0, 0.0)
             self._publish_empty_trajectory()
             self.get_logger().info(
-                f"Goal reached (dist={hypot(dx, dy):.3f} m).", throttle_duration_sec=1.0,
+                f"Goal reached (dist={d_goal:.3f} m).",
+                throttle_duration_sec=1.0,
             )
             return
 
-        u_opt = self._solve_mpc()
-
-        if u_opt is not None:
-            # Use predicted state at node 1 (one dt of ERK4 integration on the
-            # optimal acceleration) rather than integrating the acceleration ourselves.
-            xi_next = self._solver.get(1, "x")
-            self._publish_twist(float(xi_next[3]), float(xi_next[4]))
-            self._publish_trajectory()
-        else:
-            self.get_logger().warn("Solver failed -- stopping.")
+        if self._solve_mpc() is None:
             self._publish_twist(0.0, 0.0)
+            return
 
-    @staticmethod
-    def _rk4_step(
-        state: np.ndarray, u: np.ndarray, dt: float,
-        v_max: float, omega_max: float,
-    ) -> np.ndarray:
-        """Single RK4 step matching the acados ERK4 internal integrator.
+        # Use the predicted state at node 1: this is one ERK4 step of the
+        # solver's optimal u_0, fully consistent with its internal model.
+        xi_next = self._solver.get(1, "x")
+        self._publish_twist(float(xi_next[3]), float(xi_next[4]))
+        self._publish_trajectory()
 
-        Using Euler in the warm-start under-integrates curved heading changes,
-        placing nodes slightly inside the curve each cycle. The QP corrects
-        outward; Euler cuts back next cycle -- that is the oscillation seen in
-        tight spaces. RK4 keeps the warm-start consistent with the solver to
-        fourth order, eliminating the systematic per-cycle error.
-        """
-        a, al = u[0], u[1]
-
-        def f(s: np.ndarray) -> np.ndarray:
-            return np.array([s[3] * np.cos(s[2]), s[3] * np.sin(s[2]), s[4], a, al])
-
-        k1 = f(state)
-        k2 = f(state + 0.5 * dt * k1)
-        k3 = f(state + 0.5 * dt * k2)
-        k4 = f(state + dt * k3)
-        ns = state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-        ns[3] = np.clip(ns[3], 0.0, v_max)
-        ns[4] = np.clip(ns[4], -omega_max, omega_max)
-        return ns
-
-    def _field_following_control(
-        self, state: np.ndarray, v_target: float, k_heading: float = 2.0
-    ) -> np.ndarray:
-        """Compute [a, alpha] to follow the field direction from the given state.
-
-        Speed is scaled by cos(heading_err) so the robot decelerates at corners
-        instead of overshooting spatially (which would place warm-start nodes
-        inside the obstacle on the other side). cos is clamped to >=0 to prevent
-        reverse commands during seeding.
-        """
-        dt = self.cfg.dt
-        _, theta_v   = self._field.query(state[0], state[1])
-        heading_err  = theta_v - state[2]
-        heading_err  = (heading_err + np.pi) % (2 * np.pi) - np.pi
-
-        omega_desired = np.clip(
-            k_heading * heading_err / dt, -self.cfg.omega_max, self.cfg.omega_max,
-        )
-        alpha_cmd = np.clip(
-            (omega_desired - state[4]) / dt, -self.cfg.alpha_max, self.cfg.alpha_max,
-        )
-        cos_align = max(np.cos(heading_err), 0.0)
-        a_cmd = np.clip(
-            (v_target * cos_align - state[3]) / dt, -self.cfg.a_max, self.cfg.a_max,
-        )
-        return np.array([a_cmd, alpha_cmd])
-
-    def _seed_trajectory_toward_goal(self):
-        """Initialise every shooting node by forward-integrating along the field
-        at half v_max using the speed-adaptive field-following controller.
-        """
-        solver  = self._solver
-        N       = self.cfg.N
-        dt      = self.cfg.dt
-        v_seed  = self.cfg.v_max * 0.5
-
-        state = np.array([
-            self._xi[0], self._xi[1], self._xi[2],
-            v_seed,
-            self._xi[4],
-        ])
-
-        for k in range(N + 1):
-            solver.set(k, "x", state.copy())
-            if k < N:
-                if hypot(state[0] - self._goal[0], state[1] - self._goal[1]) < self.cfg.goal_tolerance:
-                    for j in range(k + 1, N + 1):
-                        solver.set(j, "x", state.copy())
-                        if j < N:
-                            solver.set(j, "u", np.zeros(2))
-                    break
-
-                u_seed = self._field_following_control(state, v_seed)
-                solver.set(k, "u", u_seed)
-                state = self._rk4_step(state, u_seed, dt, self.cfg.v_max, self.cfg.omega_max)
-
-    def _shift_warm_start(self):
-        """Shift controls by one step (RTI) and re-integrate states from the robot.
-
-        Corner-overshoot protection: each node's V_norm is checked against the
-        robot's current V_norm (constant reference). If a node lands in a high-cost
-        region, the shifted controls from that node onward are replaced by the
-        field-following seed controller, which also slows at corners.
-        """
-        solver = self._solver
-        N      = self.cfg.N
-        dt     = self.cfg.dt
-
-        v_robot_cost, _ = self._field.query(self._xi[0], self._xi[1])
-
-        us_prev = [solver.get(k, "u") for k in range(N)]
-        us_new  = [us_prev[k + 1] if k < N - 1 else us_prev[N - 1] for k in range(N)]
-        for k in range(N):
-            solver.set(k, "u", us_new[k])
-
-        state      = self._xi.copy()
-        using_seed = False
-
-        for k in range(N):
-            if not using_seed:
-                next_state = self._rk4_step(
-                    state, us_new[k], dt, self.cfg.v_max, self.cfg.omega_max,
-                )
-                v_next, _ = self._field.query(next_state[0], next_state[1])
-
-                if v_next > self.cfg.corner_v_ratio * max(v_robot_cost, 0.01):
-                    using_seed = True
-                else:
-                    state = next_state
-
-            if using_seed:
-                u_field = self._field_following_control(state, self.cfg.v_max * 0.5)
-                solver.set(k, "u", u_field)
-                state = self._rk4_step(
-                    state, u_field, dt, self.cfg.v_max, self.cfg.omega_max,
-                )
-
-            solver.set(k + 1, "x", state)
-
-    def _warm_start_has_drifted(self) -> bool:
-        """True if the mean warm-start V_norm substantially exceeds the robot's.
-
-        Tight spaces have naturally elevated V_norm, so the threshold must allow
-        some elevation without triggering constant re-seeds.
-        """
-        solver = self._solver
-        N      = self.cfg.N
-
-        v_at_robot, _ = self._field.query(self._xi[0], self._xi[1])
-        if v_at_robot < 1e-3:
-            return False
-
-        total, count = 0.0, 0
-        for k in range(1, N + 1, 4):
-            xi_k = solver.get(k, "x")
-            v_k, _ = self._field.query(xi_k[0], xi_k[1])
-            total += v_k
-            count += 1
-
-        if count == 0:
-            return False
-
-        return (total / count) > self.cfg.drift_v_ratio * v_at_robot
+    # ---------------- MPC solve ----------------
 
     def _solve_mpc(self) -> Optional[np.ndarray]:
-        """Run one SQP-RTI iteration. Returns optimal [a, alpha] or None on failure."""
+        """Run one SQP-RTI iteration. Returns u_0 on success, None on failure."""
         solver = self._solver
-        N      = self.cfg.N
+        N = self.cfg.N
 
-        if not self._warm_started:
-            self._seed_trajectory_toward_goal()
-            self._warm_started = True
-        else:
-            self._shift_warm_start()
+        # Regenerate the reference path each cycle. This is both the SQP
+        # warm-start AND the per-stage cost reference -- a self-consistent
+        # bundle that the QP only needs to refine slightly.
+        ref_x, ref_u = self._reference.generate(self._xi, self._goal)
 
-            if self._warm_start_has_drifted():
-                self.get_logger().warn(
-                    "Warm-start drifted into high-cost region -- re-seeding.",
-                    throttle_duration_sec=1.0,
-                )
-                self._seed_trajectory_toward_goal()
+        # Warm-start states and controls.
+        for k in range(N + 1):
+            solver.set(k, "x", ref_x[k])
+        for k in range(N):
+            solver.set(k, "u", ref_u[k])
 
-        # Pin current robot state: set both decision variable and bounds so the
-        # warm-start and the equality constraint are consistent from the QP start.
-        solver.set(0, "x",   self._xi)
+        # Pin x_0 to the measured robot state.
+        solver.set(0, "x", self._xi)
         solver.set(0, "lbx", self._xi)
         solver.set(0, "ubx", self._xi)
 
+        # Per-stage parameters from the reference trajectory. F and v_ref are
+        # taken at the reference position so the QP sees a coherent local
+        # cost landscape; T_ref is clipped so the squared terminal cost stays
+        # well-scaled regardless of map size.
+        v_max = self.cfg.v_max
+        L_brake = self.cfg.L_brake
+        T_ref_cap = self.cfg.T_ref_cap
+        gx, gy = float(self._goal[0]), float(self._goal[1])
+
         for k in range(N + 1):
-            xi_k = self._xi if k == 0 else solver.get(k, "x")
-            v_norm_k, theta_v_k = self._field.query(xi_k[0], xi_k[1])
-            solver.set(k, "p", np.array([
-                v_norm_k, theta_v_k,
-                self._goal[0], self._goal[1], self._goal[2],
-                xi_k[0], xi_k[1],
-            ]))
+            px_ref = float(ref_x[k][0])
+            py_ref = float(ref_x[k][1])
+            Fx, Fy, T_ref = self._field.query(px_ref, py_ref)
+            T_ref = min(T_ref, T_ref_cap)
+
+            d = hypot(px_ref - gx, py_ref - gy)
+            v_r = v_max * tanh(d / L_brake)
+
+            solver.set(k, "p", np.array([Fx, Fy, v_r, T_ref, px_ref, py_ref]))
 
         status = solver.solve()
-
         if status != 0:
-            self.get_logger().warn(f"acados status {status}")
-            self._diagnose_solver_failure()
-            self._warm_started = False
+            self.get_logger().warn(
+                f"acados status {status} -- holding command.",
+                throttle_duration_sec=1.0,
+            )
             return None
-
         return solver.get(0, "u")
 
-    def _publish_twist(self, v: float, omega: float):
-        # First-order low-pass to absorb high-frequency MPC oscillation.
-        # Reset immediately on stop command so the robot does not coast.
-        if v == 0.0 and omega == 0.0:
-            self._smooth_v = self._smooth_omega = 0.0
-        else:
-            self._smooth_v = (
-                self._smooth_alpha_v * v
-                + (1.0 - self._smooth_alpha_v) * self._smooth_v
-            )
-            self._smooth_omega = (
-                self._smooth_alpha_omega * omega
-                + (1.0 - self._smooth_alpha_omega) * self._smooth_omega
-            )
+    # ---------------- Publishing ----------------
 
+    def _publish_twist(self, v: float, omega: float):
         if self._stamped_cmd:
             msg = TwistStamped()
-            msg.header.stamp    = self.get_clock().now().to_msg()
-            msg.header.frame_id = "base_link"
-            msg.twist.linear.x  = self._smooth_v
-            msg.twist.angular.z = self._smooth_omega
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = self._robot_frame
+            msg.twist.linear.x = v
+            msg.twist.angular.z = omega
         else:
             msg = Twist()
-            msg.linear.x  = self._smooth_v
-            msg.angular.z = self._smooth_omega
+            msg.linear.x = v
+            msg.angular.z = omega
         self._cmd_pub.publish(msg)
 
     def _publish_trajectory(self):
-        now  = self.get_clock().now().to_msg()
+        now = self.get_clock().now().to_msg()
         path = Path()
-        path.header.stamp    = now
-        path.header.frame_id = "map"
-
+        path.header.stamp = now
+        path.header.frame_id = self._map_frame
         for k in range(self.cfg.N + 1):
             xi_k = self._solver.get(k, "x")
             pose = PoseStamped()
-            pose.header.stamp    = now
-            pose.header.frame_id = "map"
+            pose.header.stamp = now
+            pose.header.frame_id = self._map_frame
             pose.pose.position.x = float(xi_k[0])
             pose.pose.position.y = float(xi_k[1])
-            pose.pose.position.z = 0.0
             yaw = float(xi_k[2])
-            pose.pose.orientation.z = np.sin(yaw / 2.0)
-            pose.pose.orientation.w = np.cos(yaw / 2.0)
+            pose.pose.orientation.z = float(np.sin(yaw / 2.0))
+            pose.pose.orientation.w = float(np.cos(yaw / 2.0))
             path.poses.append(pose)
-
         self._traj_pub.publish(path)
 
     def _publish_empty_trajectory(self):
         msg = Path()
-        msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = "map"
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._map_frame
         self._traj_pub.publish(msg)
 
-    def _diagnose_solver_failure(self):
-        """Log diagnostic information immediately after a failed solve().
-
-        Covers: state, goal, field params at sampled nodes, KKT residuals,
-        cost, bounds check, and the Hessian indefiniteness test.
-        """
-        solver = self._solver
-        N      = self.cfg.N
-        logger = self.get_logger()
-        xi     = self._xi
-
-        logger.warn(
-            f"[DIAG] State x0: px={xi[0]:.3f}  py={xi[1]:.3f}  "
-            f"th={xi[2]:.3f}  v={xi[3]:.3f}  w={xi[4]:.3f}"
-        )
-
-        g = self._goal
-        logger.warn(
-            f"[DIAG] Goal: gx={g[0]:.3f}  gy={g[1]:.3f}  gth={g[2]:.3f}  "
-            f"dist={hypot(xi[0]-g[0], xi[1]-g[1]):.3f} m"
-        )
-
-        logger.warn(f"[DIAG] Field ready: {self._field.ready}")
-
-        logger.warn("[DIAG] Node params (V_norm, theta_V):")
-        for k in list(range(min(5, N + 1))) + [N]:
-            xi_k = xi if k == 0 else solver.get(k, "x")
-            v_norm_k, theta_v_k = self._field.query(xi_k[0], xi_k[1])
-            p_k = solver.get(k, "p")
-            logger.warn(
-                f"  node {k:3d}: queried=(V={v_norm_k:.3f}, thV={theta_v_k:.3f})  "
-                f"stored=(V={p_k[0]:.3f}, thV={p_k[1]:.3f})  "
-                f"xi=({xi_k[0]:.2f},{xi_k[1]:.2f},{xi_k[2]:.2f})"
-            )
-
-        # Large stat -> bad gradient. Large ineq -> hard constraint violated.
-        try:
-            res = solver.get_residuals()
-            logger.warn(
-                f"[DIAG] KKT: stat={res[0]:.3e}  eq={res[1]:.3e}  "
-                f"ineq={res[2]:.3e}  comp={res[3]:.3e}"
-            )
-        except Exception as e:
-            logger.warn(f"[DIAG] Could not get residuals: {e}")
-
-        try:
-            logger.warn(f"[DIAG] Cost: {solver.get_cost():.4f}")
-        except Exception as e:
-            logger.warn(f"[DIAG] Could not get cost: {e}")
-
-        logger.warn("[DIAG] State/control at first 5 nodes:")
-        for k in range(min(5, N)):
-            xi_k = solver.get(k, "x")
-            u_k  = solver.get(k, "u")
-            v_ok  = 0.0              <= xi_k[3] <= self.cfg.v_max
-            w_ok  = -self.cfg.omega_max <= xi_k[4] <= self.cfg.omega_max
-            a_ok  = -self.cfg.a_max     <= u_k[0]  <= self.cfg.a_max
-            al_ok = -self.cfg.alpha_max <= u_k[1]  <= self.cfg.alpha_max
-            logger.warn(
-                f"  node {k}: v={xi_k[3]:.3f}({'OK' if v_ok  else 'OOB'})  "
-                f"w={xi_k[4]:.3f}({'OK' if w_ok  else 'OOB'})  "
-                f"a={u_k[0]:.3f}({'OK' if a_ok  else 'OOB'})  "
-                f"al={u_k[1]:.3f}({'OK' if al_ok else 'OOB'})"
-            )
-
-        # d^2L/dtheta^2 = (w_heading + w_progress * v) * cos(theta - theta_V)
-        # Negative when misaligned > 90 deg and LM < |eigenvalue|.
-        p0      = solver.get(0, "p")
-        dtheta  = xi[2] - p0[1]
-        hess_th = (self.cfg.w_heading + self.cfg.w_progress * xi[3]) * np.cos(dtheta)
-        lm      = self.cfg.levenberg_marquardt
-        logger.warn(
-            f"[DIAG] d2L/dtheta2 = {hess_th:.3f}  "
-            f"(cos(dtheta)={np.cos(dtheta):.3f}, dtheta={np.degrees(dtheta):.1f} deg)  "
-            f"LM={lm}  "
-            f"{'INDEFINITE -- raise LM!' if hess_th < -lm else 'positive-definite OK'}"
-        )
+    # ---------------- PMP introspection (optional) ----------------
 
     def extract_costates(self) -> list[np.ndarray]:
-        """Costate estimates via the Covector Mapping Principle (Gong et al. 2008).
+        """Costate estimates via the Covector Mapping Principle.
 
-        pi_k / dt approximates lambda(t_k); sign flip converts min to max convention.
+        psi_k = -pi_k / dt approximates the max-principle costate at t_k.
+        Provided for offline PMP verification; not used in the closed loop.
         """
         dt = self.cfg.dt
         return [-self._solver.get(k, "pi") / dt for k in range(self.cfg.N)]
