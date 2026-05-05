@@ -2,6 +2,8 @@ from launch import LaunchDescription
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from agx_bringup import Topics
+
 
 def generate_launch_description():
     declared_args = []
@@ -42,6 +44,7 @@ def generate_launch_description():
         ],
         remappings=[
             ("/pmp_planner/trajectory", "/optimal_trajectory"),
+            ("/odom", Topics.ODOM_FILTERED),
         ],
     )
 
