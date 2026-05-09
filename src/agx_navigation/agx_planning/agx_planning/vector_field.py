@@ -43,15 +43,12 @@ from visualization_msgs.msg import Marker
 from builtin_interfaces.msg import Duration
 from tf2_ros import Buffer, TransformListener, TransformException
 
-
 # ---------------------------------------------------------------------------
 # Generic dataclass-driven ROS2 parameter loader
 # ---------------------------------------------------------------------------
 
 
-def declare_and_load_dataclass(
-    node: Node, instance: Any, prefix: str = ""
-) -> Any:
+def declare_and_load_dataclass(node: Node, instance: Any, prefix: str = "") -> Any:
     """Declare every dataclass field as a ROS2 parameter and return a new
     instance populated from the parameter values.
 
@@ -84,7 +81,7 @@ def declare_and_load_dataclass(
 @dataclass
 class SpeedConfig:
     # Clearance band: cells with EDT < inflation_radius see reduced speed.
-    inflation_radius: float = 0.5      # [m]
+    inflation_radius: float = 0.5  # [m]
     # Speed at the wall surface. Strictly > 0; eikonal diverges as v -> 0.
     speed_v_min: float = 0.1
     # Speed in open space (>= R from any obstacle).
@@ -97,7 +94,9 @@ class SpeedConfig:
 
 
 def build_speed_field(
-    edt_free: np.ndarray, obstacle_mask: np.ndarray, cfg: SpeedConfig,
+    edt_free: np.ndarray,
+    obstacle_mask: np.ndarray,
+    cfg: SpeedConfig,
 ) -> np.ndarray:
     """Map EDT distance to wave speed v(x) for the eikonal solve."""
     R = cfg.inflation_radius
@@ -109,16 +108,18 @@ def build_speed_field(
     if not near.any():
         return v
 
-    norm = edt_free[near] / R   # 0 at wall, 1 at boundary
+    norm = edt_free[near] / R  # 0 at wall, 1 at boundary
     if cfg.speed_profile == "exponential":
         v[near] = np.clip(
             cfg.speed_v_max * np.exp(-cfg.speed_decay_rate * (1.0 - norm)),
-            cfg.speed_v_min, cfg.speed_v_max,
+            cfg.speed_v_min,
+            cfg.speed_v_max,
         )
     else:
         v[near] = np.clip(
             cfg.speed_v_min + (cfg.speed_v_max - cfg.speed_v_min) * norm,
-            cfg.speed_v_min, cfg.speed_v_max,
+            cfg.speed_v_min,
+            cfg.speed_v_max,
         )
     return v
 
@@ -129,14 +130,17 @@ def build_speed_field(
 
 
 def solve_eikonal_full(
-    obstacle_mask: np.ndarray, speed: np.ndarray,
-    goal_col: int, goal_row: int, resolution: float,
+    obstacle_mask: np.ndarray,
+    speed: np.ndarray,
+    goal_col: int,
+    goal_row: int,
+    resolution: float,
 ) -> np.ndarray:
     """Full-grid FMM via skfmm. Returns T with NaN on obstacle cells."""
     h, w = obstacle_mask.shape
     phi = np.ones((h, w), dtype=np.float64)
     phi[goal_row, goal_col] = -1.0
-    phi_m = np.ma.MaskedArray(phi,   mask=obstacle_mask)
+    phi_m = np.ma.MaskedArray(phi, mask=obstacle_mask)
     spd_m = np.ma.MaskedArray(speed, mask=obstacle_mask)
     raw = skfmm.travel_time(phi_m, spd_m, dx=resolution)
     tt = np.array(raw, dtype=np.float64)
@@ -151,8 +155,11 @@ def solve_eikonal_full(
 
 
 def field_from_T(
-    tt: np.ndarray, obstacle_mask: np.ndarray, speed: np.ndarray,
-    resolution: float, smooth_sigma_m: float,
+    tt: np.ndarray,
+    obstacle_mask: np.ndarray,
+    speed: np.ndarray,
+    resolution: float,
+    smooth_sigma_m: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Differentiate (optionally smoothed) T to produce a unit vector field.
 
@@ -212,8 +219,8 @@ def field_from_T(
     bad = ~np.isfinite(gx) | ~np.isfinite(gy)
     gx[bad] = 0.0
     gy[bad] = 0.0
-    mag[bad] = 0.0      # publish a finite zero, not NaN; planner treats
-                        # zero magnitude as zero confidence -> ignore
+    mag[bad] = 0.0  # publish a finite zero, not NaN; planner treats
+    # zero magnitude as zero confidence -> ignore
     return gx, gy, mag
 
 
@@ -222,7 +229,7 @@ def _gaussian_with_nan(arr: np.ndarray, sigma_cells: float) -> np.ndarray:
     valid = np.isfinite(arr).astype(np.float64)
     filled = np.where(valid > 0, arr, 0.0)
     num = gaussian_filter(filled, sigma_cells)
-    den = gaussian_filter(valid,  sigma_cells)
+    den = gaussian_filter(valid, sigma_cells)
     out = np.where(den > 1e-6, num / np.maximum(den, 1e-6), np.nan)
     out[~np.isfinite(arr)] = np.nan
     return out
@@ -251,17 +258,17 @@ class CutLocusConfig:
     # zig-zagging across corridor centrelines and confidence weighting is
     # disabled in the planner.
     smooth_T_before_grad: bool = False
-    smooth_T_sigma: float = 0.10       # [m]
+    smooth_T_sigma: float = 0.10  # [m]
 
 
 @dataclass
 class VizConfig:
     viz_subsample: int = 4
-    viz_arrow_length: float = 0.3      # [m]; max arrow length
-    viz_scale_arrows: bool = True      # scale by |grad T|
-    viz_path_step: float = 0.5         # [cells]; <1 -> sub-cell
+    viz_arrow_length: float = 0.3  # [m]; max arrow length
+    viz_scale_arrows: bool = True  # scale by |grad T|
+    viz_path_step: float = 0.5  # [cells]; <1 -> sub-cell
     viz_path_max_iter: int = 2000
-    viz_rate: float = 5.0              # [Hz]
+    viz_rate: float = 5.0  # [Hz]
 
 
 # ---------------------------------------------------------------------------
@@ -277,10 +284,10 @@ class FMMVectorFieldNode(Node):
         # All parameters come from dataclass defaults via the generic
         # loader. Adding a new parameter is now a one-line change to the
         # appropriate dataclass.
-        self.frame_cfg     = declare_and_load_dataclass(self, FrameConfig())
-        self.speed_cfg     = declare_and_load_dataclass(self, SpeedConfig())
-        self.cutlocus_cfg  = declare_and_load_dataclass(self, CutLocusConfig())
-        self.viz_cfg       = declare_and_load_dataclass(self, VizConfig())
+        self.frame_cfg = declare_and_load_dataclass(self, FrameConfig())
+        self.speed_cfg = declare_and_load_dataclass(self, SpeedConfig())
+        self.cutlocus_cfg = declare_and_load_dataclass(self, CutLocusConfig())
+        self.viz_cfg = declare_and_load_dataclass(self, VizConfig())
 
         # Validate the parts that have non-trivial constraints.
         if self.speed_cfg.speed_profile not in ("linear", "exponential"):
@@ -292,18 +299,18 @@ class FMMVectorFieldNode(Node):
         if self.speed_cfg.speed_v_min <= 0.0:
             raise ValueError("speed_v_min must be > 0 (eikonal diverges as v -> 0)")
 
-        self.tf_buffer   = Buffer()
+        self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.map_msg:    Optional[OccupancyGrid] = None
-        self.map_array:  Optional[np.ndarray]    = None
+        self.map_msg: Optional[OccupancyGrid] = None
+        self.map_array: Optional[np.ndarray] = None
         self.current_goal: Optional[PoseStamped] = None
         self.field_dirty = False
 
         self.travel_time: Optional[np.ndarray] = None
-        self.grad_x:      Optional[np.ndarray] = None
-        self.grad_y:      Optional[np.ndarray] = None
-        self.grad_mag:    Optional[np.ndarray] = None
+        self.grad_x: Optional[np.ndarray] = None
+        self.grad_y: Optional[np.ndarray] = None
+        self.grad_mag: Optional[np.ndarray] = None
         self._free_max_T: float = 1.0
 
         map_qos = QoSProfile(
@@ -311,16 +318,21 @@ class FMMVectorFieldNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
-        self.create_subscription(OccupancyGrid, "/map",       self._map_cb,  map_qos)
-        self.create_subscription(PoseStamped,   "/goal_pose", self._goal_cb, 10)
+        self.create_subscription(OccupancyGrid, "/map", self._map_cb, map_qos)
+        self.create_subscription(PoseStamped, "/goal_pose", self._goal_cb, 10)
 
-        self.lines_pub        = self.create_publisher(Marker,             "/vector_field/lines",         10)
-        self.path_pub         = self.create_publisher(Path,               "/vector_field/optimal_path",  10)
-        self.cost_to_go_pub   = self.create_publisher(OccupancyGrid,      "/vector_field/cost_to_go",    10)
-        self.planner_data_pub = self.create_publisher(Float32MultiArray,  "/vector_field/planner_data",  1)
+        self.lines_pub = self.create_publisher(Marker, "/vector_field/lines", 10)
+        self.path_pub = self.create_publisher(Path, "/vector_field/optimal_path", 10)
+        self.cost_to_go_pub = self.create_publisher(
+            OccupancyGrid, "/vector_field/cost_to_go", 10
+        )
+        self.planner_data_pub = self.create_publisher(
+            Float32MultiArray, "/vector_field/planner_data", 1
+        )
 
         self.viz_timer = self.create_timer(
-            1.0 / self.viz_cfg.viz_rate, self._viz_timer_cb,
+            1.0 / self.viz_cfg.viz_rate,
+            self._viz_timer_cb,
         )
 
         # NOTE on caching. EDT and the speed field depend only on the
@@ -354,6 +366,11 @@ class FMMVectorFieldNode(Node):
             self._recompute_field()
 
     def _goal_cb(self, msg: PoseStamped):
+        if msg.header.frame_id == "":
+            self.current_goal = None
+            self.get_logger().info(f"Goal was removed")
+            return
+
         self.current_goal = msg
         self.field_dirty = True
         self.get_logger().info(
@@ -418,9 +435,13 @@ class FMMVectorFieldNode(Node):
         # FM2 pipeline. The "first FMM" of the literature is mathematically
         # the EDT; we compute it directly via scipy.
         edt_free = distance_transform_edt(~obstacle_mask) * resolution
-        speed    = build_speed_field(edt_free, obstacle_mask, self.speed_cfg)
-        tt       = solve_eikonal_full(
-            obstacle_mask, speed, goal_col, goal_row, resolution,
+        speed = build_speed_field(edt_free, obstacle_mask, self.speed_cfg)
+        tt = solve_eikonal_full(
+            obstacle_mask,
+            speed,
+            goal_col,
+            goal_row,
+            resolution,
         )
 
         free_tt = tt[np.isfinite(tt)]
@@ -428,14 +449,15 @@ class FMMVectorFieldNode(Node):
 
         sigma = (
             self.cutlocus_cfg.smooth_T_sigma
-            if self.cutlocus_cfg.smooth_T_before_grad else 0.0
+            if self.cutlocus_cfg.smooth_T_before_grad
+            else 0.0
         )
         gx, gy, mag = field_from_T(tt, obstacle_mask, speed, resolution, sigma)
 
         self.travel_time = tt
-        self.grad_x      = gx
-        self.grad_y      = gy
-        self.grad_mag    = mag
+        self.grad_x = gx
+        self.grad_y = gy
+        self.grad_mag = mag
         self.field_dirty = False
 
         h, w = obstacle_mask.shape
@@ -472,15 +494,15 @@ class FMMVectorFieldNode(Node):
         fx, fy = gx - x0, gy - y0
 
         def _bilerp(arr: np.ndarray) -> float:
-            v00 = arr[y0,     x0]
-            v01 = arr[y0,     x0 + 1]
+            v00 = arr[y0, x0]
+            v01 = arr[y0, x0 + 1]
             v10 = arr[y0 + 1, x0]
             v11 = arr[y0 + 1, x0 + 1]
             return float(
                 v00 * (1.0 - fx) * (1.0 - fy)
-                + v01 * fx       * (1.0 - fy)
+                + v01 * fx * (1.0 - fy)
                 + v10 * (1.0 - fx) * fy
-                + v11 * fx       * fy
+                + v11 * fx * fy
             )
 
         return _bilerp(self.grad_x), _bilerp(self.grad_y), _bilerp(self.travel_time)
@@ -488,7 +510,8 @@ class FMMVectorFieldNode(Node):
     def get_robot_pose(self) -> Optional[PoseStamped]:
         try:
             t = self.tf_buffer.lookup_transform(
-                self.frame_cfg.map_frame, self.frame_cfg.robot_frame,
+                self.frame_cfg.map_frame,
+                self.frame_cfg.robot_frame,
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.1),
             )
@@ -509,7 +532,7 @@ class FMMVectorFieldNode(Node):
     # ------------------------------------------------------------------
 
     def _publish_visualization(self):
-        if self.travel_time is None or self.grad_x is None:
+        if self.travel_time is None or self.grad_x is None or self.current_goal is None:
             return
         self._publish_arrows()
         self._publish_optimal_path()
@@ -529,10 +552,10 @@ class FMMVectorFieldNode(Node):
 
     def _publish_arrows(self):
         h, w = self.grad_x.shape
-        step    = self.viz_cfg.viz_subsample
+        step = self.viz_cfg.viz_subsample
         max_len = self.viz_cfg.viz_arrow_length
-        scale   = self.viz_cfg.viz_scale_arrows
-        t_max   = self._free_max_T if self._free_max_T > 1e-8 else 1.0
+        scale = self.viz_cfg.viz_scale_arrows
+        t_max = self._free_max_T if self._free_max_T > 1e-8 else 1.0
 
         if scale and self.grad_mag is not None:
             valid = self.grad_mag[(self.grad_mag > 0) & np.isfinite(self.grad_mag)]
@@ -575,9 +598,13 @@ class FMMVectorFieldNode(Node):
                 T_val = float(self.travel_time[row, col])
                 color = self._cost_to_color(T_val, t_max)
                 points.append(Point(x=wx, y=wy, z=0.05))
-                points.append(Point(
-                    x=wx + arrow * vx, y=wy + arrow * vy, z=0.05,
-                ))
+                points.append(
+                    Point(
+                        x=wx + arrow * vx,
+                        y=wy + arrow * vy,
+                        z=0.05,
+                    )
+                )
                 colors.extend([color, color])
 
         marker.points = points
@@ -594,13 +621,13 @@ class FMMVectorFieldNode(Node):
             return
 
         info = self.map_msg.info
-        res  = info.resolution
+        res = info.resolution
         wx = pose.pose.position.x
         wy = pose.pose.position.y
         gx = self.current_goal.pose.position.x
         gy = self.current_goal.pose.position.y
         step_world = self.viz_cfg.viz_path_step * res
-        max_iter   = self.viz_cfg.viz_path_max_iter
+        max_iter = self.viz_cfg.viz_path_max_iter
         stop_radius_sq = (1.5 * res) ** 2
 
         path = Path()
@@ -680,29 +707,40 @@ class FMMVectorFieldNode(Node):
         can compare without special-casing NaN; the corresponding grad
         and grad_mag entries are zero.
         """
-        if self.map_msg is None or self.travel_time is None:
+        if (
+            self.map_msg is None
+            or self.travel_time is None
+            or self.current_goal is None
+        ):
             return
 
         info = self.map_msg.info
         h, w = self.grad_x.shape
         big_T = self._free_max_T * 4.0 + 1.0
-        tt_out  = np.where(np.isfinite(self.travel_time), self.travel_time, big_T)
-        mag_out = np.where(np.isfinite(self.grad_mag),    self.grad_mag,    0.0)
+        tt_out = np.where(np.isfinite(self.travel_time), self.travel_time, big_T)
+        mag_out = np.where(np.isfinite(self.grad_mag), self.grad_mag, 0.0)
 
-        header = np.array([
-            h, w,
-            info.origin.position.x, info.origin.position.y,
-            info.resolution,
-        ], dtype=np.float32)
+        header = np.array(
+            [
+                h,
+                w,
+                info.origin.position.x,
+                info.origin.position.y,
+                info.resolution,
+            ],
+            dtype=np.float32,
+        )
 
         msg = Float32MultiArray()
-        msg.data = np.concatenate([
-            header,
-            tt_out.astype(np.float32).ravel(),
-            self.grad_x.astype(np.float32).ravel(),
-            self.grad_y.astype(np.float32).ravel(),
-            mag_out.astype(np.float32).ravel(),
-        ]).tolist()
+        msg.data = np.concatenate(
+            [
+                header,
+                tt_out.astype(np.float32).ravel(),
+                self.grad_x.astype(np.float32).ravel(),
+                self.grad_y.astype(np.float32).ravel(),
+                mag_out.astype(np.float32).ravel(),
+            ]
+        ).tolist()
         self.planner_data_pub.publish(msg)
 
 
