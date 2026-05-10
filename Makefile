@@ -92,6 +92,9 @@ clean:
 
 setup: install-ros install-gazebo system-deps deps
 
+submodules:
+	git submodule update --init --recursive
+
 install-ros:
 	sudo apt update
 	sudo apt install software-properties-common
@@ -129,6 +132,11 @@ system-deps:
 
 ros-deps:
 	rosdep install --from-paths src --ignore-src -r -y
+
+colcon-rust-deps:
+	cargo install cargo-ament-build
+	pip install --break-system-packages colcon-cargo-ros2
+	sudo apt install -y ros-jazzy-test-msgs
 
 .ros_python_deps.stamp: $(PYTHON_SETUP_FILES)
 	pip install --break-system-packages $(PYTHON_PACKAGES)

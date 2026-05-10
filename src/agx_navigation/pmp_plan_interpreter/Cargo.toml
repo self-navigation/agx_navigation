@@ -1,0 +1,16 @@
+[package]
+name = "pmp_plan_interpreter"
+version = "0.0.1"
+authors = ["danya <danya@danya02.ru>"]
+edition = "2021"
+
+[[bin]]
+name = "pmp_plan_interpreter"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = {version = "1", features = ["backtrace"]}
+rclrs = "*"
+
+# This specific version is compatible with Rust 1.75
+backtrace = "=0.3.74"

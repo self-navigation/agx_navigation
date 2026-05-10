@@ -75,11 +75,22 @@ def generate_launch_description():
         condition=IfCondition(EqualsSubstitution(pmp_mode, "offline")),
     )
 
+    pmp_plan_interpreter = Node(
+        package="pmp_plan_interpreter",
+        executable="pmp_plan_interpreter",
+        output="screen",
+        name="plan_interpreter",
+        parameters=[],
+        remappings=[],
+        condition=IfCondition(EqualsSubstitution(pmp_mode, "offline")),
+    )
+
     return LaunchDescription(
         declared_args
         + [
             vector_field,
             pmp_planner,
             pmp_interpreter,
+            pmp_plan_interpreter,
         ]
     )

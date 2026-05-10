@@ -21,6 +21,7 @@
   <depend>depth_image_proc</depend>
 
   <depend>agx_planning</depend>
+  <depend>pmp_plan_interpreter</depend>
   <depend>scout_description</depend>
   <depend>scout_base</depend>
 

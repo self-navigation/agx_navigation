@@ -1,0 +1,5 @@
+[workspace]
+resolver = "2"
+members = [
+    "src/agx_navigation/pmp_plan_interpreter"
+]
