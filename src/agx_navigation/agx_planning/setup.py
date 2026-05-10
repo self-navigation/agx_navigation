@@ -32,6 +32,7 @@ setup(
                 "frontier_explorer",
                 "vector_field",
                 "pmp_planner",
+                "pmp_interpreter",
             ]
         ],
     },
