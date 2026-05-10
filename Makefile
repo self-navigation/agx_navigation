@@ -14,6 +14,7 @@ PARAM_VARS := SIM \
 							FLOOR_NUMBER \
 							HEADLESS \
 							NAV_MODE \
+							PMP_MODE \
 							PORT_NAME
 
 define lc
