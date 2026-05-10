@@ -38,6 +38,7 @@ from typing import Dict
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+from rclpy.time import Duration, Time
 from geometry_msgs.msg import Twist, TwistStamped
 
 from agx_planning_msgs.msg import PlannerTrajectoryChunk
@@ -74,6 +75,12 @@ class TrajectoryInterpreterNode(Node):
         # Effective tick interval for the active trajectory, taken from
         # chunk.dt (all chunks of one trajectory share the same dt).
         self._active_dt: float = self._default_dt
+        # ROS time when the current trajectory started playing. Used to compute
+        # each sample's due timestamp: start + total_samples_consumed * dt.
+        self._current_traj_start_time: Time = self.get_clock().now()
+        # Total samples published from chunk data for the active trajectory.
+        # Incremented only for real samples, not for held zero-twist ticks.
+        self._current_traj_samples_consumed: int = 0
 
         # ---- ROS plumbing --------------------------------------------
         # Match the planner's chunk-publisher QoS exactly. ALL fields
@@ -127,6 +134,8 @@ class TrajectoryInterpreterNode(Node):
             self._chunks = {}
             self._cur_chunk_idx = 0
             self._cur_sample_idx = 0
+            self._current_traj_start_time = self.get_clock().now()
+            self._current_traj_samples_consumed = 0
             # Adopt the new trajectory's tick rate.
             if msg.dt > 0.0 and abs(msg.dt - self._active_dt) > 1e-6:
                 self._active_dt = float(msg.dt)
@@ -154,19 +163,21 @@ class TrajectoryInterpreterNode(Node):
     def _on_tick(self):
         # IDLE: publish zero twist and wait for a trajectory.
         if self._active_traj_id < 0:
-            self._publish_twist(0.0, 0.0)
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             return
 
         # Locate the current chunk. If missing (out-of-order delivery),
         # hold zero -- it should arrive imminently under reliable QoS.
         cur = self._chunks.get(self._cur_chunk_idx)
         if cur is None:
-            self._publish_twist(0.0, 0.0)
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self.get_logger().warn(
                 f"Chunk {self._cur_chunk_idx} of trajectory "
                 f"{self._active_traj_id} not yet received; holding.",
                 throttle_duration_sec=1.0,
             )
+            self._current_traj_start_time = self.get_clock().now()
+            self._current_traj_samples_consumed = 0
             return
 
         n = len(cur.linear_x)
@@ -180,14 +191,20 @@ class TrajectoryInterpreterNode(Node):
                 f"(empty final chunk). Returning to IDLE."
             )
             self._goto_idle()
-            self._publish_twist(0.0, 0.0)
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             return
 
         # Consume one sample.
         if self._cur_sample_idx < n:
             v = float(cur.linear_x[self._cur_sample_idx])
             w = float(cur.angular_z[self._cur_sample_idx])
-            self._publish_twist(v, w)
+            due = self._current_traj_start_time + Duration(
+                nanoseconds=int(
+                    self._current_traj_samples_consumed * self._active_dt * 1e9
+                )
+            )
+            self._publish_twist(v, w, due.to_msg())
+            self._current_traj_samples_consumed += 1
             self._cur_sample_idx += 1
             return
 
@@ -203,7 +220,7 @@ class TrajectoryInterpreterNode(Node):
                 f"Trajectory {self._active_traj_id} complete. Returning to IDLE."
             )
             self._goto_idle()
-            self._publish_twist(0.0, 0.0)
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             return
 
         # Try to consume the first sample of the next chunk on this same
@@ -212,24 +229,38 @@ class TrajectoryInterpreterNode(Node):
         if nxt is not None and len(nxt.linear_x) > 0:
             v = float(nxt.linear_x[0])
             w = float(nxt.angular_z[0])
-            self._publish_twist(v, w)
+            due = self._current_traj_start_time + Duration(
+                nanoseconds=int(
+                    self._current_traj_samples_consumed * self._active_dt * 1e9
+                )
+            )
+            self._publish_twist(v, w, due.to_msg())
+            self._current_traj_samples_consumed += 1
             self._cur_sample_idx = 1
         else:
             # Next chunk not yet here -- hold zero.
-            self._publish_twist(0.0, 0.0)
+            self.get_logger().warn(
+                f"Chunk {self._cur_chunk_idx} (which is meant to be received after the current one) of trajectory "
+                f"{self._active_traj_id} not yet received; holding.",
+                throttle_duration_sec=1.0,
+            )
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+            self._current_traj_start_time = self.get_clock().now()
+            self._current_traj_samples_consumed = 0
 
     def _goto_idle(self):
         self._active_traj_id = -1
         self._chunks.clear()
         self._cur_chunk_idx = 0
         self._cur_sample_idx = 0
+        self._current_traj_samples_consumed = 0
 
     # ----------------------- Publishing ------------------------------------
 
-    def _publish_twist(self, v: float, omega: float):
+    def _publish_twist(self, v: float, omega: float, stamp):
         if self._stamped:
             msg = TwistStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.stamp = stamp
             msg.header.frame_id = self._robot_frame
             msg.twist.linear.x = v
             msg.twist.angular.z = omega
