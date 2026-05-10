@@ -1525,10 +1525,13 @@ class PlannerNode(Node):
         while not self._stop_event.is_set():
             # Wait for something to do. Timeout is just a safety so we
             # periodically wake to check _stop_event.
-            self._kick_event.wait(timeout=0.5)
+            kicked = self._kick_event.wait(timeout=0.5)
             self._kick_event.clear()
             if self._stop_event.is_set():
                 break
+
+            if not kicked:
+                continue
 
             with self._state_lock:
                 goal = None if self._goal is None else self._goal.copy()
