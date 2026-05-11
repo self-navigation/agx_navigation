@@ -15,6 +15,7 @@ PARAM_VARS := SIM \
 							HEADLESS \
 							NAV_MODE \
 							PMP_MODE \
+							DO_CORRECTIONS \
 							PORT_NAME
 
 define lc

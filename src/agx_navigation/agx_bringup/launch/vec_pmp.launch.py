@@ -17,10 +17,16 @@ def generate_launch_description():
             default_value="offline",
             description="Which PMP planner mode to use. Allowed values: online, offline.",
         ),
+        DeclareLaunchArgument(
+            "do_corrections",
+            default_value="true",
+            description="Whether to do runtime corrections of the trajectory.",
+        ),
     ]
 
     pmp_mode = LaunchConfiguration("pmp_mode")
     sim = LaunchConfiguration("sim")
+    do_corrections = LaunchConfiguration("do_corrections")
 
     vector_field = Node(
         package="agx_planning",
@@ -87,6 +93,7 @@ def generate_launch_description():
         parameters=[
             {
                 "enable_stamped_cmd_vel": True,
+                "enable_recovery": do_corrections,
                 "use_sim_time": sim,
             }
         ],
