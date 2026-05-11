@@ -5,80 +5,111 @@ the Hamiltonian, costate ODEs and the optimal-control law are derived
 analytically; the resulting two-point boundary value problem (TPBVP)
 is integrated with scipy.integrate.solve_bvp.
 
-Model -- 3D kinematic unicycle:
-  state    x = (p_x, p_y, theta)
-  control  u = (v, omega),  |v| <= v_max, |omega| <= omega_max
-  dynamics x_dot = v cos(theta), y_dot = v sin(theta), theta_dot = omega
+Model -- 5D kinematic unicycle with bounded acceleration on both channels:
+  state    x = (p_x, p_y, theta, v, omega)
+  control  u = (a, alpha),  |a| <= a_max, |alpha| <= alpha_max
+  dynamics x_dot = v cos(theta), y_dot = v sin(theta), theta_dot = omega,
+           v_dot     = a       (linear acceleration control)
+           omega_dot = alpha   (angular acceleration control)
+
+The BVP plans in "desired chassis behaviour" space: the v, omega
+states represent what the body actually does, not what is commanded.
+Folding an explicit first-order chassis-tracking lag into the BVP
+itself produces a stiff costate ODE (eigenvalue +1/tau in the
+self-coupling; over T_horizon the initial costate becomes numerically
+chaotic, which the optimal-control formula then turns into bang-bang
+chatter). Instead we keep the BVP simple and apply a feedforward
+inversion of the chassis dynamics at the PUBLICATION step:
+
+  cmd(t) = (desired_state(t) + tau * d(desired_state)/dt) / gain
+
+This is exact inversion of the first-order tracker
+  tau * d(actual)/dt + actual = gain * cmd
+so a chassis matching that model executes cmd and produces actual(t)
+= desired_state(t). Identify gain and tau from a step-response test
+on the target platform (typical skid-steer: gain < 1 from lateral
+slip, tau ~ 0.3-1.0 s from lateral friction); the parameters live in
+PlannerConfig.chassis_gain_* / chassis_tau_*.
+
+Publication is symmetric across modes (online cmd_vel and offline
+trajectory chunks): both pass the BVP state through the inversion,
+then clip to chassis_v_max / chassis_omega_max (hardware command
+ceiling, NOT the BVP's v_max / omega_max which bound only the state).
 
 Cost:
   L(x, u) = alpha_t + L_pos(T(p))                           # piecewise C^1 pot.
-          + w_F * w_h * (1 - F_unit(p) . h(theta))          # field alignment
-          + (1 - w_F) * (1/2) * w_h * (theta - theta_p)^2   # terminal-yaw spring
+          + w_F * w_h * (1 - F_unit(p) . h(theta))          # field alignment (faded)
+          + (1 - w_F) * (1/2) * w_h * (theta - theta_p)^2   # goal-yaw spring (anti-faded)
           + (1/2) * w_v * (v - v_ref_eff(p, theta))^2       # speed reference
           + (1/2) * w_brake * (1 - F_unit . h)^2 * v^2      # heading-coupled brake
-          + gamma_v * v^2 + gamma_w * omega^2               # control regularizers
+          + (1/2) * w_omega_run * omega^2                   # state-omega regularizer
+          + (1/2) * w_v_barrier     * max(0,|v|-v_max)^2     # soft v_max barrier
+          + (1/2) * w_omega_barrier * max(0,|w|-w_max)^2     # soft omega_max barrier
+          + (1/2) * gamma_a       * a^2                      # acceleration regularizer
+          + (1/2) * gamma_alpha   * alpha^2                  # angular-accel regularizer
 
   L_pos(T) = (beta/2) * T^2 / T_horizon              if T <= T_horizon
            = beta * (T - T_horizon/2)                if T >  T_horizon
-  (Quadratic near the goal so the gradient fades to zero at the sink,
-   linear during navigation so it doesn't swamp w_h on routed paths.
-   Gradient = beta * min(T, T_horizon) * grad(T) / T_horizon, C^0 at
-   the join.)
+  (Gradient = beta * min(T, T_horizon) * grad(T) / T_horizon, C^0 at
+   the join. Fades to zero at the goal sink so braking is governed by
+   v_ref rather than residual position pull.)
 
-  Phi(x_T) = (1/2) * w_pp * ||p_T - p_pursuit||^2           # pursuit-point pull
-           + (1/2) * w_th * (theta_T - theta_pursuit)^2     # terminal yaw target
+  Phi(x_T) = (1/2) * w_T_terminal * T_lin(p_T)^2            # Lyapunov in T-space
+           + (1/2) * w_pp * ||p_T - p_pursuit||^2           # isotropic stabilizer
+           + (1/2) * w_th * (theta_T - theta_pursuit)^2     # yaw basin
+           + (1/2) * w_v_terminal * v_T^2                   # stop in v
+           + (1/2) * w_omega_terminal * omega_T^2           # stop in omega
 
 with
   v_ref(p)        = v_max * tanh(||p - p_goal|| / L_brake)
   gate(x)         = ((1 + x) / 2) ** p_gate    in [0, 1]
   v_ref_eff(p,th) = v_ref(p) * gate(F_unit . h(theta))
-
-The non-negative gate replaces an older `v_ref * (F . h)` heading-aware
-target: when |F . h| < 1 the forward target fades, so the cost never
-asks for reverse motion under any heading. The brake term separately
-penalises v != 0 in proportion to the SQUARE of the misalignment, giving:
-  - gentle near alignment (small misalignment -> tiny brake), so the
-    chassis follows F-curvature smoothly through corners;
-  - strong at large misalignment (4 w_brake at anti-aligned), enough to
-    overpower the position-pursuit costates that would otherwise pull the
-    BVP toward reverse-while-turning.
-Together: misaligned -> v ~ 0 + omega != 0 (pure rotation), aligned ->
-drive forward at v_ref. This mechanism handles the goal-yaw fix, initial
-heading mismatches, and sharp F-curvature mid-trajectory through one
-unified cost shape -- no dedicated TURN_IN_PLACE supervisor needed.
-
-The terminal cost is field-following: p_pursuit is the streamline
-endpoint traced from x_now for arc length v_max * T_horizon *
-pursuit_lookahead_mult, and theta_pursuit is the F-tangent at p_pursuit,
-blended toward goal_yaw inside the goal approach zone. When the streamline
-reaches the goal sink, p_pursuit collapses to p_goal and theta_pursuit
-falls back to theta_goal.
+  T_lin(p)        = T_ref - F_ref . (p - p_pursuit)
+                   (linearization of T around p_pursuit; long-range pull
+                    along -F_ref that complements the running L_pos)
 
 Hamiltonian (minimum-principle convention):
   H = L + lambda_x * v cos(theta) + lambda_y * v sin(theta) + lambda_th * omega
+        + lambda_v * a
+        + lambda_omega * alpha
 
 Closed-form optimal control (tanh-saturated to bounds):
-  denom_v     = 2 gamma_v + w_v + w_brake * (1 - F . h)^2
-  v_unsat     = (w_v * v_ref_eff - lambda_x cos(theta) - lambda_y sin(theta)) / denom_v
-  omega_unsat = -lambda_th / (2 gamma_w)
+  a*     = -lambda_v     / gamma_a       (sat |a|     <= a_max)
+  alpha* = -lambda_omega / gamma_alpha   (sat |alpha| <= alpha_max)
 
 Costate ODEs (lambda_dot = -dH/dx), frozen-field approximation in the
 position costates (dF_unit/dp and dv_ref/dp dropped):
   gate'(x)   = (p_gate / 2) * ((1 + x) / 2) ** (p_gate - 1)
   cross_F_h  = F_x sin(theta) - F_y cos(theta)
-  lambda_x_dot  = -beta * min(T, T_horizon) * dT/dx / T_horizon
-  lambda_y_dot  = -beta * min(T, T_horizon) * dT/dy / T_horizon
-  lambda_th_dot = -w_F * w_h * cross_F_h
-                  - w_F * w_v * v_ref(p) * (v - v_ref_eff) * gate'(F . h) * cross_F_h
-                  - w_F * w_brake * (1 - F . h) * v^2 * cross_F_h
-                  - (1 - w_F) * w_h * (theta - theta_pursuit)
-                  + lambda_x * v sin(theta) - lambda_y * v cos(theta)
+  lambda_x_dot     = -beta * min(T, T_horizon) * dT/dx / T_horizon
+  lambda_y_dot     = -beta * min(T, T_horizon) * dT/dy / T_horizon
+  lambda_th_dot    = -w_F * w_h * cross_F_h
+                     - (1 - w_F) * w_h * (theta - theta_pursuit)
+                     - w_v * v_ref * (v - v_ref_eff) * gate'(F . h) * cross_F_h
+                     - w_brake * (1 - F . h) * v^2 * cross_F_h
+                     + lambda_x * v sin(theta) - lambda_y * v cos(theta)
+  lambda_v_dot     = -w_v * (v - v_ref_eff) - w_brake * (1 - F . h)^2 * v
+                     - lambda_x cos(theta) - lambda_y sin(theta)
+                     - w_v_barrier * sign(v) * max(0, |v| - v_max)
+  lambda_omega_dot = -w_omega_run * omega - lambda_th
+                     - w_omega_barrier * sign(omega) * max(0, |omega| - omega_max)
+                     # No self-coupling on either v or omega: both are integrators
+                     # of bounded controls (no first-order driver lag), so dH/dv
+                     # and dH/domega have no -lambda_v / -lambda_omega terms.
+
+w_F multiplies only the alignment cost (not speed/brake); the speed
+and brake contributions to lambda_th fade naturally via v_ref -> 0
+and v -> 0 near the goal, so no explicit fade on them is needed.
 
 Boundary conditions:
-  t = 0 :  x(0) = x_now              (initial pose pinned)
-  t = T :  lambda_x(T)  = 2 w_pp (p_x_T - p_x_pursuit)
-           lambda_y(T)  = 2 w_pp (p_y_T - p_y_pursuit)
-           lambda_th(T) = w_th * (theta_T - theta_pursuit)
+  t = 0 :  x(0) = x_now             (5 components: pose from TF, twist from /odom)
+  t = T :  lambda_x(T)     = -w_T_terminal * T_lin * F_ref_x
+                             + w_pp * (p_x_T - p_x_pursuit)
+           lambda_y(T)     = -w_T_terminal * T_lin * F_ref_y
+                             + w_pp * (p_y_T - p_y_pursuit)
+           lambda_th(T)    = w_th * (theta_T - theta_pursuit)
+           lambda_v(T)     = w_v_terminal     * v_T
+           lambda_omega(T) = w_omega_terminal * omega_T
 
 Operating modes (selected by the `mode` parameter at launch):
 
@@ -110,6 +141,8 @@ mode. Both modes publish a nav_msgs/Path on /pmp_planner/trajectory
 from dataclasses import dataclass, fields, replace
 from math import hypot, atan2, pi, sin, cos, tanh
 from typing import Any, List, Optional, Tuple
+import csv as _csv
+import time as _time
 import threading
 
 import numpy as np
@@ -143,6 +176,126 @@ def declare_and_load_dataclass(
         node.declare_parameter(name, default)
         updates[f.name] = node.get_parameter(name).value
     return replace(instance, **updates)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic logger
+# ---------------------------------------------------------------------------
+
+
+class TurnDiagnosticLogger:
+    """Thread-safe CSV logger for comparing planned vs actual heading.
+
+    Enabled by setting the ROS parameter ``diag_log_path`` to a non-empty
+    file path (e.g. ``/tmp/pmp_diag.csv``).  Two row types are interleaved:
+
+      source = "odom"    -- actual measured state, written on every /odom callback.
+                           theta_deg, omega, v are EKF-fused chassis readings.
+      source = "plan"    -- BVP-planned profile, written after each solve.
+                           tick=0 is t=0 (anchored to actual state by BVP BC),
+                           tick=k is the k-th committed/lookahead sample.
+                           theta_deg is the BVP-planned heading (state).
+                           omega, v are the PUBLISHED commands at this tick
+                           (post chassis-model inversion), NOT the BVP state.
+                           To recover the BVP state from omega_cmd, invert:
+                             omega_state ~= gain_omega * omega_cmd - tau_omega * domega_cmd/dt
+                           but in practice it is easier to log states
+                           separately if needed.
+                           lam_th, lam_om, alpha_cmd are only written on tick=0.
+
+    Quick analysis (requires pandas + matplotlib)::
+
+        import pandas as pd, matplotlib.pyplot as plt, numpy as np
+        df = pd.read_csv('/tmp/pmp_diag.csv')
+        odom = df[df.source == 'odom']
+        p0   = df[(df.source == 'plan') & (df.tick == 0)]
+
+        fig, axes = plt.subplots(3, 1, sharex=True)
+        axes[0].plot(odom.wall_s, odom.theta_deg, label='actual')
+        axes[0].plot(p0.wall_s,   p0.theta_deg,   '.', label='plan t=0')
+        axes[0].set_ylabel('heading (deg)')
+        axes[0].legend()
+        # lambda_omega at t=0: must be negative for a CCW turn.
+        # If it hovers near 0 the cold-start costate fix isn't firing.
+        axes[1].plot(p0.wall_s, p0.lam_om)
+        axes[1].axhline(0, color='k', ls='--')
+        axes[1].set_ylabel('lambda_omega(0)')
+        # alpha command at t=0: should be near +/-alpha_max while turning.
+        axes[2].plot(p0.wall_s, p0.alpha_cmd)
+        axes[2].set_ylabel('alpha*(0)  [rad/s^2]')
+        axes[2].set_xlabel('wall time (s)')
+        plt.tight_layout(); plt.show()
+
+    To plot the full planned heading *profile* for each solve::
+
+        plan_all = df[df.source == 'plan']
+        # group by chunk; each group is one BVP solve's committed arc
+        for (chunk,), grp in plan_all.groupby(['chunk']):
+            plt.plot(grp.tick, grp.theta_deg, label=f'chunk {chunk}')
+        plt.xlabel('tick within chunk'); plt.ylabel('planned heading (deg)')
+        plt.legend(); plt.show()
+    """
+
+    _HEADER = [
+        'wall_s', 'source', 'traj_id', 'chunk', 'tick',
+        'x', 'y', 'theta_deg', 'omega', 'v',
+        'lam_th', 'lam_om', 'alpha_cmd',
+    ]
+
+    def __init__(self, path: str):
+        self._lock = threading.Lock()
+        self._f = open(path, 'w', newline='', buffering=1)  # line-buffered
+        self._w = _csv.writer(self._f)
+        self._w.writerow(self._HEADER)
+        self._t0 = _time.monotonic()
+
+    def _now(self) -> float:
+        return _time.monotonic() - self._t0
+
+    def log_odom(self, x: float, y: float, theta: float, v: float, omega: float) -> None:
+        row = [f'{self._now():.4f}', 'odom', '', '', '',
+               f'{x:.3f}', f'{y:.3f}', f'{float(np.degrees(theta)):.3f}',
+               f'{float(omega):.5f}', f'{float(v):.5f}',
+               '', '', '']
+        with self._lock:
+            self._w.writerow(row)
+
+    def log_plan(
+        self,
+        traj_id: int, chunk: int,
+        thetas_deg: np.ndarray,
+        omegas:     np.ndarray,
+        vs:         np.ndarray,
+        lam_th_0:   float,
+        lam_om_0:   float,
+        alpha_cmd_0: float,
+    ) -> None:
+        """Log the full planned heading profile for one BVP solve.
+
+        The lam_th, lam_om, alpha_cmd columns are only populated on tick=0
+        so the CSV stays readable without pivoting.
+        """
+        t0 = self._now()
+        rows = []
+        for i in range(len(thetas_deg)):
+            rows.append([
+                f'{t0:.4f}', 'plan', traj_id, chunk, i,
+                '', '',
+                f'{float(thetas_deg[i]):.3f}',
+                f'{float(omegas[i]):.5f}',
+                f'{float(vs[i]):.5f}',
+                f'{lam_th_0:.5f}' if i == 0 else '',
+                f'{lam_om_0:.5f}' if i == 0 else '',
+                f'{alpha_cmd_0:.5f}' if i == 0 else '',
+            ])
+        with self._lock:
+            self._w.writerows(rows)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._f is not None:
+                self._f.close()
+                self._f = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,14 +333,40 @@ class PlannerConfig:
     T_horizon: float = 2.5
     control_rate: float = 10.0
 
-    # --- Control bounds (also act as tanh saturation scale in _ode) ---
-    # v_max: peak forward/reverse speed [m/s]. The tanh saturation in the
-    #    ODE is C-inf (unlike a hard clip), so solve_bvp's Newton doesn't
-    #    see slope kinks at the bounds. Set to the chassis's safe speed.
-    # omega_max: peak angular rate [rad/s]. 1.5 rad/s ~ 86 deg/s. Raise if
-    #    the chassis needs tighter turns; lower if it tends to oscillate.
-    v_max: float = 0.5
+    # --- Speed reference scale and state bounds ---
+    # v_max, omega_max: bounds on the chassis velocity STATES inside the
+    # BVP -- not on the published cmd. Enforced softly via the
+    # w_v_barrier / w_omega_barrier terms in the cost. The published cmd
+    # is the inversion of these states through the chassis model
+    # (chassis_gain_*, chassis_tau_*); during transients the cmd
+    # legitimately exceeds v_max / omega_max by the lead term
+    # |tau * accel_state|.
+    v_max:     float = 0.5
     omega_max: float = 1.5
+
+    # a_max, alpha_max: HARD bounds on the linear/angular acceleration
+    # controls [m/s^2, rad/s^2], tanh-saturated in _ode. Measure from a
+    # chassis step-response: peak observed |dv/dt| when commanding a
+    # v_max step (for a_max), peak |domega/dt| when commanding an
+    # omega_max step (for alpha_max). The states v, omega evolve as
+    # dv/dt = a and domega/dt = alpha. These bounds also set how large
+    # the inversion's lead term (tau * accel) can grow, so an over-
+    # estimated alpha_max paired with a too-large chassis_tau_omega is
+    # what drives published omega_cmd into saturation during ramps.
+    a_max:     float = 1.0
+    alpha_max: float = 3.0
+
+    # cmd_deadzone_v, cmd_deadzone_omega: lower threshold for the
+    # published twist (applied AFTER the chassis-model inversion).
+    # The BVP-predicted v, omega can be genuinely near-zero values
+    # during turn-in-place phases (brake cost wants v=0, speed
+    # reference is small). Below the deadzone threshold, the planner
+    # publishes 0 instead -- chassis stays stationary, the BVP's plan
+    # and the chassis's reality agree. Set above the noise floor of
+    # your BVP solve but well below the smallest "intended" movement
+    # command. Defaults give ~3 cm/s linear, ~3 deg/s angular dead band.
+    cmd_deadzone_v:     float = 0.03
+    cmd_deadzone_omega: float = 0.05
 
     # --- Running-cost weights ---
     # alpha_t: constant time-penalty per second. Acts as a mild urgency
@@ -207,14 +386,11 @@ class PlannerConfig:
     #    Set to 0 to disable; useful to isolate brake/alignment behavior.
     #    Raise if the chassis doesn't reach v_max on straight segments.
     # w_brake: heading-coupled brake on v^2:
-    #    (1/2) * w_brake * (1 - F . h)^2 * v^2.
-    #    Quadratic-in-misalignment: gentle near alignment (cornering is
-    #    smooth), strong when anti-aligned (overwrites position-pursuit
-    #    costates that would otherwise drive reverse). Magnitude needs to
-    #    exceed 2 * w_pp * (pursuit distance) + beta * T_horizon to
-    #    reliably prevent reverse; empirically |lambda . h| is in the
-    #    10-30 range, so 200 is the safe default. Set to 0 to debug the
-    #    gate in isolation (re-introduces reverse-while-turning).
+    #    (1/2) * w_brake * (1 - F . h)^2 * v^2. With v as a state, the
+    #    brake's effect appears in lambda_v_dot rather than directly in
+    #    the optimal control, but the qualitative behavior is the same:
+    #    gentle near alignment (cornering smooth), strong when anti-
+    #    aligned (drives a* < 0 via large lambda_v).
     # L_brake: speed-reference length scale [m]. v_ref = v_max *
     #    tanh(d_to_goal / L_brake). Set near the chassis stopping distance.
     #    Smaller values brake earlier; larger values maintain speed closer
@@ -223,13 +399,22 @@ class PlannerConfig:
     #    v_ref: gate = ((1 + F.h) / 2)^p. p=4 (default) gives gate(perp)
     #    = 0.06 -- effective braking when perpendicular. p=2 gives
     #    gate(perp) = 0.25 (racing-line cornering). p=8 is near binary.
-    #    p=0 disables the gate entirely (reintroduces the at-goal yaw
-    #    shuffle -- don't use without a downstream supervisor).
-    # gamma_v: quadratic regularizer on v. Prevents v_unsat from blowing
-    #    up when the denominator is small. Raise if v oscillates.
-    # gamma_w: quadratic regularizer on omega. Stiffens ALL angular
-    #    dynamics globally; too large makes tight maneuvers infeasible.
-    #    Lower if the chassis won't turn fast enough at the goal.
+    # w_omega_run: quadratic regularizer on state omega (NOT the control).
+    #    Penalises being in a rotating state without active commanding.
+    #    Small (~0.1) by default; larger values damp residual rotation
+    #    but also blunt sharp turns.
+    # gamma_a, gamma_alpha: quadratic regularizers on the controls.
+    #    Set the closed-form laws
+    #        a*     = -lambda_v     / gamma_a,     sat by a_max
+    #        alpha* = -lambda_omega / gamma_alpha, sat by alpha_max
+    #    Smaller gamma = more aggressive; larger = smoother. Tune so
+    #    unsaturated controls at typical operating points sit in the
+    #    middle of the saturation range.
+    # w_v_barrier, w_omega_barrier: soft state-bound barriers, kept as
+    #    safety nets. The acceleration models on v and omega allow the
+    #    states to drift above v_max / omega_max if the controls are
+    #    saturated and held; the barriers drive the corresponding costate
+    #    large in the right direction to brake.
     alpha_t: float = 1.0
     beta:    float = 5.0
     w_h:     float = 5.0
@@ -237,8 +422,11 @@ class PlannerConfig:
     w_brake: float = 200.0
     L_brake: float = 0.5
     align_gate_power: float = 4.0
-    gamma_v: float = 0.5
-    gamma_w: float = 0.2
+    w_omega_run:     float = 0.1
+    gamma_a:         float = 0.5
+    gamma_alpha:     float = 0.2
+    w_v_barrier:     float = 50.0
+    w_omega_barrier: float = 50.0
 
     # --- Field smoothing ---
     # field_eps: soft re-normalisation denominator for F_unit:
@@ -255,21 +443,37 @@ class PlannerConfig:
     align_smooth_sigma: float = 0.0
 
     # --- Terminal-cost weights ---
-    # w_pp: pursuit-point position pull: (1/2)*w_pp*||p_T - p_pursuit||^2.
-    #    p_pursuit is the streamline endpoint at arc-length lookahead.
-    #    Sitting on the flow line removes the corner-cut bias the old
-    #    Lyapunov-T terminal had. Raise toward ~10 if endpoint feels
-    #    under-pulled; lower if Newton struggles to converge.
+    # w_T_terminal: Lyapunov-in-T-space terminal weight on T_lin^2 where
+    #    T_lin = T_ref - F_ref . (p_T - p_pursuit). Provides LONG-RANGE
+    #    pull along -F_ref (the geometry of the field), complementary to
+    #    the local isotropic w_pp well. The transversality is
+    #    lambda_xy(T) = -w_T_terminal * T_lin * F_ref + w_pp * (p_T - p_pursuit),
+    #    so the two terminal-position terms cooperate when the BVP
+    #    endpoint sits along the streamline and disagree softly when it
+    #    drifts off-axis. Raise to bias the endpoint toward the
+    #    streamline; lower if Newton struggles on sharp T fields.
+    # w_pp: small isotropic pursuit-point pull (1/2)*w_pp*||p_T - p_pursuit||^2.
+    #    Breaks the half-pipe degeneracy of T_lin^2 alone (which is
+    #    degenerate perpendicular to F_ref). Keep small relative to
+    #    w_T_terminal so it doesn't fight the streamline pull.
     # w_th: terminal heading basin: (1/2)*w_th*(theta_T - theta_pursuit)^2.
     #    Also drives the running heading spring when w_F ~ 0 (at goal).
-    #    See _ode for why a quadratic form is preferred over (1-cos).
+    # w_v_terminal, w_omega_terminal: stop-condition weights on v_T^2,
+    #    omega_T^2. Set both > 0 to tell the planner the chassis should
+    #    arrive stationary; lambda_v(T) = w_v_terminal * v_T and
+    #    lambda_omega(T) = w_omega_terminal * omega_T are the
+    #    corresponding transversalities. Setting to 0 leaves terminal
+    #    velocity free (chassis "drives through" the goal).
     # pursuit_lookahead_mult: target arc length as a multiple of
     #    v_max * T_horizon. 1.0 places the terminal target where the
     #    chassis would arrive if it tracked F at full speed. < 1 leaves
     #    slack (eases Newton on hard fields); > 1 reaches past the natural
     #    horizon (tighter tracking, harder convergence).
-    w_pp: float = 5.0
-    w_th: float = 2.0
+    w_T_terminal:     float = 2.0
+    w_pp:             float = 0.5
+    w_th:             float = 2.0
+    w_v_terminal:     float = 5.0
+    w_omega_terminal: float = 5.0
     pursuit_lookahead_mult: float = 1.0
 
     # --- Cross-track residual (opt-in, off by default) ---
@@ -344,6 +548,44 @@ class PlannerConfig:
     #    chassis orbits the goal indefinitely.
     max_rollout_sim_time: float = 60.0  # [s]
 
+    # --- Chassis model for feedforward inversion at publication ---
+    # The BVP plans in "desired body behaviour" space; published cmds
+    # are
+    #   v_cmd     = (v_state     + tau_v     * a_star)     / gain_v
+    #   omega_cmd = (omega_state + tau_omega * alpha_star) / gain_omega
+    # where a_star, alpha_star are the BVP-optimal controls.
+    #
+    # These parameters do NOT enter the BVP itself -- they only
+    # transform the BVP-planned (state, control) into a published cmd
+    # which, after the chassis's static gain and first-order tracking
+    # lag, produces the BVP-planned state. Identify gain and tau from
+    # an angular / linear step-response test on the target platform.
+    #
+    # gain < 1 (typical for skid-steer): the chassis rotates / drives
+    #   at a fraction of the cmd's nominal rate, because lateral wheel
+    #   slip during rotation (or longitudinal slip for v) eats some of
+    #   the wheel-speed differential. Setting gain = 0.77 means commanding
+    #   omega = 1.3 to achieve 1.0 rad/s of body rotation.
+    # tau: first-order time constant of the velocity-tracking loop.
+    #   For skid-steer, dominated by lateral-friction dynamics rather
+    #   than the inner wheel-velocity loop; can vary with omega
+    #   magnitude. ERR ON THE LOW SIDE -- under-estimating tau makes
+    #   the chassis lag the BVP plan slightly; over-estimating it
+    #   amplifies cmd transients and causes overshoot. tau = 0 gives
+    #   static-gain-only compensation, which preserves the integral of
+    #   the planned motion exactly but lags in timing.
+    chassis_gain_v:     float = 1.0
+    chassis_gain_omega: float = 0.77   # measured for Scout Mini in sim
+    chassis_tau_v:      float = 0.10
+    chassis_tau_omega:  float = 0.30   # err low; over-estimate causes overshoot
+
+    # Hard caps on the PUBLISHED cmd (post-inversion). Should be >= the
+    # chassis controller's max_velocity so the inversion's lead term
+    # isn't clipped. The BVP's v_max / omega_max are SEPARATE bounds in
+    # the planning model and apply to the BVP state, not the cmd.
+    chassis_v_max:      float = 5.0
+    chassis_omega_max:  float = 5.0
+
     @property
     def dt(self) -> float:
         return self.T_horizon / self.N
@@ -354,6 +596,10 @@ class TopicConfig:
     map_frame: str = "map"
     robot_frame: str = "base_link"
     enable_stamped_cmd_vel: bool = False
+    # Set to a file path (e.g. /tmp/pmp_diag.csv) to enable the diagnostic
+    # logger. Empty string disables it. The logger writes planned heading
+    # profiles and actual odom to CSV for post-analysis; see TurnDiagnosticLogger.
+    diag_log_path: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -614,13 +860,22 @@ class VectorFieldGrid:
 
 
 class PMPShootingSolver:
-    """TPBVP solver for the unicycle PMP problem.
+    """TPBVP solver for the 5D unicycle PMP problem.
 
-    Same solver in both modes. Online mode calls solve() per tick;
-    offline mode calls solve() once per rollout segment AND uses the
-    BVP solution object (self._prev_sol) to densely sample the
-    committed segment. The closed-form control law is applied per
-    sample via _control_law_pointwise().
+    State (5): (p_x, p_y, theta, v, omega).
+    Control (2): (a, alpha) -- linear and angular acceleration.
+
+    The published twist is the planner's PREDICTED chassis velocity at
+    each tick, i.e. the state (v, omega) trajectory -- not the control.
+    The chassis driver receives a velocity setpoint that already respects
+    acceleration bounds, so its low-level tracker has nothing to fight.
+    Online mode reads (v_now, omega_now) from /odom and pins them as
+    initial conditions; offline mode propagates simulated (v, omega)
+    across segments via the BVP's own state evolution.
+
+    Same solver in both modes. Online mode calls solve() per tick and
+    publishes the state at the next control tick; offline mode calls
+    solve() once per rollout segment and densely samples the BVP solution.
     """
 
     def __init__(self, cfg: PlannerConfig, field: VectorFieldGrid):
@@ -628,11 +883,11 @@ class PMPShootingSolver:
         self.field = field
         self._prev_sol = None
         # Cached per-solve for the BC/ODE closures.
-        self._x0: Optional[np.ndarray] = None
+        self._x0: Optional[np.ndarray] = None        # 5-vector now
         self._goal: Optional[np.ndarray] = None
         # Last successful trajectory for introspection / publishing.
-        self._last_state: Optional[np.ndarray] = None      # (m, 3)
-        self._last_costate: Optional[np.ndarray] = None    # (m, 3)
+        self._last_state: Optional[np.ndarray] = None      # (m, 5)
+        self._last_costate: Optional[np.ndarray] = None    # (m, 5)
         self._last_error: Optional[str] = None
         # Field-version tracking: a replaced field invalidates the warm start.
         self._last_field_version: int = -1
@@ -640,103 +895,104 @@ class PMPShootingSolver:
         #   p_pursuit     -- streamline endpoint at the lookahead distance.
         #   theta_pursuit -- F-tangent at p_pursuit, blended toward
         #                    theta_goal inside the approach zone.
+        #   T_ref, F_ref  -- T(p_pursuit) and F_unit(p_pursuit), reused
+        #                    by _bc for the T_lin Lyapunov transversality.
         self._p_pursuit: np.ndarray = np.zeros(2, dtype=np.float64)
         self._theta_pursuit: float = 0.0
-        # Field-alignment-cost fade: w_F in [0, 1], set per-solve from the
-        # cubic smoothstep of chassis distance to goal. 1.0 = full field
-        # alignment; 0.0 = pure goal-yaw spring. Per-solve scalar, NOT a
-        # per-mesh-point fade -- per-mesh-point fading suppresses the brake
-        # at the trajectory's late mesh points and causes approach overshoot.
+        self._T_ref: float = 0.0
+        self._F_ref: np.ndarray = np.zeros(2, dtype=np.float64)
+        # Field-alignment-cost fade: w_F in [0, 1], cubic smoothstep of
+        # chassis-to-goal distance. Applied ONLY to the alignment cost
+        # (w_F * w_h * (1 - F.h)); speed and brake fade naturally via
+        # v_ref -> 0 and v -> 0 near the goal, no explicit fade needed.
         self._align_fade: float = 1.0
         # Cross-track reference (only populated when cfg.w_xt > 0). Empty
         # arrays cause _ode's cross-track block to short-circuit cheaply.
         self._xt_ref: np.ndarray = np.zeros((0, 2))
         self._xt_n_perp: np.ndarray = np.zeros((0, 2))
         self._xt_sigma: float = 0.15
+        # Duration of the last committed segment [s].  Used to time-shift the
+        # offline warm start: for online mode this is one tick (~ 0 shift
+        # relative to T_horizon); for offline mode it is dt_segment, and
+        # evaluating prev_sol at [0, T_h] instead of [seg_T, T_h] feeds the
+        # *start* of the previous plan rather than its tail -- a 50 % phase
+        # error in the costate waveform that systematically kills the turn.
+        self._last_seg_T: float = 0.0
 
     # --- Augmented dynamics ------------------------------------------------
 
     def _ode(self, t: np.ndarray, y: np.ndarray) -> np.ndarray:
         """RHS of the (state, costate) ODE, vectorized over the BVP mesh.
 
-        y has shape (6, m) where rows are
-            [p_x, p_y, theta, lambda_x, lambda_y, lambda_th].
+        y has shape (10, m) where rows are
+            [p_x, p_y, theta, v, omega, lambda_x, lambda_y, lambda_th,
+             lambda_v, lambda_omega].
         """
         cfg = self.cfg
-        px, py, th = y[0], y[1], y[2]
-        lx, ly, lt = y[3], y[4], y[5]
+        px, py, th, v, w = y[0], y[1], y[2], y[3], y[4]
+        lx, ly, lt, lv, lw = y[5], y[6], y[7], y[8], y[9]
         cos_t = np.cos(th)
         sin_t = np.sin(th)
 
         T_now, dT_dx, dT_dy, Fux, Fuy = self.field.query_vec(px, py)
         F_dot_h = Fux * cos_t + Fuy * sin_t
+        cross_F_h = Fux * sin_t - Fuy * cos_t
 
-        d_to_goal = np.sqrt((px - self._goal[0]) ** 2
-                            + (py - self._goal[1]) ** 2)
+        # Speed-reference scaffolding (same as 3D version).
         v_ref = np.zeros_like(px)
         v_ref_eff = np.zeros_like(px)
         gate_prime = np.zeros_like(px)
         if cfg.w_v > 0.0:
+            d_to_goal = np.sqrt((px - self._goal[0]) ** 2
+                                + (py - self._goal[1]) ** 2)
             v_ref = cfg.v_max * np.tanh(d_to_goal / cfg.L_brake)
             half_one_plus = 0.5 * (1.0 + F_dot_h)
-            half_one_plus = np.clip(half_one_plus, 0.0, 1.0)  # numerical safety
+            half_one_plus = np.clip(half_one_plus, 0.0, 1.0)
             p_gate = cfg.align_gate_power
             gate = half_one_plus ** p_gate
-            # gate'(F . h) = (p / 2) * ((1 + F . h) / 2) ** (p - 1).
-            # Mathematically fine for any p >= 1; p=0 special-cased to
-            # avoid 0^(-1) and to make the cost reduction explicit.
             if p_gate > 0.0:
                 gate_prime = (0.5 * p_gate) * (half_one_plus ** (p_gate - 1.0))
             else:
                 gate_prime = np.zeros_like(half_one_plus)
             v_ref_eff = v_ref * gate
 
-        # Closed-form unconstrained optimal controls from dH/du = 0.
-        # Brake denom: w_brake * (1 - F.h)^2 ramps from 0 at alignment to
-        # 4*w_brake at anti-aligned. Quadratic-in-misalignment is key:
-        #   * gentle near alignment (cornering: small angle -> tiny denom
-        #     contribution, chassis follows F-curvature smoothly);
-        #   * strong when anti-aligned (overwrites position-pursuit
-        #     costates that would otherwise pull v into reverse).
-        # The theta-derivative of the brake term picks up a (1 - F.h)
-        # factor that vanishes exactly at alignment, so cross_F_h jitter
-        # from bilinear interpolation doesn't pump omega during straight
-        # forward drive.
+        # Closed-form optimal controls. Both channels use acceleration
+        # control (a, alpha are controls; v, omega are integrators).
+        # a*     = -lambda_v     / gamma_a       (sat |a|     <= a_max)
+        # alpha* = -lambda_omega / gamma_alpha   (sat |alpha| <= alpha_max)
+        #
+        # The true PMP optimal is clip(unsat, -bound, +bound). We use tanh
+        # with K=1 rather than a hard clip to keep the ODE smooth for
+        # solve_bvp's collocation.  K=1 underestimates the control by 24 %
+        # exactly at the saturation boundary, but with the physics-based
+        # cold-start costate (|lam_om_0| ~= 1.2 = 2x the saturation threshold
+        # gamma_alpha * alpha_max = 0.6), the actual unsaturated value is
+        # |lam_om_0|/gamma_alpha = 6, giving tanh(2) = 0.964 -- only 3.6 %
+        # error in practice.  Using a sharper K (e.g. 8) collapses tanh to a
+        # near-step function at the switching point; solve_bvp then meshes
+        # the near-discontinuity to death and hits bvp_max_nodes every solve.
+        a_unsat     = -lv / cfg.gamma_a
+        alpha_unsat = -lw / cfg.gamma_alpha
+        a     = cfg.a_max     * np.tanh(a_unsat     / cfg.a_max)
+        alpha = cfg.alpha_max * np.tanh(alpha_unsat / cfg.alpha_max)
 
-        one_minus_dot = 1.0 - F_dot_h
-        denom_v = 2.0 * cfg.gamma_v + cfg.w_v + cfg.w_brake * one_minus_dot * one_minus_dot
-        v_unsat = (cfg.w_v * v_ref_eff
-                   - lx * cos_t - ly * sin_t) / denom_v
-        w_unsat = -lt / (2.0 * cfg.gamma_w)
-
-        v = cfg.v_max     * np.tanh(v_unsat / cfg.v_max)
-        w = cfg.omega_max * np.tanh(w_unsat / cfg.omega_max)
-
+        # State dynamics. Both v and omega are integrators of bounded
+        # controls; no first-order chassis-lag modeling on either channel.
         dpx = v * cos_t
         dpy = v * sin_t
         dth = w
-        # Position costates from the piecewise-C^1 potential:
-        #   gradient = beta * min(T, T_horizon) * grad(T) / T_horizon.
-        # The T_horizon cap is critical: without it the gradient grows
-        # without bound (beta * T / T_horizon) on long paths, swamping
-        # w_h * cross_F_h and biasing the BVP toward shortcuts regardless
-        # of the field streamline tangent. The cap also makes the gradient
-        # fade to zero as T->0 (goal sink), so braking is governed by
-        # v_ref rather than a residual position pull.
-        # (Hard np.clip is the exact PMP saturation for box-constrained u,
-        # but its slope kink breaks solve_bvp's Newton; tanh is C-inf and
-        # asymptotes to +-u_max.)
+        dv  = a
+        dw  = alpha
+
+        # Position costates -- same as 3D, only L_pos contributes under
+        # the frozen-field approximation.
         T_clip = np.minimum(T_now, cfg.T_horizon)
         dlx = -cfg.beta * T_clip * dT_dx / cfg.T_horizon
         dly = -cfg.beta * T_clip * dT_dy / cfg.T_horizon
 
-        # Cross-track residual (opt-in): adds -w_xt * r_xt * n_perp to
-        # (dlx, dly) where r_xt is the signed perpendicular drift from the
-        # streamline at a Gaussian-weighted projection. Frozen-reference
-        # approximation drops dr_xt/dp_ref. Soft (Gaussian) projection is
-        # what makes Newton converge: discrete nearest-sample lookups are
-        # piecewise-constant in n_perp and mesh-refinement oscillates at
-        # Voronoi boundaries.
+        # Cross-track residual (opt-in). Same as 3D: adds
+        # -w_xt * r_xt * n_perp to (dlx, dly) with a soft Gaussian
+        # projection onto the streamline reference.
         n_ref = self._xt_ref.shape[0]
         if cfg.w_xt > 0.0 and n_ref >= 2:
             mesh = np.column_stack([px, py])
@@ -756,68 +1012,98 @@ class PMPShootingSolver:
             dlx = dlx - cfg.w_xt * r_xt * n_perp[:, 0]
             dly = dly - cfg.w_xt * r_xt * n_perp[:, 1]
 
-        # Heading costate: two complementary running heading drives, cross-
-        # faded by self._align_fade (= w_F, a per-solve scalar set in
-        # solve() from the chassis-to-goal smoothstep):
-        #
-        # (1) Field-aligned terms (active when w_F ~ 1, navigation regime),
-        #     all proportional to cross_F_h = F_x sin(theta) - F_y cos(theta):
-        #       -dL_align/dtheta  = -w_h * cross_F_h
-        #       -dL_speed/dtheta  = -w_v * v_ref * (v - v_ref_eff) * gate'(F.h) * cross_F_h
-        #       -dL_brake/dtheta  = -w_brake * (1 - F.h) * v^2 * cross_F_h
-        #     The (1 - F.h) factor in the brake term vanishes at alignment,
-        #     so a straight drive on a slightly noisy F field stays clean.
-        #
-        # (2) Terminal-yaw running spring (active when w_F ~ 0, goal regime):
-        #       -dL_yaw/dtheta = -w_h * (theta - theta_pursuit)
-        #     Without this, at-goal omega is governed by the terminal BC
-        #     alone (constant-omega LQR), which is too slow for large yaw
-        #     errors. With it, unconstrained omega ~ sqrt(w_h / (2*gamma_w))
-        #     * |delta|, saturating omega_max at moderate yaw error.
-        #
-        # Plus the kinematic coupling lx*v*sin(theta) - ly*v*cos(theta)
-        # (from lambda . df/dtheta), which is never faded.
-        #
-        # w_F is a per-solve scalar, NOT per-mesh-point: per-mesh-point
-        # fading would suppress the brake at the trajectory's late nodes
-        # and cause approach overshoot when the chassis is still far away.
+        # Heading costate. Field-aligned terms are listed below; the
+        # alignment cost itself is faded by w_F, but speed and brake
+        # contributions are NOT explicitly faded -- they vanish naturally
+        # near the goal via v_ref -> 0 and v -> 0, respectively. The
+        # (1 - F.h) factor on the brake term vanishes exactly at
+        # alignment, so noise in F doesn't pump omega during straight
+        # drive.
         fade = self._align_fade
-        cross_F_h = Fux * sin_t - Fuy * cos_t
         delta_yaw = th - self._theta_pursuit
+        one_minus_dot = 1.0 - F_dot_h
         dlt = (-cfg.w_h * cross_F_h * fade
-               - cfg.w_v * v_ref * (v - v_ref_eff) * gate_prime * cross_F_h * fade
-               - cfg.w_brake * one_minus_dot * v * v * cross_F_h * fade
                - cfg.w_h * delta_yaw * (1.0 - fade)
+               - cfg.w_v * v_ref * (v - v_ref_eff) * gate_prime * cross_F_h
+               - cfg.w_brake * one_minus_dot * v * v * cross_F_h
                + lx * v * sin_t - ly * v * cos_t)
 
-        return np.vstack([dpx, dpy, dth, dlx, dly, dlt])
+        # v-costate. No self-coupling -- a is an unrestricted control
+        # affecting only dv/dt, so dH/dv has no -lambda_v term. This
+        # is the same structure as the original 5D acceleration model.
+        dlv = (-cfg.w_v * (v - v_ref_eff)
+               - cfg.w_brake * one_minus_dot * one_minus_dot * v
+               - lx * cos_t - ly * sin_t)
+
+        # omega-costate. No self-coupling -- alpha is an unrestricted
+        # control affecting only domega/dt, so dH/domega has no
+        # -lambda_omega term. Symmetric with lambda_v.
+        dlw = -cfg.w_omega_run * w - lt
+
+        # Soft state-bound barriers. The closed-form a*, alpha* are
+        # bounded but the resulting v, omega trajectories aren't; without
+        # these the BVP can plan v > v_max (e.g. ~0.66 vs v_max=0.5 with
+        # default tuning, driven by the position pull via lambda_x,y).
+        # The publish-side clip then masks the overshoot online but
+        # leaves the offline next-segment IC inconsistent with what the
+        # chassis can execute.
+        # Cost: (1/2) * w_bar * max(0, |state| - bound)^2.
+        # Gradient w.r.t. state: w_bar * sign(state) * max(0, |state| - bound).
+        # Contributes -gradient to the costate dynamics.
+        v_excess = np.maximum(0.0, np.abs(v) - cfg.v_max)
+        w_excess = np.maximum(0.0, np.abs(w) - cfg.omega_max)
+        dlv -= cfg.w_v_barrier     * np.sign(v) * v_excess
+        dlw -= cfg.w_omega_barrier * np.sign(w) * w_excess
+
+        return np.vstack([dpx, dpy, dth, dv, dw, dlx, dly, dlt, dlv, dlw])
 
     # --- Boundary conditions ----------------------------------------------
 
     def _bc(self, ya: np.ndarray, yb: np.ndarray) -> np.ndarray:
-        """Six BC residuals; solve_bvp drives these to zero.
+        """Ten BC residuals; solve_bvp drives these to zero.
 
-        Initial state is pinned to x_now (3 BCs). The terminal three are
-        the transversalities from Phi(x_T):
-            lambda_x(T)  = 2 w_pp (p_x_T - p_x_pursuit)
-            lambda_y(T)  = 2 w_pp (p_y_T - p_y_pursuit)
+        Initial state (5): pose from TF and twist from /odom are pinned.
+        Terminal (5): transversalities from Phi(x_T):
+            lambda_x(T)  = -w_T_terminal * T_lin * F_ref_x
+                           + w_pp * (p_x_T - p_x_pursuit)
+            lambda_y(T)  = -w_T_terminal * T_lin * F_ref_y
+                           + w_pp * (p_y_T - p_y_pursuit)
             lambda_th(T) = w_th * (theta_T - theta_pursuit)
-        (Quadratic Phi gives linear transversalities, which Newton handles
-        cleanly. A (1-cos) Phi would give sin() here and introduce
-        multi-basin pathology.)
+            lambda_v(T)  = w_v_terminal * v_T
+            lambda_om(T) = w_omega_terminal * omega_T
+        T_lin = T_ref - F_ref . (p_T - p_pursuit) is the linearization
+        of the T-field around the pursuit point, giving long-range
+        gradient along -F_ref that complements the running L_pos.
         """
         cfg = self.cfg
         x0 = self._x0
         ppx = float(self._p_pursuit[0])
         ppy = float(self._p_pursuit[1])
         thp = self._theta_pursuit
+        F_ref_x = float(self._F_ref[0])
+        F_ref_y = float(self._F_ref[1])
+        T_lin = (self._T_ref
+                 - F_ref_x * (yb[0] - ppx)
+                 - F_ref_y * (yb[1] - ppy))
+
+        # Terminal transversalities derived from Phi.
+        lam_x_T = -cfg.w_T_terminal * T_lin * F_ref_x + cfg.w_pp * (yb[0] - ppx)
+        lam_y_T = -cfg.w_T_terminal * T_lin * F_ref_y + cfg.w_pp * (yb[1] - ppy)
+        lam_th_T = cfg.w_th * (yb[2] - thp)
+        lam_v_T  = cfg.w_v_terminal     * yb[3]
+        lam_om_T = cfg.w_omega_terminal * yb[4]
+
         return np.array([
-            ya[0] - x0[0],
-            ya[1] - x0[1],
-            ya[2] - x0[2],
-            yb[3] - 2.0 * cfg.w_pp * (yb[0] - ppx),
-            yb[4] - 2.0 * cfg.w_pp * (yb[1] - ppy),
-            yb[5] - cfg.w_th * (yb[2] - thp),
+            ya[0] - x0[0],     # p_x(0)
+            ya[1] - x0[1],     # p_y(0)
+            ya[2] - x0[2],     # theta(0)
+            ya[3] - x0[3],     # v(0)
+            ya[4] - x0[4],     # omega(0)
+            yb[5] - lam_x_T,   # lambda_x(T_h)
+            yb[6] - lam_y_T,   # lambda_y(T_h)
+            yb[7] - lam_th_T,  # lambda_th(T_h)
+            yb[8] - lam_v_T,   # lambda_v(T_h)
+            yb[9] - lam_om_T,  # lambda_omega(T_h)
         ])
 
     # --- Initial guess ----------------------------------------------------
@@ -825,27 +1111,25 @@ class PMPShootingSolver:
     def _rollout_guess(
         self, x0: np.ndarray, goal: np.ndarray, t_mesh: np.ndarray,
     ) -> np.ndarray:
-        """Forward-rollout a feasible state trajectory descending the field.
+        """Forward-rollout a feasible 5D state trajectory descending the field.
 
-        Heuristic: pick a desired heading from F_unit (or -grad T, or the
-        goal direction as fallbacks); ramp omega to track it; modulate
-        speed with the same alignment gate as the running cost. This
-        naturally pure-rotates when misaligned and drives forward only
-        when aligned. When already inside the position-tolerance ball,
-        the desired heading is theta_goal so the rollout spends the
-        horizon rotating toward goal yaw -- matching the BVP's at-goal
-        regime. The costate is linearly ramped from 0 to the terminal
-        transversality evaluated at the rollout endpoint; since the rollout
-        tracks F, the endpoint is near p_pursuit and the ramped lambda is
-        small, which is the warm start solve_bvp's Newton prefers.
+        Picks a desired heading from F_unit (or -grad T, or the goal
+        direction as fallbacks), tracks heuristic v, omega targets with
+        bounded-acceleration P controllers, and integrates state under
+        the same integrator dynamics as the BVP _ode.
+
+        Costates ramp linearly from 0 to the terminal transversality
+        evaluated at the rollout endpoint -- small warm-start magnitudes
+        are what Newton prefers.
         """
         cfg = self.cfg
         m = t_mesh.size
         dt = t_mesh[1] - t_mesh[0] if m > 1 else cfg.T_horizon
 
-        state = np.zeros((3, m))
+        state = np.zeros((5, m))
         state[:, 0] = x0
-        px, py, th = float(x0[0]), float(x0[1]), float(x0[2])
+        px, py, th, v, w = (float(x0[0]), float(x0[1]), float(x0[2]),
+                            float(x0[3]), float(x0[4]))
 
         for k in range(1, m):
             d_goal = hypot(px - goal[0], py - goal[1])
@@ -863,68 +1147,169 @@ class PMPShootingSolver:
                     psi_d = atan2(goal[1] - py, goal[0] - px)
 
             e = ((psi_d - th + pi) % (2.0 * pi)) - pi
-            omega = max(min(2.0 * e, cfg.omega_max), -cfg.omega_max)
-
             half_one_plus = max(0.0, 0.5 * (1.0 + cos(e)))
             gate = half_one_plus ** cfg.align_gate_power
-            v_target = cfg.v_max * tanh(d_goal / cfg.L_brake)
-            v = v_target * gate
+            v_target = cfg.v_max     * tanh(d_goal / cfg.L_brake) * gate
+            w_target = max(min(2.0 * e, cfg.omega_max), -cfg.omega_max)
 
+            # Both channels: bounded-acceleration tracking of the heuristic
+            # velocity target. Matches the BVP _ode's integrator dynamics.
+            a_cmd     = max(min(2.0 * (v_target - v), cfg.a_max),     -cfg.a_max)
+            alpha_cmd = max(min(2.0 * (w_target - w), cfg.alpha_max), -cfg.alpha_max)
+            v  += a_cmd     * dt
+            w  += alpha_cmd * dt
             px += v * cos(th) * dt
             py += v * sin(th) * dt
-            th += omega * dt
-            state[:, k] = (px, py, th)
+            th += w * dt
 
+            state[:, k] = (px, py, th, v, w)
+
+        # Terminal transversalities evaluated at the rolled-out endpoint.
         ppx = float(self._p_pursuit[0])
         ppy = float(self._p_pursuit[1])
-        s = (t_mesh - t_mesh[0]) / max(t_mesh[-1] - t_mesh[0], 1e-9)
-        lx_T = 2.0 * cfg.w_pp * (state[0, -1] - ppx)
-        ly_T = 2.0 * cfg.w_pp * (state[1, -1] - ppy)
-        lt_T = cfg.w_th * (state[2, -1] - self._theta_pursuit)
+        F_ref_x = float(self._F_ref[0])
+        F_ref_y = float(self._F_ref[1])
+        px_T, py_T, th_T, v_T, w_T = (state[0, -1], state[1, -1], state[2, -1],
+                                      state[3, -1], state[4, -1])
+        T_lin = self._T_ref - F_ref_x * (px_T - ppx) - F_ref_y * (py_T - ppy)
 
+        lam_x_T  = -cfg.w_T_terminal * T_lin * F_ref_x + cfg.w_pp * (px_T - ppx)
+        lam_y_T  = -cfg.w_T_terminal * T_lin * F_ref_y + cfg.w_pp * (py_T - ppy)
+        lam_th_T = cfg.w_th             * (th_T - self._theta_pursuit)
+        lam_v_T  = cfg.w_v_terminal     * v_T
+        lam_om_T = cfg.w_omega_terminal * w_T
+
+        # Physical cold-start estimate for the initial costates.
+        #
+        # The naive ramp (s * terminal_value) leaves lambda_omega ~= 0
+        # throughout when omega_T ~= 0 (turn-to-stop), giving alpha* ~= 0
+        # from the start. That is inconsistent with the state trajectory
+        # and can trap Newton in a low-rotation local minimum on cold
+        # starts.
+        #
+        # Instead we derive estimates from the simplified costate dynamics:
+        #
+        #   d(lam_th)/dt ~= -w_h * cross_F_h            (dominant term)
+        #   lam_th(T)    ~= 0                           (successful-turn BC)
+        #
+        # Integrating forward from t=0 to T:
+        #   lam_th(T) - lam_th(0) = -w_h * integral(cross_F_h dt)
+        #                         ~= -w_h * cross_F_h_0 / 2 * T_turn
+        #   =>  lam_th(0) ~= w_h * cross_F_h_0 * T_turn / 2
+        #
+        # Sign check for CCW turn (cross_F_h_0 = -1):
+        #   lam_th(0) = 5 * (-1) * T/2 < 0   [ok]
+        #
+        #   d(lam_om)/dt = -w_omega_run * omega - lam_th;
+        #   with lam_th < 0 this drives lam_om upward in forward time, so
+        #   lam_om(0) must be negative (below its terminal ~= 0). We pin
+        #   it just past the saturation boundary gamma_alpha * alpha_max:
+        #     lam_om(0) ~= gamma_alpha * alpha_max * cross_F_h_0 * K
+        #
+        # Sign check for CCW (cross_F_h_0 = -1):
+        #   lam_om(0) = 0.2 * 3 * (-1) * 2 = -1.2 < 0
+        #   =>  alpha* = -(-1.2) / 0.2 = +6  ->  saturates at +alpha_max  [ok]
+        th_0 = float(x0[2])
+        _, _, _, fux_0, fuy_0 = self.field.query_scalar(float(x0[0]), float(x0[1]))
+        cross_F_h_0 = fux_0 * sin(th_0) - fuy_0 * cos(th_0)
+
+        # Fraction of T_horizon we expect to be in the "active turn" phase;
+        # clamp to [0, 1] so the estimate is sensible near the goal.
+        heading_err_0 = ((self._theta_pursuit - th_0 + pi) % (2.0 * pi)) - pi
+        turn_frac = min(1.0, abs(heading_err_0) / (pi / 4.0))
+
+        # Note the sign: NO leading minus on w_h or gamma_alpha.
+        # The cross_F_h_0 factor carries the correct sign for both channels.
+        lam_th_0 = cfg.w_h * cross_F_h_0 * cfg.T_horizon * 0.5 * turn_frac
+
+        lam_om_0 = (cfg.gamma_alpha * cfg.alpha_max
+                    * cross_F_h_0 * 2.0 * turn_frac + lam_om_T * (1.0 - turn_frac))
+
+        s = (t_mesh - t_mesh[0]) / max(t_mesh[-1] - t_mesh[0], 1e-9)
         return np.vstack([
-            state[0], state[1], state[2],
-            s * lx_T, s * ly_T, s * lt_T,
+            state[0], state[1], state[2], state[3], state[4],
+            s * lam_x_T,
+            s * lam_y_T,
+            (1.0 - s) * lam_th_0 + s * lam_th_T,
+            s * lam_v_T,
+            (1.0 - s) * lam_om_0 + s * lam_om_T,
         ])
 
     # --- Solve API --------------------------------------------------------
 
+    def _predistort(
+        self,
+        v_state: np.ndarray,
+        omega_state: np.ndarray,
+        lam_v: np.ndarray,
+        lam_w: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Feedforward inversion of the chassis's static gain + first-order
+        tracking lag. Returns (v_cmd, omega_cmd) -- the commands that,
+        after the chassis dynamics, produce the BVP-planned state.
+
+        Chassis model:
+            tau * d(actual)/dt + actual = gain * cmd
+        Inversion (matched IC implied):
+            cmd(t) = (desired(t) + tau * d(desired)/dt) / gain
+        Here desired = BVP state (v or omega); its derivative is the
+        BVP-optimal control a* / alpha*, recovered from the costates
+        by the same tanh-saturated formula used in _ode.
+
+        Vectorizes over array inputs (used by sample_committed_segment)
+        and also accepts scalars via numpy broadcasting (used by solve,
+        _fallback_command, _control_law_pointwise). Clipping is applied
+        here; deadzone is the caller's responsibility (it's the boundary
+        where "command 0" stationarity vs "command something tiny"
+        matters, and that distinction lives at the publication site).
+        """
+        cfg = self.cfg
+        a_star     = cfg.a_max     * np.tanh(-lam_v / (cfg.gamma_a     * cfg.a_max))
+        alpha_star = cfg.alpha_max * np.tanh(-lam_w / (cfg.gamma_alpha * cfg.alpha_max))
+        v_pre = (v_state     + cfg.chassis_tau_v     * a_star)     / cfg.chassis_gain_v
+        w_pre = (omega_state + cfg.chassis_tau_omega * alpha_star) / cfg.chassis_gain_omega
+        v_cmd = np.clip(v_pre, -cfg.chassis_v_max,     +cfg.chassis_v_max)
+        w_cmd = np.clip(w_pre, -cfg.chassis_omega_max, +cfg.chassis_omega_max)
+        return v_cmd, w_cmd
+
     def _fallback_command(self) -> Optional[Tuple[float, float]]:
-        """Evaluate the previous solution one step ahead when the current
-        BVP fails. Closer to the true optimum than zeroing the chassis;
-        returns None if no warm start is available so the caller can decide
-        (online mode publishes zero twist; offline mode aborts the rollout).
-        The prev_sol callable is freed on failure to prevent a second
-        fallback attempt with a further-extrapolated bad solution.
+        """Evaluate the fallback published twist from the previous BVP
+        solution at the next control tick. Applies the same chassis-model
+        inversion as the main publication path. The prev_sol callable is
+        freed on failure to prevent a second fallback attempt with a
+        further-extrapolated bad solution.
         """
         if self._prev_sol is None:
             return None
         cfg = self.cfg
-        t_eval = min(cfg.dt, cfg.T_horizon)
+        t_eval = min(1.0 / cfg.control_rate, cfg.T_horizon)
         try:
             y_eval = self._prev_sol(t_eval)
         except Exception:
             self._prev_sol = None
             return None
-        th = float(y_eval[2])
-        lx, ly, lt = float(y_eval[3]), float(y_eval[4]), float(y_eval[5])
-        v_unsat = -(lx * cos(th) + ly * sin(th)) / (2.0 * cfg.gamma_v)
-        w_unsat = -lt / (2.0 * cfg.gamma_w)
-        v_cmd = float(np.clip(cfg.v_max     * np.tanh(v_unsat / cfg.v_max),
-                              -cfg.v_max,     +cfg.v_max))
-        w_cmd = float(np.clip(cfg.omega_max * np.tanh(w_unsat / cfg.omega_max),
-                              -cfg.omega_max, +cfg.omega_max))
+        v_cmd_a, w_cmd_a = self._predistort(
+            v_state=y_eval[3], omega_state=y_eval[4],
+            lam_v=y_eval[8],   lam_w=y_eval[9],
+        )
+        v_cmd, w_cmd = float(v_cmd_a), float(w_cmd_a)
+        if abs(v_cmd) < cfg.cmd_deadzone_v:     v_cmd = 0.0
+        if abs(w_cmd) < cfg.cmd_deadzone_omega: w_cmd = 0.0
         return v_cmd, w_cmd
 
     def solve(
         self, x0: np.ndarray, goal: np.ndarray,
     ) -> Optional[Tuple[float, float]]:
-        """Solve the TPBVP. Returns (v_cmd, omega_cmd) or None on failure.
+        """Solve the TPBVP. x0 is the 5-vector (px, py, theta, v, omega).
+
+        Returns (v_cmd, omega_cmd) -- the publication-ready twist for
+        /cmd_vel, post chassis-model inversion (see _predistort) -- or
+        None on failure.
 
         Side effects (used by both online and offline paths):
           - self._prev_sol     : OdeSolution callable, t in [0, T_horizon]
-          - self._last_state   : (N+1, 3) dense state samples
-          - self._last_costate : (N+1, 3) dense costate samples
+          - self._last_state   : (N+1, 5) dense state samples
+          - self._last_costate : (N+1, 5) dense costate samples
           - self._last_error   : str or None
         """
         cfg = self.cfg
@@ -959,26 +1344,20 @@ class PMPShootingSolver:
             n_use    = max(1, min(n_target, ref_pts.shape[0]))
             self._p_pursuit = ref_pts[n_use - 1].astype(np.float64)
         else:
-            # Trace cannot start (goal sink, off-grid, or already at goal).
-            # Fall back to the goal itself: loses corner-cut protection but
-            # is the only sensible default in a degenerate field.
             self._p_pursuit = np.array([goal[0], goal[1]], dtype=np.float64)
 
-        _, _, _, fux_pp, fuy_pp = self.field.query_scalar(
+        # T_ref and F_ref at the pursuit point -- used by both _bc (for
+        # the T_lin transversality) and the rollout guess.
+        T_pp, _, _, fux_pp, fuy_pp = self.field.query_scalar(
             float(self._p_pursuit[0]), float(self._p_pursuit[1]),
         )
+        self._T_ref = float(T_pp)
+
         chassis_to_goal_sq = ((float(x0[0]) - goal[0]) ** 2
                               + (float(x0[1]) - goal[1]) ** 2)
         chassis_to_goal = float(np.sqrt(chassis_to_goal_sq))
         gt = max(cfg.goal_tolerance_xy, 1e-3)
         s = float(np.clip((chassis_to_goal - gt) / (3.0 * gt), 0.0, 1.0))
-        # w_F: field-vs-goal-yaw blend for theta_pursuit and the running-
-        # cost fade. Cubic smoothstep (C^1 continuous) transitions from
-        # w_F = 0 (pure goal_yaw) when chassis is inside goal_tolerance_xy,
-        # to w_F = 1 (pure F-tangent) when chassis is > 4 * goal_tolerance_xy
-        # away. Using goal_tolerance_xy as the natural scale means the
-        # regime boundary is a property of the user's config, not an
-        # arbitrary internal threshold.
         w_F = s * s * (3.0 - 2.0 * s)   # cubic smoothstep, C^1 continuous
 
         F_mag_pp = float(np.hypot(fux_pp, fuy_pp))
@@ -991,9 +1370,6 @@ class PMPShootingSolver:
         target_y = w_F * F_hat_y + (1.0 - w_F) * goal_hat_y
         target_norm = np.hypot(target_x, target_y)
         if target_norm < 1e-3:
-            # Antipodal degenerate case: F_hat and goal_hat point nearly
-            # opposite ways and w_F ~ 0.5 collapses target to ~zero.
-            # Fall back to the dominant unit vector.
             if w_F >= 0.5:
                 self._theta_pursuit = atan2(F_hat_y, F_hat_x)
             else:
@@ -1001,15 +1377,19 @@ class PMPShootingSolver:
         else:
             self._theta_pursuit = float(atan2(target_y, target_x))
 
-        # The same w_F modulates L_align/L_brake/L_speed-coupling in the
-        # heading costate dynamics (consumed by _ode via self._align_fade).
+        # F_ref blends F_hat with goal_hat too -- the T_lin pull direction
+        # should track the same target as theta_pursuit. Outside the goal
+        # zone (w_F = 1) this is just F_hat as before.
+        if target_norm < 1e-3:
+            self._F_ref = (np.array([F_hat_x, F_hat_y]) if w_F >= 0.5
+                           else np.array([goal_hat_x, goal_hat_y]))
+        else:
+            self._F_ref = np.array([target_x / target_norm,
+                                    target_y / target_norm])
+
         self._align_fade = w_F
 
-        # Unwrap theta_pursuit relative to the current chassis heading so
-        # the heading basin has a single minimum at the shortest-turn target.
-        # Without this, a (1/2)*w_th*(theta_T - thp)^2 form has stable
-        # fixed points at thp + 2*k*pi; Newton can latch onto the wrong one,
-        # especially when the warm start drifts between cycles.
+        # Unwrap theta_pursuit relative to the current chassis heading.
         theta_now = float(x0[2])
         delta = ((self._theta_pursuit - theta_now + pi) % (2.0 * pi)) - pi
         self._theta_pursuit = theta_now + delta
@@ -1025,17 +1405,27 @@ class PMPShootingSolver:
         t_mesh = np.linspace(0.0, cfg.T_horizon, cfg.N + 1)
         if cfg.reuse_previous_solution and self._prev_sol is not None:
             try:
-                y_init = self._prev_sol(t_mesh)
-                # If the chassis crossed +-pi between cycles, the warm-start's
-                # theta(0) differs from x0[2] by ~2*pi*k. Re-anchoring
-                # y_init[2,0] = x0[2] without fixing the rest leaves a 2*pi
-                # discontinuity that solve_bvp cannot resolve (mesh refines
-                # forever). Shift the entire theta trajectory by 2*pi*k first.
+                # Time-shift the warm start for offline mode.
+                #
+                # Online: prev_sol was solved one tick (0.1 s) ago; evaluating
+                # it at [0, T_h] is a near-perfect warm start.
+                #
+                # Offline: prev_sol was solved seg_T seconds ago (~ 1.25 s).
+                # The tail of that solution -- prev_sol(t + seg_T) -- is the
+                # planner's best prior belief about the new time window. Evaluating
+                # at [0, T_h] instead gives the *start* of the old plan, which
+                # has the wrong costate phase for the current heading error.
+                t_shifted = np.minimum(t_mesh + self._last_seg_T, cfg.T_horizon)
+                y_init = self._prev_sol(t_shifted)
+                # Theta unwrap: if chassis crossed +-pi between cycles
+                # the warm-start theta(0) differs from x0[2] by ~2*pi*k.
+                # Shift the entire theta trajectory; then anchor all 5
+                # initial-state components.
                 prev_theta_0 = float(y_init[2, 0])
                 n_shift = round((prev_theta_0 - float(x0[2])) / (2.0 * pi))
                 if n_shift != 0:
                     y_init[2, :] -= n_shift * 2.0 * pi
-                y_init[0:3, 0] = x0
+                y_init[0:5, 0] = x0
             except Exception:
                 y_init = self._rollout_guess(x0, goal, t_mesh)
         else:
@@ -1056,15 +1446,29 @@ class PMPShootingSolver:
             return self._fallback_command()
 
         self._prev_sol = sol.sol
+        # For the next warm start: online commits one control tick.
+        self._last_seg_T = min(1.0 / cfg.control_rate, cfg.T_horizon)
 
-        # Optimal control at t = 0 via the same closed-form law _ode uses.
-        v_cmd, w_cmd = self._control_law_pointwise(sol.y[:, 0], goal)
+        # Online publication: invert the chassis model so the cmd, after
+        # the chassis's static gain and first-order lag, produces the
+        # BVP-planned state. See _predistort for the math. The deadzone
+        # below catches genuinely-stationary phases (turn-in-place
+        # produces v ~ 0 throughout) and the small numerical residuals.
+        t_lookahead = min(1.0 / cfg.control_rate, cfg.T_horizon)
+        y_at_dt = self._prev_sol(t_lookahead)
+        v_cmd_a, w_cmd_a = self._predistort(
+            v_state=y_at_dt[3], omega_state=y_at_dt[4],
+            lam_v=y_at_dt[8],   lam_w=y_at_dt[9],
+        )
+        v_cmd, w_cmd = float(v_cmd_a), float(w_cmd_a)
+        if abs(v_cmd) < cfg.cmd_deadzone_v:     v_cmd = 0.0
+        if abs(w_cmd) < cfg.cmd_deadzone_omega: w_cmd = 0.0
 
         # Densely resample for visualization and downstream introspection.
         t_dense = np.linspace(0.0, cfg.T_horizon, cfg.N + 1)
         y_dense = self._prev_sol(t_dense)
-        self._last_state = y_dense[0:3].T
-        self._last_costate = y_dense[3:6].T
+        self._last_state = y_dense[0:5].T
+        self._last_costate = y_dense[5:10].T
         self._last_error = None
 
         return v_cmd, w_cmd
@@ -1072,48 +1476,23 @@ class PMPShootingSolver:
     def reset_warm_start(self):
         self._prev_sol = None
 
-    # --- Closed-form control law (shared by online + offline paths) -------
+    # --- Pointwise readout (shared by online + offline paths) -------------
 
     def _control_law_pointwise(
-        self, y6: np.ndarray, goal: np.ndarray,
+        self, y10: np.ndarray, goal: np.ndarray,
     ) -> Tuple[float, float]:
-        """Apply the closed-form optimal control law at one (state, costate).
-
-        Same algebra as _ode, but scalar -- used to extract v(t), omega(t)
-        from the BVP solution at arbitrary time samples in offline mode,
-        and for the t=0 command in online mode.
-
-        Mirrors _ode exactly; any change to the control law there must be
-        reflected here. The two branches (w_v > 0 vs w_v == 0) match the
-        original solve()'s extraction logic.
+        """Compute the published twist (v, omega) at a single mesh point
+        from a (state, costate) slice y10. Same chassis-model inversion
+        as the main publication paths -- see _predistort.
         """
         cfg = self.cfg
-        px, py, th = float(y6[0]), float(y6[1]), float(y6[2])
-        lx, ly, lt = float(y6[3]), float(y6[4]), float(y6[5])
-        cos_t = cos(th)
-        sin_t = sin(th)
-        _, _, _, Fux, Fuy = self.field.query_scalar(px, py)
-        F_dot_h = Fux * cos_t + Fuy * sin_t
-        one_minus = 1.0 - F_dot_h
-
-        if cfg.w_v > 0.0:
-            d_to_goal = hypot(px - goal[0], py - goal[1])
-            v_ref = cfg.v_max * tanh(d_to_goal / cfg.L_brake)
-            half_one_plus = max(0.0, min(1.0, 0.5 * (1.0 + F_dot_h)))
-            gate = half_one_plus ** cfg.align_gate_power
-            v_ref_eff = v_ref * gate
-            denom_v = (2.0 * cfg.gamma_v + cfg.w_v
-                       + cfg.w_brake * one_minus * one_minus)
-            v_unsat = (cfg.w_v * v_ref_eff - lx * cos_t - ly * sin_t) / denom_v
-        else:
-            denom_v = 2.0 * cfg.gamma_v + cfg.w_brake * one_minus * one_minus
-            v_unsat = -(lx * cos_t + ly * sin_t) / denom_v
-        w_unsat = -lt / (2.0 * cfg.gamma_w)
-
-        v_cmd = float(np.clip(cfg.v_max     * tanh(v_unsat / cfg.v_max),
-                              -cfg.v_max,     +cfg.v_max))
-        w_cmd = float(np.clip(cfg.omega_max * tanh(w_unsat / cfg.omega_max),
-                              -cfg.omega_max, +cfg.omega_max))
+        v_cmd_a, w_cmd_a = self._predistort(
+            v_state=y10[3], omega_state=y10[4],
+            lam_v=y10[8],   lam_w=y10[9],
+        )
+        v_cmd, w_cmd = float(v_cmd_a), float(w_cmd_a)
+        if abs(v_cmd) < cfg.cmd_deadzone_v:     v_cmd = 0.0
+        if abs(w_cmd) < cfg.cmd_deadzone_omega: w_cmd = 0.0
         return v_cmd, w_cmd
 
     # --- Offline-mode segment extraction ----------------------------------
@@ -1128,25 +1507,21 @@ class PMPShootingSolver:
         """Solve the BVP from x0 toward goal, then densely sample the
         first n_samples * dt_sample seconds of the optimal trajectory.
 
-        This is the rollout-by-concatenation primitive: each call solves
-        a fresh local BVP (reusing the warm start across calls if the
-        config allows) and returns the controls + predicted state at
-        dt_sample-spaced ticks. The caller commits this segment, advances
-        its sim state to the segment endpoint, and calls again.
-
         Returns (twists, poses, x_next) where:
-          twists  : (n_samples, 2) [v, omega]
-          poses   : (n_samples, 3) [px, py, theta] -- the predicted state
-                    AT each tick, i.e. poses[i] is where the chassis is
-                    just before applying twists[i] (poses[0] == x0).
-          x_next  : (3,) state AT t = n_samples * dt_sample, the start
-                    of the next segment.
+          twists  : (n_samples, 2) [v_cmd, omega_cmd] -- the
+                    chassis-model-inverted commands at each tick. These
+                    are the values to publish; the chassis, after its
+                    static gain and first-order lag, executes the
+                    BVP-planned state. See _predistort for the math.
+                    Clipped to chassis_v_max / chassis_omega_max.
+          poses   : (n_samples, 3) [px, py, theta] -- BVP-planned chassis
+                    pose at each tick, in parallel with twists.
+          x_next  : (5,) BVP state at t = n_samples * dt_sample, the
+                    start of the next segment (used to seed the next
+                    solve). Assumes the chassis tracks the inverted
+                    commands so its actual state matches the BVP's.
 
-        Returns None if the BVP fails. Caller decides how to recover
-        (typically: zero twist + abort the rollout).
-
-        Total committed time is n_samples * dt_sample, capped to
-        T_horizon by the caller. Warm start is preserved between calls.
+        Returns None if the BVP fails.
         """
         if self.solve(x0, goal) is None:
             return None
@@ -1156,31 +1531,51 @@ class PMPShootingSolver:
         cfg = self.cfg
         seg_T = n_samples * dt_sample
         if seg_T > cfg.T_horizon + 1e-9:
-            # Caller overcommitted -- shorten to fit the BVP horizon.
             n_samples = max(1, int(cfg.T_horizon / dt_sample))
             seg_T = n_samples * dt_sample
 
-        # Sample at tick i = 0, 1, ..., n_samples - 1 (the time at which
-        # twists[i] starts being applied). x_next is at i = n_samples.
         t_ticks = np.arange(n_samples + 1, dtype=np.float64) * dt_sample
-        # Numerical guard: dense_output may complain if t > T_horizon
-        # by float epsilon; clamp.
         t_ticks = np.minimum(t_ticks, cfg.T_horizon)
         try:
-            y_ticks = self._prev_sol(t_ticks)   # shape (6, n_samples + 1)
+            y_ticks = self._prev_sol(t_ticks)   # shape (10, n_samples + 1)
         except Exception as e:
             self._last_error = f"prev_sol resample failed: {e}"
             return None
 
+        # twists are post-inversion commands. _predistort transforms
+        # (v_state, omega_state, lambda_v, lambda_omega) into the cmd
+        # that the chassis (per its first-order tracking model) needs
+        # to receive to actually realise the BVP-planned state at this
+        # tick. Clipping to chassis_v_max / chassis_omega_max is
+        # already inside _predistort; the deadzone here matches the
+        # online publication path.
         twists = np.zeros((n_samples, 2), dtype=np.float64)
-        poses  = y_ticks[0:3, :n_samples].T.copy()    # (n_samples, 3)
-        for i in range(n_samples):
-            v_i, w_i = self._control_law_pointwise(y_ticks[:, i], goal)
-            twists[i, 0] = v_i
-            twists[i, 1] = w_i
+        v_cmd_v, w_cmd_v = self._predistort(
+            v_state=y_ticks[3, :n_samples],
+            omega_state=y_ticks[4, :n_samples],
+            lam_v=y_ticks[8, :n_samples],
+            lam_w=y_ticks[9, :n_samples],
+        )
+        twists[:, 0] = v_cmd_v
+        twists[:, 1] = w_cmd_v
+        twists[np.abs(twists[:, 0]) < cfg.cmd_deadzone_v,     0] = 0.0
+        twists[np.abs(twists[:, 1]) < cfg.cmd_deadzone_omega, 1] = 0.0
+        poses = y_ticks[0:3, :n_samples].T.copy()
 
-        x_next = y_ticks[0:3, n_samples].copy()
+        # x_next is the BVP-predicted chassis state at the end of the
+        # committed segment, used as the IC for the next BVP solve. The
+        # publication inversion is designed so a chassis matching the
+        # (gain, tau) model executes the inverted cmds and ends the
+        # segment at exactly this state. To the extent the actual
+        # chassis deviates from the model, x_next drifts from reality
+        # -- that's the open-loop error budget for offline mode.
+        x_next = y_ticks[0:5, n_samples].copy()
+
+        # Record committed duration so solve() can time-shift the warm start.
+        self._last_seg_T = seg_T
+
         return twists, poses, x_next
+
 
 
 # ---------------------------------------------------------------------------
@@ -1221,10 +1616,22 @@ class PlannerNode(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        self._xi: np.ndarray = np.zeros(3)              # (px, py, theta)
+        self._xi: np.ndarray = np.zeros(3)              # (px, py, theta) from TF
+        self._chassis_twist: np.ndarray = np.zeros(2)   # (v, omega) from /odom
         self._goal: Optional[np.ndarray] = None         # (gx, gy, gtheta)
         self._field = VectorFieldGrid()
         self._waiting_for_field = False
+
+        # Diagnostic logger -- None when diag_log_path is empty.
+        self._diag_logger: Optional[TurnDiagnosticLogger] = None
+        if self.topic_cfg.diag_log_path:
+            try:
+                self._diag_logger = TurnDiagnosticLogger(self.topic_cfg.diag_log_path)
+                self.get_logger().info(
+                    f"Diagnostic logger active -> {self.topic_cfg.diag_log_path}"
+                )
+            except OSError as e:
+                self.get_logger().error(f"Cannot open diag log: {e}")
 
         # Online-only: tracks whether the previous control cycle was inside
         # the position-tolerance ball around the goal. The BVP cost
@@ -1314,13 +1721,20 @@ class PlannerNode(Node):
         self._kick_event.set()
         if self.cfg.mode == "offline" and hasattr(self, "_worker"):
             self._worker.join(timeout=2.0)
+        if self._diag_logger is not None:
+            self._diag_logger.close()
         super().destroy_node()
 
     # ---------------- Subscriptions ----------------
 
     def _on_odom(self, msg: Odometry):
-        # Odom serves as a tick; the actual pose is read via TF
-        # (map -> base_link). msg.twist is unused by the kinematic model.
+        # Odom serves as the control tick AND as the source of the
+        # measured chassis twist (v, omega) -- the planner pins these
+        # as initial conditions on the 5D BVP, so the trajectory starts
+        # from the platform's actual instantaneous velocity rather than
+        # assuming it can be commanded discontinuously. The pose itself
+        # is read via TF (map -> base_link), since /odom may be in a
+        # different frame.
         try:
             t = self._tf_buffer.lookup_transform(
                 self.topic_cfg.map_frame, self.topic_cfg.robot_frame,
@@ -1332,8 +1746,13 @@ class PlannerNode(Node):
             _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
             # Atomic single-attribute rebind. The offline worker reads
             # self._xi with a single load and either gets the old or new
-            # array, never a torn write.
+            # array, never a torn write. Same pattern for the twist.
             self._xi = np.array([tx, ty, yaw])
+            v_meas = float(msg.twist.twist.linear.x)
+            w_meas = float(msg.twist.twist.angular.z)
+            self._chassis_twist = np.array([v_meas, w_meas])
+            if self._diag_logger is not None:
+                self._diag_logger.log_odom(tx, ty, yaw, v_meas, w_meas)
         except TransformException as e:
             self.get_logger().warn(
                 f"TF {self.topic_cfg.map_frame}->"
@@ -1500,7 +1919,14 @@ class PlannerNode(Node):
             self._clear_goal()
             return
 
-        result = self._solver.solve(self._xi, self._goal)
+        # Build the 5D initial state: pose from TF, twist from /odom.
+        # The two reads are GIL-atomic individually; a torn pair (e.g.
+        # pose from cycle N, twist from cycle N+1) just biases the BVP
+        # initial condition by one odom dt and self-corrects next solve.
+        xi = self._xi
+        twist = self._chassis_twist
+        x0 = np.array([xi[0], xi[1], xi[2], twist[0], twist[1]])
+        result = self._solver.solve(x0, self._goal)
         if result is None:
             self.get_logger().warn(
                 f"BVP solve failed: {self._solver._last_error} -- holding command.",
@@ -1512,6 +1938,26 @@ class PlannerNode(Node):
         v_cmd, omega_cmd = result
         self._publish_twist(v_cmd, omega_cmd)
         self._publish_trajectory()
+
+        if self._diag_logger is not None:
+            cs = self._solver._last_costate   # (m, 5): lx, ly, lth, lv, lom
+            st = self._solver._last_state     # (m, 5): px, py, th, v, om
+            if cs is not None and st is not None:
+                lam_th_0   = float(cs[0, 2])
+                lam_om_0   = float(cs[0, 4])
+                alpha_cmd_0 = float(
+                    self.cfg.alpha_max
+                    * tanh(-lam_om_0 / (self.cfg.gamma_alpha * self.cfg.alpha_max))
+                )
+                self._diag_logger.log_plan(
+                    traj_id=-1, chunk=-1,
+                    thetas_deg=np.degrees(st[:, 2]),
+                    omegas=st[:, 4],
+                    vs=st[:, 3],
+                    lam_th_0=lam_th_0,
+                    lam_om_0=lam_om_0,
+                    alpha_cmd_0=alpha_cmd_0,
+                )
 
     # ---------------- Offline worker ----------------
 
@@ -1544,7 +1990,14 @@ class PlannerNode(Node):
                 # will kick us again.
                 continue
 
-            x0 = self._xi.copy()           # GIL-atomic load + copy
+            # 5D initial state for the rollout: pose from TF, twist
+            # from /odom. The two reads are individually GIL-atomic;
+            # we don't need them from the exact same odom callback,
+            # since the next segment's start state comes from the BVP
+            # solution itself.
+            xi    = self._xi
+            twist = self._chassis_twist
+            x0 = np.array([xi[0], xi[1], xi[2], twist[0], twist[1]])
             try:
                 with self._state_lock:
                     self._trajectory_id += 1
@@ -1691,6 +2144,26 @@ class PlannerNode(Node):
                 return
 
             twists, poses, x_next = result
+
+            # Diagnostic: log planned heading profile + t=0 costates.
+            if self._diag_logger is not None:
+                cs = self._solver._last_costate
+                if cs is not None:
+                    lam_th_0    = float(cs[0, 2])
+                    lam_om_0    = float(cs[0, 4])
+                    alpha_cmd_0 = float(
+                        cfg.alpha_max
+                        * tanh(-lam_om_0 / (cfg.gamma_alpha * cfg.alpha_max))
+                    )
+                    self._diag_logger.log_plan(
+                        traj_id=traj_id, chunk=chunk_idx,
+                        thetas_deg=np.degrees(poses[:, 2]),
+                        omegas=twists[:, 1],
+                        vs=twists[:, 0],
+                        lam_th_0=lam_th_0,
+                        lam_om_0=lam_om_0,
+                        alpha_cmd_0=alpha_cmd_0,
+                    )
 
             # Termination (b): any sample WITHIN this segment hits the
             # tolerance ball. Truncate the chunk to twists[0:hit] and
