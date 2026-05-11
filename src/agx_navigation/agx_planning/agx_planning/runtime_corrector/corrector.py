@@ -79,6 +79,7 @@ class TrajectoryCorrectorNode(Node):
         self.declare_parameter("recovery_pos_tolerance", 0.05)
         self.declare_parameter("recovery_angle_tolerance", 0.15)
         # Recovery controller parameters.
+        self.declare_parameter("enable_recovery", True)
         self.declare_parameter("recovery_v_max", 0.3)
         self.declare_parameter("recovery_omega_max", 1.0)
         self.declare_parameter("recovery_K_v", 1.0)
@@ -88,6 +89,7 @@ class TrajectoryCorrectorNode(Node):
         self.declare_parameter("recovery_n_candidates", 10)
 
         self._stamped: bool = self.get_parameter("enable_stamped_cmd_vel").value
+        self._enable_recovery = self.get_parameter("enable_recovery").value
         self._robot_frame: str = self.get_parameter("robot_frame").value
         self._planning_frame: str = self.get_parameter("planning_frame").value
         self._default_dt: float = 1.0 / float(
@@ -271,9 +273,18 @@ class TrajectoryCorrectorNode(Node):
                 cur.header.frame_id,
             )
             if err is not None:
-                self._goto_correcting(*err)
-                self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-                return
+                if not self._enable_recovery:
+                    self.get_logger().warn(
+                        f"Current pose error is {err}; we would attempt to recover, "
+                        f"but recovery is disabled, so staying in playback mode"
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"Current pose error is {err}; entering recovery mode"
+                    )
+                    self._goto_correcting(*err)
+                    self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+                    return
             v = float(cur.linear_x[self._cur_sample_idx])
             w = float(cur.angular_z[self._cur_sample_idx])
             due = self._current_traj_start_time + Duration(
@@ -312,9 +323,18 @@ class TrajectoryCorrectorNode(Node):
                 nxt.header.frame_id,
             )
             if err is not None:
-                self._goto_correcting(*err)
-                self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-                return
+                if not self._enable_recovery:
+                    self.get_logger().warn(
+                        f"Current pose error is {err}; we would attempt to recover, "
+                        f"but recovery is disabled, so staying in playback mode"
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"Current pose error is {err}; entering recovery mode"
+                    )
+                    self._goto_correcting(*err)
+                    self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+                    return
             v = float(nxt.linear_x[0])
             w = float(nxt.angular_z[0])
             due = self._current_traj_start_time + Duration(
