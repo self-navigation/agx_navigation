@@ -33,6 +33,7 @@ setup(
                 "vector_field",
                 "pmp_planner",
                 "pmp_interpreter",
+                "calibrator",
             ]
         ],
     },
