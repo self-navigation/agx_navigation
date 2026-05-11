@@ -5,14 +5,11 @@ prioritised list by calling can_handle() on each in order. The first strategy
 that returns True generates the (v, omega) command for that tick.
 
 Both can_handle() and compute_twist() receive:
-  current   -- the robot's current pose (x, y, theta) in the planning frame.
-  candidates -- a list of (x, y, theta) poses drawn from the planned trajectory,
-               sorted by a combined position+angle score (nearest first). Each
-               strategy may inspect the full list and choose its own target.
-
-The corrector retains the chunk_index / sample_index mapping so that once a
-strategy has brought the robot within tolerance the snap-to-resume step can
-reference the correct sample. Strategies are not aware of this mapping.
+  current -- the robot's current pose (x, y, theta) in the planning frame.
+  path    -- the remaining planned trajectory as an ordered list of
+             (x, y, theta) poses, starting from the current playback position.
+             Strategies may inspect the full polyline and implement their own
+             projection / look-ahead logic.
 
 Adding a new strategy:
   1. Subclass RecoveryStrategy and implement can_handle() and compute_twist().
@@ -25,6 +22,11 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from agx_planning.runtime_corrector.geometry import (
+    nearest_projection_on_path,
+    walk_ahead_on_path,
+)
+
 
 def _clamp(value: float, limit: float) -> float:
     return max(-limit, min(limit, value))
@@ -32,19 +34,20 @@ def _clamp(value: float, limit: float) -> float:
 
 @dataclass
 class RecoveryConfig:
-    # Trigger thresholds: error must exceed these to enter CORRECTING.
-    pos_epsilon: float  # [m]
-    angle_epsilon: float  # [rad]
-    # Exit thresholds: error must fall below these to resume PLAYING.
-    # Should be ≤ their trigger counterparts to create a hysteresis band.
-    recovery_pos_tolerance: float  # [m]
+    # Spatial threshold that must be reached to leave CORRECTING and resume
+    # PLAYING.  Should be less than the entry corridor_epsilon to create a
+    # hysteresis band that prevents rapid state toggling near the boundary.
+    recovery_corridor_epsilon: float  # [m]
+    # Heading alignment to the path tangent required to leave CORRECTING.
     recovery_angle_tolerance: float  # [rad]
+    # How far ahead on the path to aim during look-ahead pursuit.
+    look_ahead_distance: float  # [m]
     # Controller limits and gains.
-    v_max: float  # [m/s] maximum forward speed during recovery
-    omega_max: float  # [rad/s] maximum yaw rate during recovery
-    K_v: float  # forward speed gain  [m/s per m of distance]
-    K_bearing: float  # yaw rate gain       [rad/s per rad of bearing error]
-    K_theta: float  # yaw rate gain       [rad/s per rad of heading error]
+    v_max: float  # [m/s]
+    omega_max: float  # [rad/s]
+    K_v: float  # forward speed gain   [m/s per m]
+    K_bearing: float  # yaw-rate gain  [rad/s per rad of bearing error]
+    K_theta: float  # yaw-rate gain    [rad/s per rad of heading error]
 
 
 class RecoveryStrategy(ABC):
@@ -55,101 +58,89 @@ class RecoveryStrategy(ABC):
     def can_handle(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> bool:
-        """Return True if this strategy is applicable given the current situation.
+        """Return True if this strategy should handle the current situation.
 
-        current    -- robot pose (x, y, theta)
-        candidates -- trajectory sample poses (x, y, theta), nearest-first
+        current -- robot pose (x, y, theta)
+        path    -- remaining planned trajectory poses (x, y, theta), in order
         """
 
     @abstractmethod
     def compute_twist(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> tuple[float, float]:
-        """Return (v, omega) to reduce the error toward a chosen candidate.
-
-        The strategy is free to pick any candidate from the list as its target.
-        """
+        """Return (v, omega) to reduce the deviation from the path."""
 
 
 class RotateInPlaceStrategy(RecoveryStrategy):
-    """Correct yaw by rotating in place when position is already within tolerance.
+    """Correct heading by rotating in place when already within the tight corridor.
 
-    Picks the candidate with the smallest position error that is still within
-    pos_epsilon, then rotates toward its heading. Using v=0 avoids carrying
-    the robot further off the spatial track while correcting orientation.
+    Fires when the robot is spatially close to the path but its heading deviates
+    from the path tangent at the nearest projection. Rotating with v=0 avoids
+    drifting further off the spatial track while correcting orientation.
     """
 
     def can_handle(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> bool:
-        # Fire when any candidate is close enough spatially that rotating in
-        # place won't drift the robot further off-track, but the heading at
-        # that candidate is still outside the recovery tolerance.
+        if not path:
+            return False
         rx, ry, rtheta = current
-        for tx, ty, ttheta in candidates:
-            if math.hypot(rx - tx, ry - ty) <= self._cfg.recovery_pos_tolerance:
-                angle_err = abs(math.remainder(rtheta - ttheta, 2 * math.pi))
-                return angle_err > self._cfg.recovery_angle_tolerance
-        return False
+        proj_x, proj_y, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
+        if math.hypot(rx - proj_x, ry - proj_y) > self._cfg.recovery_corridor_epsilon:
+            return False
+        angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
+        return angle_err > self._cfg.recovery_angle_tolerance
 
     def compute_twist(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> tuple[float, float]:
         rx, ry, rtheta = current
-        # Among spatially acceptable candidates, pick the one with the smallest
-        # position error as the heading target.
-        best_tx, best_ty, best_ttheta = candidates[0]
-        best_pos = math.hypot(rx - best_tx, ry - best_ty)
-        for tx, ty, ttheta in candidates[1:]:
-            pos = math.hypot(rx - tx, ry - ty)
-            if pos <= self._cfg.pos_epsilon and pos < best_pos:
-                best_pos = pos
-                best_tx, best_ty, best_ttheta = tx, ty, ttheta
-        signed_err = math.remainder(best_ttheta - rtheta, 2 * math.pi)
+        _, _, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
+        signed_err = math.remainder(proj_theta - rtheta, 2 * math.pi)
         omega = _clamp(self._cfg.K_theta * signed_err, self._cfg.omega_max)
         return 0.0, omega
 
 
-class BearingPursuitStrategy(RecoveryStrategy):
-    """Drive toward the spatially nearest candidate when position is off.
+class LookAheadPursuitStrategy(RecoveryStrategy):
+    """Drive toward a look-ahead point on the path.
 
-    Steers toward the nearest candidate by position (the one most likely to be
-    reachable regardless of current heading), commanding forward speed
-    proportional to distance and yaw rate proportional to bearing error.
+    Projects the robot onto the path polyline, advances along it by
+    `look_ahead_distance`, then issues proportional bearing-pursuit commands
+    toward that carrot point. Compared to aiming at the nearest sample, the
+    look-ahead avoids large in-place turns when the robot is running roughly
+    parallel to the path.
     """
 
     def can_handle(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> bool:
-        # Fire whenever the nearest candidate is outside the recovery tolerance,
-        # covering the full gap between that tolerance and the trigger epsilon.
-        if not candidates:
+        if not path:
             return False
         rx, ry, _ = current
-        tx, ty, _ = min(candidates, key=lambda c: math.hypot(rx - c[0], ry - c[1]))
-        return math.hypot(rx - tx, ry - ty) > self._cfg.recovery_pos_tolerance
+        proj_x, proj_y, _, _, _ = nearest_projection_on_path(rx, ry, path)
+        return math.hypot(rx - proj_x, ry - proj_y) > self._cfg.recovery_corridor_epsilon
 
     def compute_twist(
         self,
         current: tuple[float, float, float],
-        candidates: list[tuple[float, float, float]],
+        path: list[tuple[float, float, float]],
     ) -> tuple[float, float]:
         rx, ry, rtheta = current
-        # Pick the candidate nearest by position, ignoring angle.
-        tx, ty, _ = min(candidates, key=lambda c: math.hypot(rx - c[0], ry - c[1]))
-        bearing = math.atan2(ty - ry, tx - rx)
+        _, _, _, seg_idx, t = nearest_projection_on_path(rx, ry, path)
+        lx, ly, _ = walk_ahead_on_path(path, seg_idx, t, self._cfg.look_ahead_distance)
+        bearing = math.atan2(ly - ry, lx - rx)
         bearing_err = math.remainder(bearing - rtheta, 2 * math.pi)
-        dist = math.hypot(tx - rx, ty - ry)
+        dist = math.hypot(lx - rx, ly - ry)
         v = min(self._cfg.v_max, self._cfg.K_v * dist)
         omega = _clamp(self._cfg.K_bearing * bearing_err, self._cfg.omega_max)
         return v, omega
@@ -158,11 +149,10 @@ class BearingPursuitStrategy(RecoveryStrategy):
 def default_strategies(cfg: RecoveryConfig) -> list[RecoveryStrategy]:
     """Return the default ordered strategy list.
 
-    RotateInPlace is listed first: it is more specific (position already OK)
-    and must be checked before BearingPursuit, which handles all remaining
-    cases where the position error exceeds tolerance.
+    RotateInPlace is first (more specific: position already acceptable).
+    LookAheadPursuit handles the general case of spatial deviation.
     """
     return [
         RotateInPlaceStrategy(cfg),
-        BearingPursuitStrategy(cfg),
+        LookAheadPursuitStrategy(cfg),
     ]
