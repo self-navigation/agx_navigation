@@ -1,4 +1,4 @@
-"""Trajectory interpreter for the offline-mode PMP planner.
+"""Trajectory corrector for the offline-mode PMP planner.
 
 Subscribes to /pmp_planner/trajectory_chunks (PlannerTrajectoryChunk) and
 publishes /cmd_vel (Twist or TwistStamped, configurable) at the dt rate
@@ -33,9 +33,8 @@ graceful fallback.
 
 import math
 from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from rclpy.time import Duration, Time
@@ -49,7 +48,7 @@ from tf2_ros import (
 )
 
 from agx_planning_msgs.msg import PlannerTrajectoryChunk
-from agx_planning.pmp_recovery import RecoveryConfig, default_strategies
+from agx_planning.runtime_corrector import RecoveryConfig, default_strategies
 
 
 class _State(Enum):
@@ -58,10 +57,10 @@ class _State(Enum):
     CORRECTING = auto()
 
 
-class TrajectoryInterpreterNode(Node):
+class TrajectoryCorrectorNode(Node):
 
     def __init__(self):
-        super().__init__("pmp_trajectory_interpreter")
+        super().__init__("pmp_trajectory_corrector")
 
         self.declare_parameter("enable_stamped_cmd_vel", False)
         self.declare_parameter("robot_frame", "base_link")
@@ -130,7 +129,7 @@ class TrajectoryInterpreterNode(Node):
         self._active_traj_id: int = -1
         # chunk_index -> chunk message, for the active trajectory only.
         # Held until consumed; popped after the last sample is published.
-        self._chunks: Dict[int, PlannerTrajectoryChunk] = {}
+        self._chunks: dict[int, PlannerTrajectoryChunk] = {}
         # Index of the chunk currently being consumed (oldest unfinished).
         self._cur_chunk_idx: int = 0
         # Index of the next sample within self._chunks[self._cur_chunk_idx].
@@ -177,7 +176,7 @@ class TrajectoryInterpreterNode(Node):
         self._ensure_tick_timer(self._default_dt)
 
         self.get_logger().info(
-            f"Interpreter ready (default tick {self._default_dt:.3f} s; "
+            f"Trajectory corrector ready (default tick {self._default_dt:.3f} s; "
             f"will adopt each trajectory's chunk.dt on first chunk)."
         )
 
@@ -409,7 +408,7 @@ class TrajectoryInterpreterNode(Node):
 
     # ----------------------- Pose error detection / recovery ---------------
 
-    def _get_current_pose_2d(self, frame: str) -> Optional[Tuple[float, float, float]]:
+    def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float, float]]:
         """Return (x, y, theta) of robot_frame in frame, or None on TF failure."""
         try:
             t = self._tf_buffer.lookup_transform(frame, self._robot_frame, Time())
@@ -434,7 +433,7 @@ class TrajectoryInterpreterNode(Node):
         pred_y: float,
         pred_theta: float,
         planning_frame: str,
-    ) -> Optional[Tuple[float, float]]:
+    ) -> Optional[tuple[float, float]]:
         """Return (pos_err, angle_err) if either threshold is exceeded, else None.
 
         Uses chunk header.frame_id, falling back to the planning_frame
@@ -453,9 +452,9 @@ class TrajectoryInterpreterNode(Node):
 
     def _find_nearest_samples(
         self,
-    ) -> Tuple[
-        Optional[Tuple[float, float, float]],
-        List[Tuple[int, int, float, float, float]],
+    ) -> tuple[
+        Optional[tuple[float, float, float]],
+        list[tuple[int, int, float, float, float]],
         bool,
     ]:
         """Scan buffered chunks from the current playback position forward.
@@ -480,7 +479,7 @@ class TrajectoryInterpreterNode(Node):
 
         xy_weight = 10.0
         angle_weight = 1.0
-        scored: List[Tuple[float, int, int, float, float, float]] = []
+        scored: list[tuple[float, int, int, float, float, float]] = []
 
         for chunk_idx in sorted(self._chunks):
             chunk = self._chunks[chunk_idx]
@@ -525,19 +524,3 @@ class TrajectoryInterpreterNode(Node):
             msg.linear.x = v
             msg.angular.z = omega
         self._cmd_pub.publish(msg)
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = TrajectoryInterpreterNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

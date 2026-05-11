@@ -81,9 +81,9 @@ def generate_launch_description():
 
     pmp_interpreter = Node(
         package="agx_planning",
-        executable="pmp_interpreter",
+        executable="runtime_corrector",
         output="screen",
-        name="pmp_interpreter",
+        name="runtime_corrector",
         parameters=[
             {
                 "enable_stamped_cmd_vel": True,
