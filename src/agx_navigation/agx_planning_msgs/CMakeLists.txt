@@ -13,6 +13,7 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PlannerTrajectoryChunk.msg"
+  "action/PlanToGoal.action"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 

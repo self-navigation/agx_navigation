@@ -1,0 +1,51 @@
+# Action interface for the offline-mode PMP planner.
+#
+# A client (typically the trajectory interpreter) requests a plan from
+# (start_x, start_y, start_theta) to (target_x, target_y, target_theta)
+# under the planner's currently-known vector field. Feedback streams
+# trajectory chunks as they're solved; the result signals end-of-
+# trajectory (success / abort / preempt).
+#
+# The unicycle pose is encoded as three inline floats rather than
+# geometry_msgs/PoseStamped: it matches the planner's internal state
+# representation and the parallel-array layout already used by
+# PlannerTrajectoryChunk, and avoids a quaternion round-trip for what
+# is fundamentally one yaw angle. theta is in radians.
+#
+# frame_id must match the planner's map_frame; the server refuses
+# mismatched goals rather than silently planning in the wrong frame.
+
+# ----- Goal -----
+string  frame_id
+float64 start_x
+float64 start_y
+float64 start_theta
+float64 target_x
+float64 target_y
+float64 target_theta
+---
+# ----- Result -----
+# trajectory_id is the id stamped on every feedback chunk for this goal,
+# so the client can correlate result with feedback. 0 when no rollout
+# was attempted (e.g. early frame-validation failure) -- the client
+# uses this to distinguish "the rollout we were watching just ended"
+# from "the rollout never started".
+bool   success
+string message
+uint64 trajectory_id
+---
+# ----- Feedback (one trajectory chunk) -----
+# Twists are sampled uniformly at dt seconds. linear_x[i] / angular_z[i]
+# is the command to apply STARTING at the i-th tick of dt within this
+# chunk; pose_x[i] / pose_y[i] / pose_theta[i] is the planner's predicted
+# base pose at that tick (in frame_id from the goal). Arrays are parallel
+# (equal length); empty feedback is never sent (the result signals
+# end-of-trajectory).
+uint64    trajectory_id
+uint32    chunk_index
+float32   dt
+float32[] linear_x
+float32[] angular_z
+float32[] pose_x
+float32[] pose_y
+float32[] pose_theta

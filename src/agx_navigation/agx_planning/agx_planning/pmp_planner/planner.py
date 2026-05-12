@@ -116,36 +116,39 @@ Operating modes (selected by the `mode` parameter at launch):
   - "online" (default): a control_rate-Hz timer solves the local BVP
     each tick and publishes a Twist on /cmd_vel.
 
-  - "offline": on a new goal (or a path-masked field change), a worker
-    thread rolls out a complete start-to-goal trajectory by repeated
-    BVP solves -- each segment of dt_segment seconds is committed,
-    the simulated state is advanced, and the next segment is solved.
-    Each committed segment is published as a PlannerTrajectoryChunk
-    as soon as it is solved (direct publish from the worker thread;
-    rclpy publishers are thread-safe), so the interpreter accumulates
-    the full trajectory in its buffer ahead of execution. A path-masked
-    field diff (max |T_new - T_old| sampled along the latest plan)
-    above field_diff_threshold triggers a replan: the worker aborts,
-    a new trajectory_id is started from the current TF pose, and the
-    interpreter atomically switches on first-chunk-arrival. Newly
-    discovered cells along the path count as +inf diff, always
-    triggering replan.
+  - "offline": exposes a ROS2 action server `pmp_planner/plan_to_goal`
+    (PlanToGoal.action). The client (typically the trajectory interpreter)
+    supplies start_pose and target_pose inline; the server rolls out a
+    complete start-to-goal trajectory by repeated BVP solves, streaming
+    each committed dt_segment-second chunk as action feedback. The goal
+    carries a 3D start pose (x, y, theta); v and omega are zero-initialized
+    (planning from rest). The result signals end-of-trajectory (success /
+    abort / preempt). A new goal arriving mid-rollout preempts the current
+    one server-side: the in-flight rollout is woken via _exec_stop, returns
+    "preempted", and the next goal proceeds once the previous releases
+    _exec_lock. Replan triggering (path-masked field-change detection)
+    lives in the interpreter -- the planner is a pure (start, goal, field)
+    -> trajectory function in this mode.
 
-Node API: subscribes to /odom, /goal_pose, /vector_field/planner_data;
-publishes Twist (or TwistStamped) on /cmd_vel in online mode, or
-PlannerTrajectoryChunk on /pmp_planner/trajectory_chunks in offline
-mode. Both modes publish a nav_msgs/Path on /pmp_planner/trajectory
-(online: latest BVP horizon; offline: cumulative rolled-out trajectory).
+Node API: ONLINE mode subscribes to /odom, /goal_pose,
+/vector_field/planner_data and publishes Twist (or TwistStamped) on
+/cmd_vel. OFFLINE mode subscribes only to /vector_field/planner_data
+and serves the action `pmp_planner/plan_to_goal`. Both modes publish a
+nav_msgs/Path on /pmp_planner/trajectory (online: latest BVP horizon;
+offline: cumulative rolled-out trajectory).
 """
 
 from dataclasses import dataclass
 from math import hypot, pi, tanh
 from typing import Optional
 import threading
+import time
 
 import numpy as np
 
 import rclpy
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
@@ -154,7 +157,7 @@ from std_msgs.msg import Float32MultiArray
 from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, TransformException
 
-from agx_planning_msgs.msg import PlannerTrajectoryChunk
+from agx_planning_msgs.action import PlanToGoal
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.pmp_planner import (
     PMPShootingSolver,
@@ -165,7 +168,7 @@ from agx_planning.pmp_planner import (
 
 
 @dataclass
-class TopicConfig:
+class NodeConfig:
     map_frame: str = "map"
     robot_frame: str = "base_link"
     enable_stamped_cmd_vel: bool = False
@@ -173,31 +176,42 @@ class TopicConfig:
     # logger. Empty string disables it. The logger writes planned heading
     # profiles and actual odom to CSV for post-analysis; see TurnDiagnosticLogger.
     diag_log_path: str = ""
+    # How much to wait for a vector field in offline mode before giving up.
+    # Set to higher than average value,
+    # because the very first message takes longer to receive.
+    vector_field_timeout: float = 10.0
 
 
 class PlannerNode(Node):
     """Mode-aware planner.
 
     Online mode (cfg.mode == "online"): preserved from the original node --
-    a control_rate-Hz timer solves the local BVP and publishes a Twist on
-    /cmd_vel.
+    a control_rate-Hz timer solves the local BVP each tick using the 5D
+    initial state (pose from TF, twist from /odom) and publishes a Twist
+    on /cmd_vel.
 
-    Offline mode (cfg.mode == "offline"): a worker thread does rollout-by-
-    concatenation. On goal arrival or path-masked field change, the worker
-    is kicked: it reads the chassis TF pose, increments trajectory_id, and
-    emits PlannerTrajectoryChunk messages on /pmp_planner/trajectory_chunks
-    as fast as the BVP can solve. Each chunk is published directly from the
-    worker thread (rclpy publishers are thread-safe in Jazzy). Replanning
-    is signalled via _kick_event; the worker checks it between BVP
-    iterations and bails out, after which the main loop re-snapshots state
-    and starts a fresh trajectory_id.
+    Offline mode (cfg.mode == "offline"): exposes a ROS2 action server
+    `pmp_planner/plan_to_goal`. Each goal carries an explicit
+    (start_x, start_y, start_theta) and (target_x, target_y, target_theta);
+    v and omega are zero-initialized (planning from rest). Each committed
+    dt_segment-second BVP segment is streamed back as action feedback. A
+    new goal arriving mid-rollout preempts the current one: _action_handle_accepted
+    fires _exec_stop, the in-flight rollout exits with "preempted", and the
+    new goal then runs once it acquires _exec_lock. Path-masked replan
+    detection lives in the interpreter, not here -- the planner only sees
+    fresh action goals.
+
+    NOTE: offline mode requires a MultiThreadedExecutor in main() so that
+    (a) two execute callbacks can coexist (outgoing one returning + incoming
+    one waiting on _exec_lock), and (b) field subscription delivery is not
+    blocked during long BVP solves.
     """
 
     def __init__(self):
         super().__init__("pmp_planner")
 
         self.cfg = declare_and_load_dataclass(self, PlannerConfig())
-        self.topic_cfg = declare_and_load_dataclass(self, TopicConfig())
+        self.node_cfg = declare_and_load_dataclass(self, NodeConfig())
 
         if self.cfg.mode not in ("online", "offline"):
             raise ValueError(
@@ -205,117 +219,138 @@ class PlannerNode(Node):
                 f"got {self.cfg.mode!r}"
             )
 
+        # --- Shared state (both modes) ---
+        self._field = VectorFieldGrid()
+
+        # Diagnostic logger -- None when diag_log_path is empty.
+        self._diag_logger: Optional[TurnDiagnosticLogger] = None
+        if self.node_cfg.diag_log_path:
+            try:
+                self._diag_logger = TurnDiagnosticLogger(self.node_cfg.diag_log_path)
+                self.get_logger().info(
+                    f"Diagnostic logger active -> {self.node_cfg.diag_log_path}"
+                )
+            except OSError as e:
+                self.get_logger().error(f"Cannot open diag log: {e}")
+
+        self._solver = PMPShootingSolver(self.cfg, self._field)
+
+        # --- Subscriptions / publishers shared across both modes ---
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=1,
+        )
+        self.create_subscription(
+            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
+        )
+        self._traj_pub = self.create_publisher(Path, "/pmp_planner/trajectory", 10)
+
+        # --- Mode-specific setup ---
+        if self.cfg.mode == "online":
+            self._init_online(qos)
+        else:
+            self._init_offline()
+
+        self.get_logger().info(f"Planner running in '{self.cfg.mode}' mode.")
+
+    def _init_online(self, qos: QoSProfile):
+        """Online-mode wiring: TF, /odom, /goal_pose, /cmd_vel, control timer.
+        Behaviourally identical to the original node -- the planner is its
+        own control loop here."""
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self._xi: np.ndarray = np.zeros(3)  # (px, py, theta) from TF
         self._chassis_twist: np.ndarray = np.zeros(2)  # (v, omega) from /odom
         self._goal: Optional[np.ndarray] = None  # (gx, gy, gtheta)
-        self._field = VectorFieldGrid()
         self._waiting_for_field = False
 
-        # Diagnostic logger -- None when diag_log_path is empty.
-        self._diag_logger: Optional[TurnDiagnosticLogger] = None
-        if self.topic_cfg.diag_log_path:
-            try:
-                self._diag_logger = TurnDiagnosticLogger(self.topic_cfg.diag_log_path)
-                self.get_logger().info(
-                    f"Diagnostic logger active -> {self.topic_cfg.diag_log_path}"
-                )
-            except OSError as e:
-                self.get_logger().error(f"Cannot open diag log: {e}")
-
-        # Online-only: tracks whether the previous control cycle was inside
-        # the position-tolerance ball around the goal. The BVP cost
-        # landscape is qualitatively different inside vs outside, so warm-
-        # starting across the boundary lands Newton in the wrong basin.
+        # Tracks whether the previous control cycle was inside the
+        # position-tolerance ball around the goal. The BVP cost landscape
+        # is qualitatively different inside vs outside, so warm-starting
+        # across the boundary lands Newton in the wrong basin.
         self._was_in_goal_zone: bool = False
 
-        self._solver = PMPShootingSolver(self.cfg, self._field)
-
-        # --- Offline-mode thread / sync state. Created in BOTH modes so
-        # destroy_node() and _on_field's swap helper don't need to mode-
-        # check; they're trivially cheap. ---
-        # _kick_event: set on (a) new goal, (b) field diff > threshold,
-        #              (c) shutdown. Worker checks between BVP iterations
-        #              and after waking from its outer wait.
-        # _stop_event: set on shutdown.
-        # _state_lock: guards (self._goal, self._latest_trajectory_xy,
-        #              self._trajectory_id). _xi and _field are read with
-        #              GIL-atomic single-attribute loads instead.
-        self._kick_event = threading.Event()
-        self._stop_event = threading.Event()
-        self._state_lock = threading.Lock()
-        self._trajectory_id: int = 0
-        # World-coord (x, y) samples of the most recently planned
-        # trajectory. Used by _on_field's path-masked diff for the
-        # replan trigger. Empty array = no plan to compare against.
-        self._latest_trajectory_xy: np.ndarray = np.zeros((0, 2))
-
-        # --- Subscriptions / publishers ---
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            depth=1,
-        )
         self.create_subscription(Odometry, "/odom", self._on_odom, qos)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
-        self.create_subscription(
-            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
-        )
 
-        # /cmd_vel publisher (used in online mode; dormant in offline since
-        # the interpreter is the one talking to the chassis there).
-        if self.topic_cfg.enable_stamped_cmd_vel:
+        if self.node_cfg.enable_stamped_cmd_vel:
             self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
         else:
             self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
-        self._traj_pub = self.create_publisher(Path, "/pmp_planner/trajectory", 10)
+        # Used to publish the empty-frame_id sentinel on goal completion.
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
-        # Offline-mode trajectory chunks. ALL fields are set explicitly --
-        # omitting `history` was observed to cause the entire profile to
-        # fall back to system defaults under some rclpy/RMW combinations,
-        # producing a VOLATILE+UNKNOWN-history publisher despite an
-        # explicit durability= argument. The interpreter declares the
-        # matching profile.
-        self._chunk_pub = self.create_publisher(
-            PlannerTrajectoryChunk,
-            "/pmp_planner/trajectory_chunks",
-            QoSProfile(
-                history=HistoryPolicy.KEEP_LAST,
-                depth=64,
-                reliability=ReliabilityPolicy.RELIABLE,
-                durability=DurabilityPolicy.VOLATILE,
-            ),
+
+        self.create_timer(1.0 / self.cfg.control_rate, self._control_loop)
+        self.get_logger().info(
+            f"Indirect-PMP planner running ONLINE at "
+            f"{self.cfg.control_rate} Hz, horizon {self.cfg.T_horizon}s "
+            f"/ {self.cfg.N + 1} mesh nodes."
         )
 
-        # --- Mode-specific setup ---
-        if self.cfg.mode == "online":
-            self.create_timer(1.0 / self.cfg.control_rate, self._control_loop)
-            self.get_logger().info(
-                f"Indirect-PMP planner running ONLINE at "
-                f"{self.cfg.control_rate} Hz, horizon {self.cfg.T_horizon}s "
-                f"/ {self.cfg.N + 1} mesh nodes."
-            )
-        else:
-            self._worker = threading.Thread(
-                target=self._offline_worker_loop,
-                name="pmp_offline_worker",
-                daemon=True,
-            )
-            self._worker.start()
-            self.get_logger().info(
-                f"Indirect-PMP planner running OFFLINE; horizon "
-                f"{self.cfg.T_horizon}s, dt_segment {self.cfg.dt_segment}s, "
-                f"chunk samples at {self.cfg.control_rate} Hz, "
-                f"replan threshold {self.cfg.field_diff_threshold}."
-            )
+    def _init_offline(self):
+        """Offline-mode wiring: action server, exec lock/stop, trajectory_id.
+
+        No TF, no /odom, no /cmd_vel, no /goal_pose -- the action goal
+        carries start and target inline. The interpreter (action client)
+        owns chassis-pose snapshots and goal-source subscriptions.
+        """
+        # _exec_lock serialises rollouts so a preempting goal waits for
+        # the previous to release before starting. _exec_stop is the
+        # signal that wakes a still-running rollout: _action_handle_accepted
+        # sets it on a new goal arriving, _do_rollout_action's per-iter
+        # check sees it and exits with "preempted".
+        self._exec_lock = threading.Lock()
+        self._exec_stop = threading.Event()
+        self._trajectory_id: int = 0
+
+        # ReentrantCallbackGroup so (a) two execute callbacks (the
+        # outgoing one returning + the incoming one waiting on
+        # _exec_lock) can coexist on different threads, and (b) a long
+        # BVP solve in the execute callback doesn't block /vector_field
+        # subscription delivery, which lives in the default
+        # mutually-exclusive group. Together with MultiThreadedExecutor
+        # in main(), field updates flow through during long solves.
+        self._action_cb_group = ReentrantCallbackGroup()
+
+        self._field_lock = threading.Lock()
+        self._field_event = threading.Event()
+
+        # Feedback QoS: the planner solves BVPs much faster than the
+        # chassis plays them back (a 30-second sim trajectory at
+        # dt_segment=1.25s = ~24 segments solved in well under a second
+        # of wall clock), so the feedback queue fills with many unconsumed
+        # chunks during the burst. depth=64 prevents drops that would
+        # manifest as missing twists and incomplete path coverage.
+        feedback_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=64,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._action_server = ActionServer(
+            self,
+            PlanToGoal,
+            "pmp_planner/plan_to_goal",
+            execute_callback=self._action_execute,
+            goal_callback=self._action_goal_callback,
+            cancel_callback=self._action_cancel_callback,
+            handle_accepted_callback=self._action_handle_accepted,
+            callback_group=self._action_cb_group,
+            feedback_pub_qos_profile=feedback_qos,
+        )
+        self.get_logger().info(
+            f"Indirect-PMP planner running OFFLINE; action "
+            f"'pmp_planner/plan_to_goal'; horizon {self.cfg.T_horizon}s, "
+            f"dt_segment {self.cfg.dt_segment}s, chunk samples at "
+            f"{self.cfg.control_rate} Hz."
+        )
 
     def destroy_node(self):
-        self._stop_event.set()
-        self._kick_event.set()
-        if self.cfg.mode == "offline" and hasattr(self, "_worker"):
-            self._worker.join(timeout=2.0)
+        # Wake any in-flight rollout so it can return promptly.
+        if self.cfg.mode == "offline" and hasattr(self, "_exec_stop"):
+            self._exec_stop.set()
         if self._diag_logger is not None:
             self._diag_logger.close()
         super().destroy_node()
@@ -323,26 +358,26 @@ class PlannerNode(Node):
     # ---------------- Subscriptions ----------------
 
     def _on_odom(self, msg: Odometry):
-        # Odom serves as the control tick AND as the source of the
-        # measured chassis twist (v, omega) -- the planner pins these
-        # as initial conditions on the 5D BVP, so the trajectory starts
-        # from the platform's actual instantaneous velocity rather than
-        # assuming it can be commanded discontinuously. The pose itself
-        # is read via TF (map -> base_link), since /odom may be in a
-        # different frame.
+        # Online-only callback (subscription is created only in _init_online).
+        # Odom serves as the control tick AND as the source of the measured
+        # chassis twist (v, omega) -- the planner pins these as initial
+        # conditions on the 5D BVP, so the trajectory starts from the
+        # platform's actual instantaneous velocity rather than assuming it
+        # can be commanded discontinuously. The pose itself is read via TF
+        # (map -> base_link), since /odom may be in a different frame.
         try:
             t = self._tf_buffer.lookup_transform(
-                self.topic_cfg.map_frame,
-                self.topic_cfg.robot_frame,
+                self.node_cfg.map_frame,
+                self.node_cfg.robot_frame,
                 rclpy.time.Time(),
             )
             tx = t.transform.translation.x
             ty = t.transform.translation.y
             q = t.transform.rotation
             _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-            # Atomic single-attribute rebind. The offline worker reads
-            # self._xi with a single load and either gets the old or new
-            # array, never a torn write. Same pattern for the twist.
+            # Atomic single-attribute rebind: the control loop reads
+            # self._xi and self._chassis_twist with single loads and
+            # either gets the old or new array, never a torn write.
             self._xi = np.array([tx, ty, yaw])
             v_meas = float(msg.twist.twist.linear.x)
             w_meas = float(msg.twist.twist.angular.z)
@@ -351,37 +386,29 @@ class PlannerNode(Node):
                 self._diag_logger.log_odom(tx, ty, yaw, v_meas, w_meas)
         except TransformException as e:
             self.get_logger().warn(
-                f"TF {self.topic_cfg.map_frame}->"
-                f"{self.topic_cfg.robot_frame} unavailable: {e}",
+                f"TF {self.node_cfg.map_frame}->"
+                f"{self.node_cfg.robot_frame} unavailable: {e}",
                 throttle_duration_sec=2.0,
             )
-            # explicit return so we don't check goal on stale pose
-            return
-
-        if self.cfg.mode == "offline":
-            self._check_offline_goal_reached()
 
     def _on_goal(self, msg: PoseStamped):
-        # Ignore the sentinel we publish ourselves on goal completion.
+        # Online-only callback (subscription is created only in _init_online).
+        # In offline mode goals arrive via the action server's PlanToGoal goals.
+        # Ignore the empty-frame_id sentinel we publish on goal completion.
         if msg.header.frame_id == "":
             return
         pos = msg.pose.position
         q = msg.pose.orientation
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        with self._state_lock:
-            self._goal = np.array([pos.x, pos.y, yaw])
-            # Drop the previous trajectory snapshot so the diff doesn't
-            # try to compare against a stale path.
-            self._latest_trajectory_xy = np.zeros((0, 2))
+        self._goal = np.array([pos.x, pos.y, yaw])
+        # Drop the previous trajectory snapshot so the diff doesn't
+        # try to compare against a stale path.
         self._waiting_for_field = True
         self._solver.reset_warm_start()
-        if self.cfg.mode == "offline":
-            self._kick_event.set()
         self.get_logger().info(f"Goal: ({pos.x:.2f}, {pos.y:.2f}), yaw={yaw:.2f}")
 
     def _on_field(self, msg: Float32MultiArray):
-        """Parse the field message, optionally trigger an offline replan,
-        and atomically swap in the new VectorFieldGrid.
+        """Parse the field message and atomically swap in the new VectorFieldGrid.
 
         Layout (canonical):
           [h, w, origin_x, origin_y, resolution,
@@ -389,47 +416,37 @@ class PlannerNode(Node):
         Backward compatibility:
           - 1-channel (T only): F_unit auto-derived from -grad T.
           - 3-channel (T, gx, gy): grad_mag missing, ignored.
+
+        Path-masked replan detection that used to live here in offline mode
+        has moved to the interpreter (the action client). The planner is
+        now a pure (start, goal, field) -> trajectory function; replanning
+        is a fresh action goal.
         """
         new_field = self._parse_field_msg(msg)
         if new_field is None:
             return
 
-        # Offline mode: path-masked diff against the OLD field. Out-of-
-        # bounds cells in either grid count as +inf diff so newly-
-        # discovered terrain on the planned path always trips the threshold.
-        should_replan = False
-        if self.cfg.mode == "offline":
-            old_field = self._field  # GIL-atomic load
-            with self._state_lock:
-                traj_xy = self._latest_trajectory_xy
-                has_goal = self._goal is not None
-            if has_goal and traj_xy.shape[0] > 0 and old_field.ready:
-                xs = traj_xy[:, 0]
-                ys = traj_xy[:, 1]
-                T_old, *_ = old_field.query_vec(xs, ys)
-                T_new, *_ = new_field.query_vec(xs, ys)
-                oob = (~old_field.in_bounds(xs, ys)) | (~new_field.in_bounds(xs, ys))
-                delta = np.where(oob, np.inf, np.abs(T_new - T_old))
-                if float(delta.max()) > self.cfg.field_diff_threshold:
-                    should_replan = True
-            elif has_goal and not old_field.ready:
-                # First field arrival while a goal is waiting: kick the
-                # worker so it can start its first rollout.
-                should_replan = True
+        with self._field_lock:
+            # Atomic swap. CPython's GIL makes the bare assignment atomic, so
+            # any concurrent reader (online _control_loop, or an offline rollout
+            # running on the action-server thread) sees either the old or new
+            # grid, never a torn update.
+            self._field = new_field
+            # The solver holds its own reference to the field; rebind it so
+            # the next solve uses the new instance. The solver's version-counter
+            # additionally drops the warm start because the new instance starts
+            # at version=1, never matching the cached _last_field_version.
+            self._solver.field = new_field
+            self._field_event.set()
 
-        # Atomic swap. CPython's GIL makes the bare assignment atomic, so
-        # threaded readers (the offline worker) never see a torn update.
-        self._field = new_field
-        # The solver holds its own reference to the field; rebind it so
-        # the next solve uses the new instance. Solver's version-counter
-        # check additionally drops the warm start because the new
-        # instance starts at version=1, never matching the cached
-        # _last_field_version.
-        self._solver.field = new_field
-        self._waiting_for_field = False
+        self.get_logger().warn(
+            f"Got field. Size: {self._field._tt.shape}",
+            throttle_duration_sec=5.0,
+        )
 
-        if should_replan:
-            self._kick_event.set()
+        # _waiting_for_field only exists in online mode.
+        if self.cfg.mode == "online":
+            self._waiting_for_field = False
 
     def _parse_field_msg(self, msg: Float32MultiArray) -> Optional[VectorFieldGrid]:
         """Build a fresh VectorFieldGrid from a Float32MultiArray. Returns
@@ -561,114 +578,185 @@ class PlannerNode(Node):
                     alpha_cmd_0=alpha_cmd_0,
                 )
 
-    # ---------------- Offline worker ----------------
+    # ---------------- Action server (offline mode) ----------------
 
-    def _offline_worker_loop(self):
-        """Outer loop: wait for kick (new goal / replan), then roll out
-        from the current TF pose under the current goal/field. The
-        rollout itself checks _kick_event between BVP iterations so a
-        replan signal mid-rollout aborts immediately. After abort or
-        completion, loop back and wait for the next kick.
+    def _action_goal_callback(self, goal_request) -> GoalResponse:
+        # Accept all syntactically-valid goals; semantic validation
+        # (frame_id matches map_frame, field is ready, ...) happens in
+        # _action_execute_inner so we can return a meaningful result
+        # message rather than just rejecting up-front.
+        return GoalResponse.ACCEPT
+
+    def _action_cancel_callback(self, goal_handle) -> CancelResponse:
+        # Wake the in-flight rollout so the cancellation observed via
+        # goal_handle.is_cancel_requested takes effect promptly.
+        self._exec_stop.set()
+        return CancelResponse.ACCEPT
+
+    def _action_handle_accepted(self, goal_handle):
+        """Called on every accepted goal. If a previous rollout is in
+        flight, set _exec_stop so it exits with "preempted"; the new
+        execute callback will then block briefly on _exec_lock until
+        that one releases. goal_handle.execute() itself is non-blocking
+        (it schedules _action_execute on a worker thread)."""
+        self._exec_stop.set()
+        goal_handle.execute()
+
+    def _action_execute(self, goal_handle):
+        """Execute callback wrapper: serialise rollouts via _exec_lock so
+        a preempting goal cleanly waits for the previous to release
+        before clearing _exec_stop and starting its own rollout."""
+        with self._exec_lock:
+            self._exec_stop.clear()
+            return self._action_execute_inner(goal_handle)
+
+    def _action_execute_inner(self, goal_handle):
+        """Validate the goal, wait for the field, run one rollout, and
+        translate the rollout's status string into the appropriate
+        action terminal state.
+
+        The trajectory_id counter is bumped here (not earlier) so a goal
+        that aborts during validation gets result.trajectory_id = 0,
+        which the interpreter uses to distinguish "no rollout was
+        attempted" from "the rollout we were watching just ended".
+
+        PlanToGoal carries a 3D start pose (x, y, theta). The 5D BVP also
+        needs initial v and omega; these are zero-initialized -- planning
+        from rest. The first BVP segment will converge to the correct
+        velocity profile regardless.
         """
-        while not self._stop_event.is_set():
-            # Wait for something to do. Timeout is just a safety so we
-            # periodically wake to check _stop_event.
-            kicked = self._kick_event.wait(timeout=0.5)
-            self._kick_event.clear()
-            if self._stop_event.is_set():
-                break
+        req = goal_handle.request
+        result = PlanToGoal.Result()
 
-            if not kicked:
-                continue
-
-            with self._state_lock:
-                goal = None if self._goal is None else self._goal.copy()
-            if goal is None:
-                continue
-
-            field_ref = self._field  # GIL-atomic
-            if not field_ref.ready:
-                # Goal arrived before any field. The next field arrival
-                # will kick us again.
-                continue
-
-            # 5D initial state for the rollout: pose from TF, twist
-            # from /odom. The two reads are individually GIL-atomic;
-            # we don't need them from the exact same odom callback,
-            # since the next segment's start state comes from the BVP
-            # solution itself.
-            xi = self._xi
-            twist = self._chassis_twist
-            x0 = np.array([xi[0], xi[1], xi[2], twist[0], twist[1]])
-            try:
-                with self._state_lock:
-                    self._trajectory_id += 1
-                    traj_id = self._trajectory_id
-                    self._latest_trajectory_xy = np.zeros((0, 2))
-                self._solver.field = field_ref
-                self._solver.reset_warm_start()
-                self._do_rollout(traj_id, x0, goal)
-            except Exception as e:
-                self.get_logger().error(
-                    f"Offline rollout crashed: {e!r}",
-                )
-
-    def _check_offline_goal_reached(self):
-        """Clear the goal once the real robot arrives at it in offline mode.
-
-        Called from _on_odom so it uses the actual TF pose, not the
-        simulated state inside _do_rollout. This matches the intent in
-        _do_rollout's docstring: goal-clearing belongs to whoever observes
-        real chassis arrival.
-
-        Thread safety: _on_odom is an executor callback, so this runs on
-        the same thread as _on_goal -- no lock needed to read _goal for
-        the None check. We snapshot it under _state_lock before the
-        arithmetic to avoid a torn read from the worker thread.
-        """
-        with self._state_lock:
-            goal = self._goal  # snapshot; None means nothing to do
-        if goal is None:
-            return
-
-        xi = self._xi  # GIL-atomic single-attribute load
-        d_xy = hypot(xi[0] - goal[0], xi[1] - goal[1])
-        d_th = abs(((goal[2] - xi[2] + pi) % (2.0 * pi)) - pi)
-
-        if d_xy < self.cfg.goal_tolerance_xy and d_th < self.cfg.goal_tolerance_th:
-            self.get_logger().info(
-                f"Offline goal reached (real pose): "
-                f"d_xy={d_xy:.3f} m, d_th={d_th:.3f} rad."
+        # Frame validation. The planner does its math in map_frame; if
+        # the client sent poses in another frame, refuse rather than
+        # silently planning in the wrong frame entirely.
+        if req.frame_id != self.node_cfg.map_frame:
+            err = (
+                f"frame_id {req.frame_id!r} does not match planner "
+                f"map_frame {self.node_cfg.map_frame!r}"
             )
-            self._clear_goal()
+            self.get_logger().warn(err)
+            goal_handle.abort()
+            result.success = False
+            result.message = err
+            result.trajectory_id = 0
+            return result
 
-    def _do_rollout(self, traj_id: int, x0: np.ndarray, goal: np.ndarray):
+        # 5D initial state: 3D pose from action goal, v/omega zero-init.
+        x0 = np.array([req.start_x, req.start_y, req.start_theta, 0.0, 0.0])
+        goal = np.array([req.target_x, req.target_y, req.target_theta])
+        self.get_logger().info(
+            f"Action goal: start=({x0[0]:.2f}, {x0[1]:.2f}, {x0[2]:.2f}) "
+            f"-> target=({goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f})"
+        )
+
+        # Atomically check readiness and arm the event.
+        # If the field arrives between the check and the first .wait() call,
+        # the event is already set and .wait() returns immediately.
+        with self._field_lock:
+            if not self._field.ready:
+                self._field_event.clear()
+
+        # Wait for the field if it's not yet ready. Bounded so a
+        # misconfigured system (no /vector_field/planner_data publisher)
+        # doesn't hang the action indefinitely.
+        deadline = time.monotonic() + self.node_cfg.vector_field_timeout
+        while not self._field.ready:
+            if self._exec_stop.is_set():
+                # Preempted by a newer goal (or shutdown) before we even
+                # got a field. Honour cancel-vs-preempt distinction.
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    msg = "Cancelled while waiting for field"
+                else:
+                    goal_handle.abort()
+                    msg = "Preempted while waiting for field"
+                result.success = False
+                result.message = msg
+                result.trajectory_id = 0
+                return result
+            if time.monotonic() > deadline:
+                goal_handle.abort()
+                result.success = False
+                result.message = "Timeout waiting for vector field"
+                result.trajectory_id = 0
+                return result
+
+            # Block until the field callback signals us, but wake up periodically
+            # to re-check _exec_stop and the deadline. Without this, the executor
+            # thread sleeps through the subscription callback entirely.
+            remaining = deadline - time.monotonic()
+            self._field_event.wait(timeout=min(0.05, max(0.0, remaining)))
+
+        self._trajectory_id += 1
+        traj_id = self._trajectory_id
+        # Snapshot the field for log clarity. _on_field's atomic swap may
+        # rebind self._field mid-rollout; subsequent BVP segments pick up
+        # whichever instance is current at that point, mirroring the original
+        # behaviour.
+        self._solver.field = self._field
+        self._solver.reset_warm_start()
+
+        try:
+            status = self._do_rollout_action(goal_handle, traj_id, x0, goal)
+        except Exception as e:
+            self.get_logger().error(f"Offline rollout crashed: {e!r}")
+            goal_handle.abort()
+            result.success = False
+            result.message = f"Rollout exception: {e!r}"
+            result.trajectory_id = int(traj_id)
+            return result
+
+        if status == "success":
+            goal_handle.succeed()
+            result.success = True
+            result.message = "Goal reached"
+        elif status == "cancelled":
+            goal_handle.canceled()
+            result.success = False
+            result.message = "Cancelled"
+        elif status == "preempted":
+            # New goal arrived mid-rollout. Distinct from a true failure
+            # only via the message string -- both terminate as ABORTED.
+            goal_handle.abort()
+            result.success = False
+            result.message = "Preempted"
+        else:
+            # "failed": BVP failure / stagnation / sim-time cap.
+            goal_handle.abort()
+            result.success = False
+            result.message = "Plan failure (BVP / stagnation / sim-time cap)"
+        result.trajectory_id = int(traj_id)
+        return result
+
+    def _do_rollout_action(
+        self, goal_handle, traj_id: int, x0: np.ndarray, goal: np.ndarray
+    ) -> str:
         """Roll out from x0 to goal by repeated BVP solves, publishing
-        each committed segment as a PlannerTrajectoryChunk.
+        each committed segment as action feedback. Returns one of:
 
-        Aborts (without is_final) if _kick_event fires mid-rollout: the
-        next iteration of the outer loop will assign a new trajectory_id
-        and start fresh, so the interpreter sees the new id arrive and
-        atomically switches. Aborts WITH an is_final empty chunk if the
-        BVP fails or sim time exceeds max_rollout_sim_time, so the
-        interpreter knows the trajectory_id is dead.
+          "success"   -- chassis arrived at goal within tolerance,
+          "preempted" -- _exec_stop fired (new goal arrived, or shutdown),
+          "cancelled" -- the action client requested cancellation,
+          "failed"    -- BVP failure, stagnation, or sim-time cap.
+
+        x0 is a 5D state [px, py, theta, v, omega]. goal is 3D [gx, gy, gtheta].
 
         Termination paths:
           (a) state-at-iteration-boundary in goal tolerance,
           (b) any sample WITHIN a segment hits goal tolerance (truncated
-              chunk, is_final),
+              chunk, last feedback emitted),
           (c) stagnation: x_next stops making meaningful progress for
               several consecutive iterations -- defends against BVP
               quasi-fixed-point behaviour near the goal that would
               otherwise burn through max_rollout_sim_time,
           (d) sim-time cap (last-resort backstop).
 
-        DOES NOT clear the goal on completion: in offline mode the
-        upstream vector-field generator may use the goal's existence as
-        a "keep regenerating the field" signal, and clearing it would
-        prevent newly-discovered obstacles along the executed path from
-        propagating back into the planner. The user clears the goal
-        externally when chassis arrival is observed (e.g. via TF).
+        The action result carries the end-of-trajectory signal, so no
+        empty is_final terminator chunk is needed (unlike the legacy
+        /pmp_planner/trajectory_chunks topic). The cumulative
+        /pmp_planner/trajectory Path is still published for visualization.
         """
         cfg = self.cfg
         dt_sample = 1.0 / cfg.control_rate
@@ -680,17 +768,15 @@ class PlannerNode(Node):
         sim_t = 0.0
         chunk_idx = 0
         state = x0.copy()
-        # Cumulative pose log for the path-masked diff trigger and for
-        # the visualization Path. Each entry is a (n_samples, 3) block.
+        # Cumulative pose log for visualization. Each entry is an
+        # (n_samples, 3) block of [px, py, theta].
         all_poses: list[np.ndarray] = []
 
         # Stagnation tracking: if x_next stops making progress, the
         # rollout has hit a quasi-fixed-point (e.g. BVP is happily
         # emitting "stay where you are" because the chassis is in the
-        # narrow ring just outside goal_tolerance_xy). The trace_streamline
-        # pre-check prevents the most common cause of this, but a
-        # tightly-tuned cost can still produce sub-tolerance drift; the
-        # stagnation backstop ensures finite termination either way.
+        # narrow ring just outside goal_tolerance_xy). The stagnation
+        # backstop ensures finite termination.
         progress_eps = max(0.5 * cfg.goal_tolerance_xy, 5e-3)  # [m]
         near_goal_thresh = 4.0 * cfg.goal_tolerance_xy  # [m]
         stagnation_limit = 5
@@ -698,15 +784,14 @@ class PlannerNode(Node):
         stagnation_count = 0
 
         while sim_t < cfg.max_rollout_sim_time:
-            # Replan / shutdown check. Done BEFORE the solve, so a kick
-            # signal arriving mid-rollout cancels the next BVP rather
-            # than wasting a 30 ms solve we'll throw away.
-            if self._kick_event.is_set() or self._stop_event.is_set():
-                # Re-set the flag so the outer loop re-enters the kicked
-                # branch (clearing happened in the outer loop already).
-                # Don't emit is_final -- a new traj_id is coming next.
-                self._kick_event.set()
-                return
+            # Preempt / cancel checks BEFORE the solve, so a signal
+            # arriving mid-rollout cancels the next BVP rather than
+            # wasting a ~30 ms solve we'll throw away. Cancel takes
+            # precedence (more specific terminal state).
+            if goal_handle.is_cancel_requested:
+                return "cancelled"
+            if self._exec_stop.is_set():
+                return "preempted"
 
             # Termination (a): state-at-boundary in tolerance.
             d_xy_state = hypot(state[0] - goal[0], state[1] - goal[1])
@@ -715,23 +800,12 @@ class PlannerNode(Node):
                 d_xy_state < cfg.goal_tolerance_xy
                 and d_th_state < cfg.goal_tolerance_th
             ):
-                self._publish_chunk(
-                    traj_id,
-                    chunk_idx,
-                    np.zeros((0, 2)),
-                    np.zeros((0, 3)),
-                    dt_sample,
-                    is_final=True,
-                )
                 self._publish_cumulative_path(all_poses)
                 self.get_logger().info(
                     f"Offline rollout traj_id={traj_id} reached goal "
                     f"in {sim_t:.2f}s sim, {chunk_idx} chunks."
                 )
-                # NOTE: goal is intentionally NOT cleared here. See
-                # docstring -- offline mode leaves goal-clearing to the
-                # external system that observes actual chassis arrival.
-                return
+                return "success"
 
             # Solve and sample one segment.
             result = self._solver.sample_committed_segment(
@@ -746,16 +820,7 @@ class PlannerNode(Node):
                     f"(traj_id={traj_id}, chunk={chunk_idx}): "
                     f"{self._solver._last_error}",
                 )
-                # Emit terminal marker so the interpreter doesn't wait.
-                self._publish_chunk(
-                    traj_id,
-                    chunk_idx,
-                    np.zeros((0, 2)),
-                    np.zeros((0, 3)),
-                    dt_sample,
-                    is_final=True,
-                )
-                return
+                return "failed"
 
             twists, poses, x_next = result
 
@@ -785,7 +850,7 @@ class PlannerNode(Node):
             # poses[0:hit] -- after the interpreter applies twists[hit-1]
             # the chassis arrives at poses[hit] which is at goal. The
             # parallel-arrays invariant (twists[i] applied at poses[i])
-            # is preserved, the goal-arrival pose just isn't included
+            # is preserved; the goal-arrival pose just isn't included
             # since no twist is applied AT it.
             hit_idx = -1
             for i in range(poses.shape[0]):
@@ -798,67 +863,38 @@ class PlannerNode(Node):
             if hit_idx >= 1:
                 tw_trunc = twists[:hit_idx]
                 ps_trunc = poses[:hit_idx]
-                self._publish_chunk(
+                self._publish_chunk_feedback(
+                    goal_handle,
                     traj_id,
                     chunk_idx,
                     tw_trunc,
                     ps_trunc,
                     dt_sample,
-                    is_final=True,
                 )
                 all_poses.append(ps_trunc)
-                with self._state_lock:
-                    if self._trajectory_id != traj_id:
-                        return
-                    self._latest_trajectory_xy = np.concatenate(
-                        [p[:, :2] for p in all_poses],
-                        axis=0,
-                    )
                 self._publish_cumulative_path(all_poses)
                 self.get_logger().info(
                     f"Offline rollout traj_id={traj_id} reached goal "
                     f"in {sim_t:.2f}s sim (intra-segment, chunk {chunk_idx}, "
                     f"sample {hit_idx})."
                 )
-                return
+                return "success"
             if hit_idx == 0:
-                # poses[0] == state (BVP boundary condition pins it),
-                # so this means state was at goal already -- caught by
-                # the (a) check above. Falling through here is defensive
-                # only; emit the terminator and return.
-                self._publish_chunk(
-                    traj_id,
-                    chunk_idx,
-                    np.zeros((0, 2)),
-                    np.zeros((0, 3)),
-                    dt_sample,
-                    is_final=True,
-                )
-                return
+                # poses[0] == state (BVP boundary condition pins it), so
+                # this means state was at goal already -- caught by the
+                # (a) check above. Falling through here is defensive only.
+                return "success"
 
-            # Normal path: publish full chunk.
-            self._publish_chunk(
+            # Normal path: emit the full chunk as action feedback.
+            self._publish_chunk_feedback(
+                goal_handle,
                 traj_id,
                 chunk_idx,
                 twists,
                 poses,
                 dt_sample,
-                is_final=False,
             )
-
             all_poses.append(poses)
-            with self._state_lock:
-                # Sanity: someone else may have bumped the id while we
-                # were solving (unlikely; only the worker bumps it, but
-                # the lock makes the read+write of latest_trajectory_xy
-                # atomic w.r.t. _on_field).
-                if self._trajectory_id != traj_id:
-                    return
-                self._latest_trajectory_xy = np.concatenate(
-                    [p[:, :2] for p in all_poses],
-                    axis=0,
-                )
-
             self._publish_cumulative_path(all_poses)
 
             state = x_next
@@ -876,55 +912,42 @@ class PlannerNode(Node):
                     self.get_logger().warn(
                         f"Offline rollout traj_id={traj_id} stagnated near goal "
                         f"(d_xy={new_d_xy:.3f}m, no progress for "
-                        f"{stagnation_count} iterations). Marking final."
+                        f"{stagnation_count} iterations)."
                     )
-                    self._publish_chunk(
-                        traj_id,
-                        chunk_idx,
-                        np.zeros((0, 2)),
-                        np.zeros((0, 3)),
-                        dt_sample,
-                        is_final=True,
-                    )
-                    return
+                    return "failed"
             else:
                 stagnation_count = 0
             prev_d_xy = new_d_xy
 
-        # Termination (d): sim-time cap. Treat as giveup with terminator.
+        # Termination (d): sim-time cap.
         self.get_logger().warn(
             f"Offline rollout traj_id={traj_id} exceeded "
             f"max_rollout_sim_time={cfg.max_rollout_sim_time}s; aborting."
         )
-        self._publish_chunk(
-            traj_id,
-            chunk_idx,
-            np.zeros((0, 2)),
-            np.zeros((0, 3)),
-            dt_sample,
-            is_final=True,
-        )
+        return "failed"
 
     # ---------------- Publishing ----------------
 
     def _clear_goal(self):
-        """Clear the active goal locally and signal it ROS-wide on /goal_pose."""
+        """Online-mode goal-completion: clear the active goal locally and
+        signal it ROS-wide on /goal_pose. (Offline mode's equivalent
+        signal lives in the interpreter, which reads the action result.)"""
         sentinel = PoseStamped()
         sentinel.header.stamp = self.get_clock().now().to_msg()
         sentinel.header.frame_id = ""
         self._goal_pub.publish(sentinel)
 
-        with self._state_lock:
-            self._goal = None
-            self._latest_trajectory_xy = np.zeros((0, 2))
+        # No lock needed: online mode uses a single-threaded executor,
+        # so _clear_goal and _on_goal never run concurrently.
+        self._goal = None
         self._was_in_goal_zone = False
         self._solver.reset_warm_start()
 
     def _publish_twist(self, v: float, omega: float):
-        if self.topic_cfg.enable_stamped_cmd_vel:
+        if self.node_cfg.enable_stamped_cmd_vel:
             msg = TwistStamped()
             msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.topic_cfg.robot_frame
+            msg.header.frame_id = self.node_cfg.robot_frame
             msg.twist.linear.x = v
             msg.twist.angular.z = omega
         else:
@@ -940,12 +963,12 @@ class PlannerNode(Node):
         now = self.get_clock().now().to_msg()
         path = Path()
         path.header.stamp = now
-        path.header.frame_id = self.topic_cfg.map_frame
+        path.header.frame_id = self.node_cfg.map_frame
         for k in range(self._solver._last_state.shape[0]):
             x_k = self._solver._last_state[k]
             pose = PoseStamped()
             pose.header.stamp = now
-            pose.header.frame_id = self.topic_cfg.map_frame
+            pose.header.frame_id = self.node_cfg.map_frame
             pose.pose.position.x = float(x_k[0])
             pose.pose.position.y = float(x_k[1])
             yaw = float(x_k[2])
@@ -961,12 +984,12 @@ class PlannerNode(Node):
         now = self.get_clock().now().to_msg()
         path = Path()
         path.header.stamp = now
-        path.header.frame_id = self.topic_cfg.map_frame
+        path.header.frame_id = self.node_cfg.map_frame
         for block in all_poses:
             for k in range(block.shape[0]):
                 pose = PoseStamped()
                 pose.header.stamp = now
-                pose.header.frame_id = self.topic_cfg.map_frame
+                pose.header.frame_id = self.node_cfg.map_frame
                 pose.pose.position.x = float(block[k, 0])
                 pose.pose.position.y = float(block[k, 1])
                 yaw = float(block[k, 2])
@@ -978,43 +1001,45 @@ class PlannerNode(Node):
     def _publish_empty_trajectory(self):
         msg = Path()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.topic_cfg.map_frame
+        msg.header.frame_id = self.node_cfg.map_frame
         self._traj_pub.publish(msg)
 
-    def _publish_chunk(
+    def _publish_chunk_feedback(
         self,
+        goal_handle,
         traj_id: int,
         chunk_idx: int,
         twists: np.ndarray,
         poses: np.ndarray,
         dt: float,
-        is_final: bool,
     ):
-        """Publish one PlannerTrajectoryChunk. Called from the worker thread.
+        """Emit one trajectory chunk as PlanToGoal action feedback.
 
         twists shape (N, 2): [v, omega] per row.
         poses  shape (N, 3): [px, py, theta] per row, parallel to twists.
-        Empty arrays are valid (is_final terminator chunks).
+
+        Empty chunks are silently skipped: there's no "is_final" flag in
+        the action feedback (the action result signals end-of-trajectory),
+        so an empty feedback message would carry no information. The
+        intra-segment-hit case in _do_rollout_action guards against
+        ever calling this with an empty truncation.
         """
-        msg = PlannerTrajectoryChunk()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.topic_cfg.map_frame
-        msg.trajectory_id = int(traj_id)
-        msg.chunk_index = int(chunk_idx)
-        msg.is_final = bool(is_final)
-        msg.dt = float(dt)
+        if twists.shape[0] == 0:
+            return
+        fb = PlanToGoal.Feedback()
+        fb.trajectory_id = int(traj_id)
+        fb.chunk_index = int(chunk_idx)
+        fb.dt = float(dt)
         # tolist() because rosidl-generated message slots for float32[]
         # expect a Python list (or array.array), not an ndarray.
-        if twists.shape[0] > 0:
-            t32 = twists.astype(np.float32)
-            p32 = poses.astype(np.float32)
-            msg.linear_x = t32[:, 0].tolist()
-            msg.angular_z = t32[:, 1].tolist()
-            msg.pose_x = p32[:, 0].tolist()
-            msg.pose_y = p32[:, 1].tolist()
-            msg.pose_theta = p32[:, 2].tolist()
-        # else: leave the arrays as their default empty lists.
-        self._chunk_pub.publish(msg)
+        t32 = twists.astype(np.float32)
+        p32 = poses.astype(np.float32)
+        fb.linear_x = t32[:, 0].tolist()
+        fb.angular_z = t32[:, 1].tolist()
+        fb.pose_x = p32[:, 0].tolist()
+        fb.pose_y = p32[:, 1].tolist()
+        fb.pose_theta = p32[:, 2].tolist()
+        goal_handle.publish_feedback(fb)
 
     # ---------------- PMP introspection (for evaluation) ----------------
 
