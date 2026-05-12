@@ -427,10 +427,13 @@ class TrajectoryCorrectorNode(Node):
             return
 
         # Path comparison: only when we have something to compare against and
-        # the trajectory is still in progress.
+        # the trajectory is still in progress. Also skip when a new goal is
+        # already in flight -- the stale _latest_plan_xy from the old
+        # trajectory would produce a misleading comparison.
         if (
             self._latest_plan_xy.shape[0] < 2
             or len(msg.poses) < 2
+            or self._goal_in_flight
         ):
             return
 
@@ -448,7 +451,18 @@ class TrajectoryCorrectorNode(Node):
             return
         rx, ry, _ = pose
 
-        plan_xy = self._latest_plan_xy.astype(np.float64)
+        # Build plan_xy from the CURRENT playback position onward so that
+        # argmin cannot reach back into already-consumed samples. Using
+        # _latest_plan_xy (which starts from the trajectory's first pose)
+        # lets argmin find a past expected position when the robot deviates,
+        # causing future_plan to start near the trajectory's origin rather
+        # than the robot's actual current location.
+        future_path_tuples, _ = self._build_path_polyline()
+        if len(future_path_tuples) < 2:
+            return
+        plan_xy = np.array(
+            [[x, y] for x, y, _ in future_path_tuples], dtype=np.float64
+        )
         plan_start = int(np.argmin((plan_xy[:, 0] - rx) ** 2 + (plan_xy[:, 1] - ry) ** 2))
         grad_start = int(np.argmin((gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2))
 
