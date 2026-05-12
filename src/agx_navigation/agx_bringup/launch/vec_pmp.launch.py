@@ -94,8 +94,13 @@ def generate_launch_description():
             {
                 "enable_stamped_cmd_vel": True,
                 "enable_recovery": do_corrections,
+                "path_diff_window_size": 0.5,
+                "replan_cooldown": 1.0,
                 "use_sim_time": sim,
             }
+        ],
+        remappings=[
+            ("/vector_field/optimal_path", "/plan"),
         ],
         condition=IfCondition(EqualsSubstitution(pmp_mode, "offline")),
     )
