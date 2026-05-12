@@ -20,10 +20,10 @@ Goal source: subscribes to /goal_pose (PoseStamped). New goals trigger an
 immediate action send. The empty-frame_id sentinel (published on goal
 completion) clears the cached goal.
 
-Replan trigger: subscribes to /vector_field/planner_data (Float32MultiArray),
-computes a path-masked diff (max |T_new - T_old| sampled along the buffered
-planned path) against the previous field, and re-fires the action goal when
-the diff exceeds field_diff_threshold.
+Replan trigger: subscribes to /vector_field/optimal_path (Path), compares
+the FM2 gradient path against the buffered planned trajectory, and re-fires
+the action goal when the path_diff_percentile-th percentile of per-point
+cross-track distances exceeds path_diff_threshold.
 
 Corridor semantics: the entry threshold (corridor_epsilon) is compared against
 the robot's perpendicular distance to the path polyline built from all buffered
@@ -58,12 +58,12 @@ import numpy as np
 
 from builtin_interfaces.msg import Duration as BuiltinDuration
 from geometry_msgs.msg import Point, PoseStamped, Twist, TwistStamped
+from nav_msgs.msg import Path
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Duration, Time
-from std_msgs.msg import Float32MultiArray
 from tf2_ros import (
     Buffer,
     ConnectivityException,
@@ -87,83 +87,67 @@ _MARKER_LIFETIME = BuiltinDuration(sec=1, nanosec=0)
 
 
 # ---------------------------------------------------------------------------
-# Minimal travel-time grid for the path-masked replan diff
-# ---------------------------------------------------------------------------
-
-
-class _FieldGrid:
-    """Minimal travel-time grid used only for the path-masked replan diff.
-
-    Stores only T (travel time). The corrector evaluates |T_new - T_old|
-    at the buffered path's (x, y) samples to decide whether to replan.
-    """
-
-    def __init__(self):
-        self._T: Optional[np.ndarray] = None
-        self._origin = np.zeros(2, dtype=np.float32)
-        self._res: float = 1.0
-        self._h: int = 0
-        self._w: int = 0
-
-    @property
-    def ready(self) -> bool:
-        return self._T is not None
-
-    def update_from_msg(self, msg: Float32MultiArray) -> bool:
-        """Parse a Float32MultiArray with layout [h, w, ox, oy, res, T(H*W), ...].
-        Accepts 1-channel (T only), 3-channel (T, gx, gy), or 4-channel variants.
-        Returns True on success, False on size mismatch.
-        """
-        data = np.asarray(msg.data, dtype=np.float32)
-        if data.size < 5:
-            return False
-        h = int(data[0])
-        w = int(data[1])
-        ox = float(data[2])
-        oy = float(data[3])
-        res = float(data[4])
-        n = h * w
-        body = data[5:]
-        if body.size not in (n, 3 * n, 4 * n):
-            return False
-        self._T = body[0:n].reshape(h, w)
-        self._origin = np.array([ox, oy], dtype=np.float32)
-        self._res = res
-        self._h, self._w = h, w
-        return True
-
-    def in_bounds(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-        cx = (xs - self._origin[0]) / self._res
-        cy = (ys - self._origin[1]) / self._res
-        return (cx >= 0) & (cx <= self._w - 1) & (cy >= 0) & (cy <= self._h - 1)
-
-    def sample_T(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
-        """Bilinear sample of T at (xs, ys). OOB samples return nan."""
-        cx = (xs - self._origin[0]) / self._res
-        cy = (ys - self._origin[1]) / self._res
-        cx_c = np.clip(cx, 0.0, self._w - 1.0001)
-        cy_c = np.clip(cy, 0.0, self._h - 1.0001)
-        ix = cx_c.astype(int)
-        iy = cy_c.astype(int)
-        fx = cx_c - ix
-        fy = cy_c - iy
-        T00 = self._T[iy, ix]
-        T10 = self._T[iy, ix + 1]
-        T01 = self._T[iy + 1, ix]
-        T11 = self._T[iy + 1, ix + 1]
-        T = (
-            T00 * (1 - fx) * (1 - fy)
-            + T10 * fx * (1 - fy)
-            + T01 * (1 - fx) * fy
-            + T11 * fx * fy
-        )
-        oob = ~self.in_bounds(xs, ys)
-        return np.where(oob, np.nan, T)
-
-
-# ---------------------------------------------------------------------------
 # Corrector node
 # ---------------------------------------------------------------------------
+
+
+def _advance_by_arc(path_xy: np.ndarray, start: int, distance: float) -> int:
+    """Return the index in path_xy that is at least `distance` metres of
+    cumulative arc length ahead of `start`. Returns the last valid index
+    if the path is shorter than `distance`.
+    """
+    acc = 0.0
+    for i in range(start, len(path_xy) - 1):
+        acc += float(np.hypot(path_xy[i + 1, 0] - path_xy[i, 0],
+                              path_xy[i + 1, 1] - path_xy[i, 1]))
+        if acc >= distance:
+            return i + 1
+    return len(path_xy) - 1
+
+
+def _path_tangents(path_xy: np.ndarray) -> np.ndarray:
+    """Unit tangent vectors for each point in path_xy (N, 2).
+
+    Uses forward differences for all points, repeating the last tangent
+    at the endpoint. Zero-length segments produce a zero vector (the
+    direction filter will treat them as invalid matches, which is safe).
+    """
+    diffs = np.diff(path_xy, axis=0)          # (N-1, 2)
+    norms = np.hypot(diffs[:, 0], diffs[:, 1])
+    # Avoid division by zero; zero-norm tangents are left as (0, 0).
+    safe = norms > 1e-9
+    unit = np.where(safe[:, np.newaxis], diffs / np.where(safe, norms, 1.0)[:, np.newaxis], 0.0)
+    # Repeat last tangent for the final point.
+    return np.vstack([unit, unit[-1:]])        # (N, 2)
+
+
+def _windowed_max_deviation(
+    deviations: np.ndarray, arc_s: np.ndarray, window_size: float
+) -> float:
+    """Largest per-point deviation found within any arc-length window.
+
+    Uses a two-pointer sweep so the right boundary is never moved backward;
+    total pointer travel is O(N). np.max over the (typically short) window
+    slice is fast enough for N <= 2000 at 5 Hz.
+
+    inf values in deviations (points with no valid directional match)
+    propagate naturally through np.max, so a window containing a genuinely
+    unmatched point always reports inf and triggers a replan.
+    """
+    n = len(deviations)
+    if n == 0:
+        return 0.0
+    best = 0.0
+    right = 0
+    for left in range(n):
+        if right < left:
+            right = left
+        while right + 1 < n and arc_s[right + 1] - arc_s[left] <= window_size:
+            right += 1
+        w_max = float(np.max(deviations[left : right + 1]))
+        if w_max > best:
+            best = w_max
+    return best
 
 
 class _State(Enum):
@@ -200,9 +184,34 @@ class TrajectoryCorrectorNode(Node):
         self.declare_parameter("recovery_K_v", 1.0)
         self.declare_parameter("recovery_K_bearing", 2.0)
         self.declare_parameter("recovery_K_theta", 2.0)
-        # Replan trigger: max |T_new - T_old| along the buffered planned path
-        # tolerated before re-firing an action goal.
-        self.declare_parameter("field_diff_threshold", 0.5)
+        # Replan trigger parameters.
+        self.declare_parameter("path_diff_threshold", 0.5)
+        self.declare_parameter("path_diff_percentile", 95.0)
+        self.declare_parameter("replan_cooldown", 0.0)
+        # Arc-length [m] to skip forward along both paths from the nearest
+        # point to the robot before starting the comparison. Avoids transient
+        # disagreement right at the robot's feet where message latency means
+        # both paths are slightly behind the actual position. 0.0 = no skip.
+        self.declare_parameter("path_diff_skip_ahead", 0.0)
+        # Minimum dot product of unit tangent vectors required before a plan
+        # point is accepted as a valid nearest-neighbour for a gradient path
+        # point. Rejects anti-parallel plan segments (opposite travel direction)
+        # that arise in U-turns and hairpins, where the plan's return leg would
+        # otherwise produce a spuriously small distance to the gradient path's
+        # outbound leg. Range [-1.0, 1.0]:
+        #   0.0  -- accept only plan points heading within 90 deg of gradient
+        #            (recommended default; no effect on straight-line travel)
+        #  -1.0  -- disable direction filtering (original behaviour)
+        #   1.0  -- accept only perfectly co-linear segments (too strict)
+        self.declare_parameter("path_diff_min_tangent_dot", 0.0)
+        # Sliding window size [m] for the localised-deviation check. For each
+        # arc-length window of this size along the gradient path, the maximum
+        # per-point deviation is computed; if ANY window's maximum exceeds
+        # path_diff_threshold, a replan is triggered. This catches short but
+        # severe detours (e.g. a U-turn around a thicker-than-expected wall)
+        # that the global percentile can dilute when the rest of the path is
+        # fine. 0.0 disables this check (percentile-only mode).
+        self.declare_parameter("path_diff_window_size", 0.0)
         # Action endpoint name.
         self.declare_parameter("action_name", "pmp_planner/plan_to_goal")
         # How long to wait for the server to ACCEPT a sent goal before
@@ -225,8 +234,23 @@ class TrajectoryCorrectorNode(Node):
         self._recovery_angle_tolerance: float = float(
             self.get_parameter("recovery_angle_tolerance").value
         )
-        self._field_diff_threshold: float = float(
-            self.get_parameter("field_diff_threshold").value
+        self._path_diff_threshold: float = float(
+            self.get_parameter("path_diff_threshold").value
+        )
+        self._path_diff_percentile: float = float(
+            self.get_parameter("path_diff_percentile").value
+        )
+        self._replan_cooldown: float = float(
+            self.get_parameter("replan_cooldown").value
+        )
+        self._path_diff_skip_ahead: float = float(
+            self.get_parameter("path_diff_skip_ahead").value
+        )
+        self._path_diff_min_tangent_dot: float = float(
+            self.get_parameter("path_diff_min_tangent_dot").value
+        )
+        self._path_diff_window_size: float = float(
+            self.get_parameter("path_diff_window_size").value
         )
         action_name: str = self.get_parameter("action_name").value
         self._goal_accept_timeout: float = float(
@@ -264,7 +288,8 @@ class TrajectoryCorrectorNode(Node):
         self._result_received: bool = False
         self._result_success: bool = False
         # Cumulative (x, y) of every feedback chunk seen for the active
-        # trajectory. Used by _on_field to diff against the previous field.
+        # trajectory. Used by _on_gradient_path to compare against the FM2
+        # gradient path and detect when a replan is needed.
         self._latest_plan_xy: np.ndarray = np.zeros((0, 2), dtype=np.float32)
 
         # ---- Pending-send guard --------------------------------------
@@ -277,9 +302,11 @@ class TrajectoryCorrectorNode(Node):
 
         # ---- Goal / field state --------------------------------------
         self._goal_xyth: Optional[np.ndarray] = None  # (gx, gy, gtheta)
-        self._field = _FieldGrid()
         self._latest_goal_handle: Optional[ClientGoalHandle] = None
         self._latest_send_future = None
+        # Wall-clock time of the last gradient-path-triggered replan; used
+        # by the cooldown guard to prevent the replan loop.
+        self._last_replan_wall_time: float = 0.0
 
         # ---- ROS plumbing --------------------------------------------
         qos = QoSProfile(
@@ -289,7 +316,7 @@ class TrajectoryCorrectorNode(Node):
         )
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
         self.create_subscription(
-            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
+            Path, "/vector_field/optimal_path", self._on_gradient_path, qos
         )
 
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
@@ -326,8 +353,8 @@ class TrajectoryCorrectorNode(Node):
             f"Trajectory corrector ready (default tick {self._default_dt:.3f} s; "
             f"corridor_epsilon={self._corridor_epsilon:.3f} m, "
             f"recovery_corridor_epsilon={self._recovery_corridor_epsilon:.3f} m; "
-            f"action '{action_name}'; field_diff_threshold "
-            f"{self._field_diff_threshold:.3f})."
+            f"action '{action_name}'; replan path_diff "
+            f"p{self._path_diff_percentile:.0f}={self._path_diff_threshold:.3f} m)."
         )
 
     # ----------------------- Goal subscription -----------------------
@@ -346,42 +373,179 @@ class TrajectoryCorrectorNode(Node):
         self._goal_in_flight = False
         self._send_action_goal()
 
-    # ----------------------- Field subscription ----------------------
+    # ----------------------- Gradient path subscription -------------
 
-    def _on_field(self, msg: Float32MultiArray):
-        new_grid = _FieldGrid()
-        if not new_grid.update_from_msg(msg):
-            self.get_logger().warn(
-                "Vector-field message parse failed; ignoring.",
-                throttle_duration_sec=5.0,
-            )
+    def _on_gradient_path(self, msg: Path):
+        """Compare the FM2 gradient path against the buffered planned
+        trajectory and re-fire the action goal if they have diverged.
+
+        Both paths suffer from message latency: the gradient path is traced
+        from the VF node's TF snapshot at publish time, and _latest_plan_xy
+        grows from chunks committed before the robot's current position. By
+        the time either message is processed here, the robot has moved on.
+        Both are therefore trimmed symmetrically: find the nearest point on
+        each path to the robot's current pose, then advance both by the same
+        arc-length skip (path_diff_skip_ahead) before comparing.
+
+        Matching is direction-aware: a plan point is only accepted as a valid
+        nearest-neighbour for a gradient path point if their unit tangents
+        satisfy dot >= path_diff_min_tangent_dot. This prevents anti-parallel
+        segments (e.g. a U-turn's return leg) from masking genuine deviation
+        on the outbound leg. Points with no valid directional match are
+        assigned inf distance and always contribute to a replan.
+
+        Two complementary trigger checks are combined with OR:
+          - Global percentile: path_diff_percentile-th percentile of FINITE
+            per-point deviations exceeds path_diff_threshold. Catches broad,
+            distributed divergence across the whole future path.
+          - Sliding window max: maximum per-point deviation in ANY arc-length
+            window of path_diff_window_size exceeds path_diff_threshold.
+            Catches short but severe localised detours (e.g. a U-turn around
+            a thicker-than-expected wall) that the global percentile dilutes.
+            Disabled when path_diff_window_size == 0.0.
+
+        Two trigger modes:
+          - No active trajectory and not waiting for an accept: the arrival
+            of a gradient path message implies the field is live; (re)send
+            the action goal. This replaces the old field-arrival initial-fire
+            logic and also acts as a retry if the previous send was rejected.
+          - Active trajectory, plan available, result not yet received: run
+            the comparison and replan if either check fires.
+        """
+        if self._goal_xyth is None:
             return
 
-        should_replan = False
-        if self._goal_xyth is not None:
-            if self._active_traj_id < 0 and not self._goal_in_flight:
-                should_replan = True
-            elif (
-                self._latest_plan_xy.shape[0] > 0
-                and self._field.ready
-                and not self._result_received
-            ):
-                xs = self._latest_plan_xy[:, 0]
-                ys = self._latest_plan_xy[:, 1]
-                T_old = self._field.sample_T(xs, ys)
-                T_new = new_grid.sample_T(xs, ys)
-                bad = np.isnan(T_old) | np.isnan(T_new)
-                delta = np.where(bad, np.inf, np.abs(T_new - T_old))
-                if float(delta.max()) > self._field_diff_threshold:
-                    should_replan = True
+        # Initial fire / retry: no trajectory running and we are not already
+        # waiting on an accept from the server.
+        if self._active_traj_id < 0 and not self._goal_in_flight:
+            sent = self._send_action_goal()
+            if sent:
+                self.get_logger().info(
+                    "Gradient path received with no active trajectory: "
+                    "sent action goal."
+                )
+            return
 
-        self._field = new_grid
+        # Path comparison: only when we have something to compare against and
+        # the trajectory is still in progress.
+        if (
+            self._latest_plan_xy.shape[0] < 2
+            or len(msg.poses) < 2
+        ):
+            return
+
+        # Parse gradient path into (N, 2).
+        gpath = np.array(
+            [[p.pose.position.x, p.pose.position.y] for p in msg.poses],
+            dtype=np.float64,
+        )
+
+        # One TF lookup for both trims so they share the same reference pose.
+        pose = self._get_current_pose_2d(self._planning_frame)
+        if pose is None:
+            # Can't determine robot position; skip rather than compare
+            # untrimmed paths whose stale heads would bias the result.
+            return
+        rx, ry, _ = pose
+
+        plan_xy = self._latest_plan_xy.astype(np.float64)
+        plan_start = int(np.argmin((plan_xy[:, 0] - rx) ** 2 + (plan_xy[:, 1] - ry) ** 2))
+        grad_start = int(np.argmin((gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2))
+
+        if self._path_diff_skip_ahead > 0.0:
+            plan_start = _advance_by_arc(plan_xy, plan_start, self._path_diff_skip_ahead)
+            grad_start = _advance_by_arc(gpath, grad_start, self._path_diff_skip_ahead)
+
+        future_plan = plan_xy[plan_start:]
+        future_grad = gpath[grad_start:]
+
+        if future_plan.shape[0] < 2 or future_grad.shape[0] < 2:
+            return
+
+        # The planned trajectory grows incrementally as chunks arrive, so it
+        # is almost always shorter than the full-length gradient path. Comparing
+        # them at different lengths means gradient path points beyond the known
+        # plan have no plan counterpart and always produce inf deviation, firing
+        # constant spurious replans at the start of each trajectory. Truncate
+        # the gradient path to the arc-length of the known future plan so both
+        # cover the same spatial extent before comparison.
+        plan_arc = float(np.sum(np.hypot(np.diff(future_plan[:, 0]), np.diff(future_plan[:, 1]))))
+        acc = 0.0
+        grad_end = len(future_grad) - 1
+        for i in range(len(future_grad) - 1):
+            acc += float(np.hypot(future_grad[i + 1, 0] - future_grad[i, 0],
+                                  future_grad[i + 1, 1] - future_grad[i, 1]))
+            if acc >= plan_arc:
+                grad_end = i + 1
+                break
+        future_grad = future_grad[:grad_end + 1]
+
+        if future_grad.shape[0] < 2:
+            return
+
+        # Squared-distance matrix: (N, M) where N = gradient points, M = plan points.
+        diff = future_grad[:, np.newaxis, :] - future_plan[np.newaxis, :, :]
+        sq_dist = (diff ** 2).sum(axis=2)   # (N, M)
+
+        if self._path_diff_min_tangent_dot > -1.0:
+            # Direction-aware matching: reject plan points whose travel
+            # direction is more than acos(min_tangent_dot) from the gradient
+            # direction at the query point. This prevents a U-turn's return
+            # leg from absorbing gradient path points on the outbound leg and
+            # reporting a spuriously small distance.
+            grad_tan = _path_tangents(future_grad)   # (N, 2)
+            plan_tan = _path_tangents(future_plan)   # (M, 2)
+            dot = grad_tan @ plan_tan.T              # (N, M)
+            invalid = dot < self._path_diff_min_tangent_dot
+            sq_dist = np.where(invalid, np.inf, sq_dist)
+
+        min_sq = sq_dist.min(axis=1)        # (N,)
+        min_dist = np.where(np.isfinite(min_sq), np.sqrt(min_sq), np.inf)
+
+        # --- Check 1: global percentile over finite deviations ---
+        # inf values (no valid directional match) are excluded from the
+        # percentile; the windowed check handles them.
+        finite_mask = np.isfinite(min_dist)
+        pct_val = (
+            float(np.percentile(min_dist[finite_mask], self._path_diff_percentile))
+            if finite_mask.any()
+            else 0.0
+        )
+        pct_triggered = pct_val > self._path_diff_threshold
+
+        # --- Check 2: sliding window maximum ---
+        # Catches short but severe detours that the global percentile dilutes.
+        # inf values propagate naturally through np.max, so a window of
+        # topologically-unmatched points (e.g. the apex of a U-turn the plan
+        # has no segment for) always fires.
+        win_val = 0.0
+        win_triggered = False
+        if self._path_diff_window_size > 0.0:
+            segs = np.hypot(np.diff(future_grad[:, 0]), np.diff(future_grad[:, 1]))
+            arc_s = np.concatenate([[0.0], np.cumsum(segs)])
+            win_val = _windowed_max_deviation(min_dist, arc_s, self._path_diff_window_size)
+            win_triggered = win_val > self._path_diff_threshold
+
+        should_replan = pct_triggered or win_triggered
+
+        if should_replan and self._replan_cooldown > 0.0:
+            now = time.monotonic()
+            if now - self._last_replan_wall_time < self._replan_cooldown:
+                should_replan = False
+            else:
+                self._last_replan_wall_time = now
 
         if should_replan:
             sent = self._send_action_goal()
             if sent:
+                reason = (
+                    f"p{self._path_diff_percentile:.0f}={pct_val:.3f} m"
+                    if pct_triggered
+                    else f"window({self._path_diff_window_size:.1f} m) max={win_val:.3f} m"
+                )
                 self.get_logger().info(
-                    "Field change (or initial fire): sent action goal."
+                    f"Gradient path diverged ({reason} > "
+                    f"{self._path_diff_threshold:.3f} m): replanning."
                 )
 
     # ----------------------- Action client ---------------------------
