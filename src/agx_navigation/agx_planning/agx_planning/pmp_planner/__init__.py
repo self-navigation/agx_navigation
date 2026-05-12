@@ -14,13 +14,18 @@ __all__ = [
 
 
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = PlannerNode()
+
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
