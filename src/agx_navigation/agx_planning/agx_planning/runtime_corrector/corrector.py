@@ -1,21 +1,29 @@
 """Trajectory corrector for the offline-mode PMP planner.
 
-Subscribes to /pmp_planner/trajectory_chunks (PlannerTrajectoryChunk) and
-publishes /cmd_vel (Twist or TwistStamped, configurable) at the dt rate
-carried in each chunk.
+Uses an ActionClient to request trajectories from the planner's
+`pmp_planner/plan_to_goal` action server, then plays them back and corrects
+deviations from the planned path.
 
 Behaviour is a three-state machine:
 
   IDLE        -- no active trajectory. Publishes zero twist on every tick.
   PLAYING     -- streaming chunks of a known trajectory_id. Each tick advances
-                 one sample within the buffered chunks. On encountering a
-                 chunk with is_final=True and exhausting it, transition to
-                 IDLE.
+                 one sample within the buffered chunks. When the action result
+                 arrives AND the buffer is drained, transition to IDLE.
   CORRECTING  -- the robot has left the epsilon corridor around the planned
                  path. Playback is suspended; a corrective maneuver brings
                  the robot back within the tighter recovery corridor and into
                  heading alignment. A new trajectory_id from the planner
                  (replan) transitions back to PLAYING at any time.
+
+Goal source: subscribes to /goal_pose (PoseStamped). New goals trigger an
+immediate action send. The empty-frame_id sentinel (published on goal
+completion) clears the cached goal.
+
+Replan trigger: subscribes to /vector_field/planner_data (Float32MultiArray),
+computes a path-masked diff (max |T_new - T_old| sampled along the buffered
+planned path) against the previous field, and re-fires the action goal when
+the diff exceeds field_diff_threshold.
 
 Corridor semantics: the entry threshold (corridor_epsilon) is compared against
 the robot's perpendicular distance to the path polyline built from all buffered
@@ -40,24 +48,34 @@ graceful fallback.
 """
 
 import math
+import time
 from enum import Enum, auto
-from typing import Optional
+from typing import Dict, Optional
+
+import rclpy
+
+import numpy as np
 
 from builtin_interfaces.msg import Duration as BuiltinDuration
-from geometry_msgs.msg import Point, Twist, TwistStamped
+from geometry_msgs.msg import Point, PoseStamped, Twist, TwistStamped
+from rclpy.action import ActionClient
+from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Duration, Time
+from std_msgs.msg import Float32MultiArray
 from tf2_ros import (
     Buffer,
     ConnectivityException,
     ExtrapolationException,
     LookupException,
     TransformListener,
+    TransformException,
 )
+from tf_transformations import euler_from_quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 
-from agx_planning_msgs.msg import PlannerTrajectoryChunk
+from agx_planning_msgs.action import PlanToGoal
 from agx_planning.runtime_corrector import RecoveryConfig, default_strategies
 from agx_planning.runtime_corrector.geometry import (
     nearest_projection_on_path,
@@ -66,6 +84,86 @@ from agx_planning.runtime_corrector.geometry import (
 
 _MARKER_NS = "pmp_trajectory_corrector"
 _MARKER_LIFETIME = BuiltinDuration(sec=1, nanosec=0)
+
+
+# ---------------------------------------------------------------------------
+# Minimal travel-time grid for the path-masked replan diff
+# ---------------------------------------------------------------------------
+
+
+class _FieldGrid:
+    """Minimal travel-time grid used only for the path-masked replan diff.
+
+    Stores only T (travel time). The corrector evaluates |T_new - T_old|
+    at the buffered path's (x, y) samples to decide whether to replan.
+    """
+
+    def __init__(self):
+        self._T: Optional[np.ndarray] = None
+        self._origin = np.zeros(2, dtype=np.float32)
+        self._res: float = 1.0
+        self._h: int = 0
+        self._w: int = 0
+
+    @property
+    def ready(self) -> bool:
+        return self._T is not None
+
+    def update_from_msg(self, msg: Float32MultiArray) -> bool:
+        """Parse a Float32MultiArray with layout [h, w, ox, oy, res, T(H*W), ...].
+        Accepts 1-channel (T only), 3-channel (T, gx, gy), or 4-channel variants.
+        Returns True on success, False on size mismatch.
+        """
+        data = np.asarray(msg.data, dtype=np.float32)
+        if data.size < 5:
+            return False
+        h = int(data[0])
+        w = int(data[1])
+        ox = float(data[2])
+        oy = float(data[3])
+        res = float(data[4])
+        n = h * w
+        body = data[5:]
+        if body.size not in (n, 3 * n, 4 * n):
+            return False
+        self._T = body[0:n].reshape(h, w)
+        self._origin = np.array([ox, oy], dtype=np.float32)
+        self._res = res
+        self._h, self._w = h, w
+        return True
+
+    def in_bounds(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        cx = (xs - self._origin[0]) / self._res
+        cy = (ys - self._origin[1]) / self._res
+        return (cx >= 0) & (cx <= self._w - 1) & (cy >= 0) & (cy <= self._h - 1)
+
+    def sample_T(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """Bilinear sample of T at (xs, ys). OOB samples return nan."""
+        cx = (xs - self._origin[0]) / self._res
+        cy = (ys - self._origin[1]) / self._res
+        cx_c = np.clip(cx, 0.0, self._w - 1.0001)
+        cy_c = np.clip(cy, 0.0, self._h - 1.0001)
+        ix = cx_c.astype(int)
+        iy = cy_c.astype(int)
+        fx = cx_c - ix
+        fy = cy_c - iy
+        T00 = self._T[iy, ix]
+        T10 = self._T[iy, ix + 1]
+        T01 = self._T[iy + 1, ix]
+        T11 = self._T[iy + 1, ix + 1]
+        T = (
+            T00 * (1 - fx) * (1 - fy)
+            + T10 * fx * (1 - fy)
+            + T01 * (1 - fx) * fy
+            + T11 * fx * fy
+        )
+        oob = ~self.in_bounds(xs, ys)
+        return np.where(oob, np.nan, T)
+
+
+# ---------------------------------------------------------------------------
+# Corrector node
+# ---------------------------------------------------------------------------
 
 
 class _State(Enum):
@@ -102,6 +200,14 @@ class TrajectoryCorrectorNode(Node):
         self.declare_parameter("recovery_K_v", 1.0)
         self.declare_parameter("recovery_K_bearing", 2.0)
         self.declare_parameter("recovery_K_theta", 2.0)
+        # Replan trigger: max |T_new - T_old| along the buffered planned path
+        # tolerated before re-firing an action goal.
+        self.declare_parameter("field_diff_threshold", 0.5)
+        # Action endpoint name.
+        self.declare_parameter("action_name", "pmp_planner/plan_to_goal")
+        # How long to wait for the server to ACCEPT a sent goal before
+        # allowing a retry on the next field update.
+        self.declare_parameter("goal_accept_timeout", 2.0)
 
         self._stamped: bool = self.get_parameter("enable_stamped_cmd_vel").value
         self._enable_recovery: bool = self.get_parameter("enable_recovery").value
@@ -118,6 +224,13 @@ class TrajectoryCorrectorNode(Node):
         )
         self._recovery_angle_tolerance: float = float(
             self.get_parameter("recovery_angle_tolerance").value
+        )
+        self._field_diff_threshold: float = float(
+            self.get_parameter("field_diff_threshold").value
+        )
+        action_name: str = self.get_parameter("action_name").value
+        self._goal_accept_timeout: float = float(
+            self.get_parameter("goal_accept_timeout").value
         )
         recovery_cfg = RecoveryConfig(
             recovery_corridor_epsilon=self._recovery_corridor_epsilon,
@@ -139,42 +252,47 @@ class TrajectoryCorrectorNode(Node):
         self._state: _State = _State.IDLE
         # Trajectory currently being played/corrected; -1 means IDLE.
         self._active_traj_id: int = -1
-        # chunk_index -> chunk message, for the active trajectory only.
-        # Held until consumed; popped after the last sample is published.
-        self._chunks: dict[int, PlannerTrajectoryChunk] = {}
-        # Index of the chunk currently being consumed (oldest unfinished).
+        # chunk_index -> feedback message, for the active trajectory only.
+        self._chunks: Dict[int, "PlanToGoal.Feedback"] = {}
         self._cur_chunk_idx: int = 0
-        # Index of the next sample within self._chunks[self._cur_chunk_idx].
         self._cur_sample_idx: int = 0
-        # Effective tick interval for the active trajectory, taken from
-        # chunk.dt (all chunks of one trajectory share the same dt).
         self._active_dt: float = self._default_dt
-        # ROS time when the current trajectory started playing. Used to compute
-        # each sample's due timestamp: start + total_samples_consumed * dt.
         self._current_traj_start_time: Time = self.get_clock().now()
-        # Total samples published from chunk data for the active trajectory.
-        # Incremented only for real samples, not for held zero-twist ticks.
         self._current_traj_samples_consumed: int = 0
+        # Set when the action result for the active trajectory arrives.
+        # The tick handler drains any remaining buffer before going IDLE.
+        self._result_received: bool = False
+        self._result_success: bool = False
+        # Cumulative (x, y) of every feedback chunk seen for the active
+        # trajectory. Used by _on_field to diff against the previous field.
+        self._latest_plan_xy: np.ndarray = np.zeros((0, 2), dtype=np.float32)
+
+        # ---- Pending-send guard --------------------------------------
+        # _pending_send: True from send_goal_async until server ACCEPT/REJECT.
+        # _goal_in_flight: True from ACCEPT until first feedback chunk, to
+        #   suppress spurious IDLE-branch replans during the BVP-solve gap.
+        self._pending_send: bool = False
+        self._goal_in_flight: bool = False
+        self._last_send_time: float = 0.0
+
+        # ---- Goal / field state --------------------------------------
+        self._goal_xyth: Optional[np.ndarray] = None  # (gx, gy, gtheta)
+        self._field = _FieldGrid()
+        self._latest_goal_handle: Optional[ClientGoalHandle] = None
+        self._latest_send_future = None
 
         # ---- ROS plumbing --------------------------------------------
-        # Match the planner's chunk-publisher QoS exactly. ALL fields
-        # are set explicitly -- omitting `history` was observed to cause
-        # the entire profile to fall back to system defaults under some
-        # rclpy/RMW combinations, manifesting as TRANSIENT_LOCAL+UNKNOWN-
-        # history on this side against the planner's VOLATILE+UNKNOWN-
-        # history publisher and an "incompatible QoS" error.
-        chunk_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=64,
+        qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
+            depth=1,
         )
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
         self.create_subscription(
-            PlannerTrajectoryChunk,
-            "/pmp_planner/trajectory_chunks",
-            self._on_chunk,
-            chunk_qos,
+            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
         )
+
+        self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
 
         if self._stamped:
             self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
@@ -185,57 +303,259 @@ class TrajectoryCorrectorNode(Node):
             MarkerArray, "/pmp_trajectory_corrector/debug_markers", 10
         )
 
-        # The tick timer recreates itself when self._active_dt changes
-        # (a new trajectory may use a different control_rate). See
-        # _ensure_tick_timer.
+        # depth=64 matches the planner's ActionServer feedback QoS to avoid
+        # drops during burst chunk emission (BVP solves complete faster than
+        # the playback rate consumes them).
+        feedback_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=64,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self._action_client = ActionClient(
+            self,
+            PlanToGoal,
+            action_name,
+            feedback_sub_qos_profile=feedback_qos,
+        )
+
         self._tick_timer = None
         self._ensure_tick_timer(self._default_dt)
 
         self.get_logger().info(
             f"Trajectory corrector ready (default tick {self._default_dt:.3f} s; "
             f"corridor_epsilon={self._corridor_epsilon:.3f} m, "
-            f"recovery_corridor_epsilon={self._recovery_corridor_epsilon:.3f} m)."
+            f"recovery_corridor_epsilon={self._recovery_corridor_epsilon:.3f} m; "
+            f"action '{action_name}'; field_diff_threshold "
+            f"{self._field_diff_threshold:.3f})."
         )
 
-    # ----------------------- Subscription handler --------------------------
+    # ----------------------- Goal subscription -----------------------
 
-    def _on_chunk(self, msg: PlannerTrajectoryChunk):
-        # Newer trajectory_id supersedes whatever we were playing. The
-        # planner emitted this chunk from a fresh rollout starting at
-        # the chassis's current TF pose, so the old plan is stale -- we
-        # discard it and switch atomically.
-        if msg.trajectory_id > self._active_traj_id:
-            self.get_logger().info(
-                f"Switching to trajectory {msg.trajectory_id} "
-                f"(was {self._active_traj_id})."
+    def _on_goal(self, msg: PoseStamped):
+        if msg.header.frame_id == "":
+            self._goal_xyth = None
+            return
+        pos = msg.pose.position
+        q = msg.pose.orientation
+        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        self._goal_xyth = np.array([pos.x, pos.y, yaw])
+        self.get_logger().info(f"New goal: ({pos.x:.2f}, {pos.y:.2f}), yaw={yaw:.2f}")
+        # Explicit user goal always sends immediately; bypass both guards.
+        self._pending_send = False
+        self._goal_in_flight = False
+        self._send_action_goal()
+
+    # ----------------------- Field subscription ----------------------
+
+    def _on_field(self, msg: Float32MultiArray):
+        new_grid = _FieldGrid()
+        if not new_grid.update_from_msg(msg):
+            self.get_logger().warn(
+                "Vector-field message parse failed; ignoring.",
+                throttle_duration_sec=5.0,
             )
-            self._active_traj_id = int(msg.trajectory_id)
+            return
+
+        should_replan = False
+        if self._goal_xyth is not None:
+            if self._active_traj_id < 0 and not self._goal_in_flight:
+                should_replan = True
+            elif (
+                self._latest_plan_xy.shape[0] > 0
+                and self._field.ready
+                and not self._result_received
+            ):
+                xs = self._latest_plan_xy[:, 0]
+                ys = self._latest_plan_xy[:, 1]
+                T_old = self._field.sample_T(xs, ys)
+                T_new = new_grid.sample_T(xs, ys)
+                bad = np.isnan(T_old) | np.isnan(T_new)
+                delta = np.where(bad, np.inf, np.abs(T_new - T_old))
+                if float(delta.max()) > self._field_diff_threshold:
+                    should_replan = True
+
+        self._field = new_grid
+
+        if should_replan:
+            sent = self._send_action_goal()
+            if sent:
+                self.get_logger().info(
+                    "Field change (or initial fire): sent action goal."
+                )
+
+    # ----------------------- Action client ---------------------------
+
+    def _send_action_goal(self) -> bool:
+        """Snapshot chassis pose from TF and send a PlanToGoal action goal.
+        Returns True if sent, False if blocked (pending, server not ready, TF failure).
+        """
+        if self._goal_xyth is None:
+            return False
+
+        if self._pending_send:
+            elapsed = time.monotonic() - self._last_send_time
+            if elapsed < self._goal_accept_timeout:
+                return False
+            self.get_logger().warn(
+                f"Goal accept pending for {elapsed:.1f}s "
+                f"(> {self._goal_accept_timeout:.1f}s timeout); "
+                "retrying with current pose."
+            )
+
+        if not self._action_client.server_is_ready():
+            self.get_logger().warn(
+                "Planner action server not yet discovered; will retry on next event.",
+                throttle_duration_sec=5.0,
+            )
+            return False
+
+        try:
+            t = self._tf_buffer.lookup_transform(
+                self._planning_frame,
+                self._robot_frame,
+                Time(),
+            )
+        except TransformException as e:
+            self.get_logger().warn(
+                f"TF {self._planning_frame}->{self._robot_frame} unavailable; "
+                f"cannot send action goal: {e}",
+                throttle_duration_sec=2.0,
+            )
+            return False
+
+        tx = t.transform.translation.x
+        ty = t.transform.translation.y
+        q = t.transform.rotation
+        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+
+        goal_msg = PlanToGoal.Goal()
+        goal_msg.frame_id = self._planning_frame
+        goal_msg.start_x = float(tx)
+        goal_msg.start_y = float(ty)
+        goal_msg.start_theta = float(yaw)
+        goal_msg.target_x = float(self._goal_xyth[0])
+        goal_msg.target_y = float(self._goal_xyth[1])
+        goal_msg.target_theta = float(self._goal_xyth[2])
+
+        send_future = self._action_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._on_action_feedback,
+        )
+        self._latest_send_future = send_future
+        self._pending_send = True
+        self._last_send_time = time.monotonic()
+        send_future.add_done_callback(
+            lambda f, mine=send_future: self._on_goal_accepted(f, mine)
+        )
+        self.get_logger().info(
+            f"Sent action goal: start=({tx:.2f}, {ty:.2f}) yaw={yaw:.2f} "
+            f"-> target=({goal_msg.target_x:.2f}, {goal_msg.target_y:.2f}) "
+            f"yaw={goal_msg.target_theta:.2f}"
+        )
+        return True
+
+    def _on_goal_accepted(self, future, originating_future):
+        if originating_future is not self._latest_send_future:
+            return
+        self._pending_send = False
+        gh: ClientGoalHandle = future.result()
+        if not gh.accepted:
+            self.get_logger().warn("Action goal rejected by planner.")
+            return
+        self._goal_in_flight = True
+        self._latest_goal_handle = gh
+        gh.get_result_async().add_done_callback(
+            lambda f, _gh=gh: self._on_action_result(f, _gh)
+        )
+
+    def _on_action_feedback(self, fb_msg):
+        """One trajectory chunk arrived from the action server."""
+        chunk = fb_msg.feedback
+        traj_id = int(chunk.trajectory_id)
+
+        if traj_id > self._active_traj_id:
+            self.get_logger().info(
+                f"Switching to trajectory {traj_id} (was {self._active_traj_id})."
+            )
+            self._goal_in_flight = False
+            self._active_traj_id = traj_id
             self._state = _State.PLAYING
             self._chunks = {}
             self._cur_chunk_idx = 0
             self._cur_sample_idx = 0
+            self._result_received = False
+            self._result_success = False
+            self._latest_plan_xy = np.zeros((0, 2), dtype=np.float32)
             self._current_traj_start_time = self.get_clock().now()
             self._current_traj_samples_consumed = 0
-            # Adopt the new trajectory's tick rate.
-            if msg.dt > 0.0 and abs(msg.dt - self._active_dt) > 1e-6:
-                self._active_dt = float(msg.dt)
+            if chunk.dt > 0.0 and abs(chunk.dt - self._active_dt) > 1e-6:
+                self._active_dt = float(chunk.dt)
                 self._ensure_tick_timer(self._active_dt)
-        elif msg.trajectory_id < self._active_traj_id:
-            # Stale chunk from a superseded trajectory -- drop silently.
+        elif traj_id < self._active_traj_id:
             return
 
-        # Same-id chunk: store it.
-        self._chunks[int(msg.chunk_index)] = msg
+        self._chunks[int(chunk.chunk_index)] = chunk
+
+        if len(chunk.pose_x) > 0:
+            new_xy = np.column_stack(
+                [
+                    np.asarray(chunk.pose_x, dtype=np.float32),
+                    np.asarray(chunk.pose_y, dtype=np.float32),
+                ]
+            )
+            self._latest_plan_xy = np.concatenate(
+                [self._latest_plan_xy, new_xy], axis=0
+            )
+
+    def _on_action_result(self, future, expected_gh: ClientGoalHandle):
+        wrapped = future.result()
+        result = wrapped.result
+        status = wrapped.status
+        traj_id = int(result.trajectory_id)
+
+        status_name = {4: "SUCCEEDED", 5: "CANCELED", 6: "ABORTED"}.get(
+            status, str(status)
+        )
+        self.get_logger().info(
+            f"Action result for traj_id={traj_id}: {status_name} -- "
+            f"{result.message!r}"
+        )
+
+        if traj_id == 0:
+            # Planner aborted before any rollout (e.g. field not yet available).
+            # Clear _goal_in_flight so the next field update can retry.
+            if expected_gh is self._latest_goal_handle:
+                self._goal_in_flight = False
+            return
+
+        if traj_id == self._active_traj_id:
+            self._result_received = True
+            self._result_success = bool(result.success)
+            # Let the tick handler drain whatever chunks are already buffered
+            # before transitioning to IDLE. On abort this keeps the chassis
+            # moving along the last known plan until either the buffer runs out
+            # or a new plan's feedback atomically supersedes this trajectory.
+            return
+
+        # No feedback was ever received for this goal (chassis already at
+        # goal, or aborted before first chunk). Clear _goal_in_flight only
+        # if this is still the latest accepted goal.
+        if self._active_traj_id < 0:
+            if expected_gh is self._latest_goal_handle:
+                self._goal_in_flight = False
+            if bool(result.success):
+                self.get_logger().info(
+                    f"Trajectory {traj_id} succeeded with no rollout "
+                    "(chassis already at goal)."
+                )
+                self._goal_xyth = None
+                self._publish_cleared_goal_sentinel()
 
     # ----------------------- Tick handler ----------------------------------
 
     def _ensure_tick_timer(self, dt: float):
-        """(Re)create the periodic publish timer with the given period.
-
-        Called on construction with the default and again whenever a new
-        trajectory's chunk.dt differs from the active period. The old
-        timer is destroyed first to avoid double-publishing.
-        """
+        """(Re)create the periodic publish timer with the given period."""
         if self._tick_timer is not None:
             self.destroy_timer(self._tick_timer)
         self._tick_timer = self.create_timer(dt, self._on_tick)
@@ -252,10 +572,11 @@ class TrajectoryCorrectorNode(Node):
 
         # PLAYING ------------------------------------------------------------
 
-        # Locate the current chunk. If missing (out-of-order delivery),
-        # hold zero -- it should arrive imminently under reliable QoS.
         cur = self._chunks.get(self._cur_chunk_idx)
         if cur is None:
+            if self._result_received and self._chunks_exhausted():
+                self._finish_trajectory()
+                return
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self.get_logger().warn(
                 f"Chunk {self._cur_chunk_idx} of trajectory "
@@ -269,22 +590,9 @@ class TrajectoryCorrectorNode(Node):
 
         n = len(cur.linear_x)
 
-        # Empty chunk with is_final=True: end-of-trajectory sentinel
-        # (planner emits this when chassis was already at goal, or when
-        # a BVP failure / timeout aborts the rollout). Go to IDLE.
-        if n == 0 and cur.is_final:
-            self.get_logger().info(
-                f"Trajectory {self._active_traj_id} terminated "
-                f"(empty final chunk). Returning to IDLE."
-            )
-            self._goto_idle()
-            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], self._planning_frame, None, None)
-            return
-
         # Build path polyline and check corridor once per tick.
         path, mapping = self._build_path_polyline()
-        frame = self._get_planning_frame()
+        frame = self._planning_frame
         if path:
             pose = self._get_current_pose_2d(frame)
             if pose is not None:
@@ -327,22 +635,14 @@ class TrajectoryCorrectorNode(Node):
 
         # Chunk exhausted. Drop it from the buffer and advance.
         del self._chunks[self._cur_chunk_idx]
-        last_chunk_was_final = bool(cur.is_final)
         self._cur_chunk_idx += 1
         self._cur_sample_idx = 0
 
-        if last_chunk_was_final:
-            # End of trajectory.
-            self.get_logger().info(
-                f"Trajectory {self._active_traj_id} complete. Returning to IDLE."
-            )
-            self._goto_idle()
-            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], frame, None, None)
+        if self._result_received and self._chunks_exhausted():
+            self._finish_trajectory()
             return
 
-        # Try to consume the first sample of the next chunk on this same
-        # tick, so we don't drop a tick-worth of motion at chunk boundaries.
+        # Try to consume the first sample of the next chunk on this same tick.
         nxt = self._chunks.get(self._cur_chunk_idx)
         if nxt is not None and len(nxt.linear_x) > 0:
             v = float(nxt.linear_x[0])
@@ -357,7 +657,6 @@ class TrajectoryCorrectorNode(Node):
             self._current_traj_samples_consumed += 1
             self._cur_sample_idx = 1
         else:
-            # Next chunk not yet here -- hold zero.
             self.get_logger().warn(
                 f"Chunk {self._cur_chunk_idx} (which is meant to be received after "
                 f"the current one) of trajectory {self._active_traj_id} not yet "
@@ -369,13 +668,36 @@ class TrajectoryCorrectorNode(Node):
             self._current_traj_start_time = self.get_clock().now()
             self._current_traj_samples_consumed = 0
 
-    def _goto_idle(self):
+    def _chunks_exhausted(self) -> bool:
+        return not self._chunks
+
+    def _finish_trajectory(self):
+        """Transition to IDLE. On success, clear the goal and signal completion."""
+        success = self._result_success
+        traj_id = self._active_traj_id
+
         self._state = _State.IDLE
         self._active_traj_id = -1
+        self._goal_in_flight = False
         self._chunks.clear()
         self._cur_chunk_idx = 0
         self._cur_sample_idx = 0
+        self._result_received = False
+        self._result_success = False
+        self._latest_plan_xy = np.zeros((0, 2), dtype=np.float32)
         self._current_traj_samples_consumed = 0
+        self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+
+        if success:
+            self._goal_xyth = None
+            self._publish_cleared_goal_sentinel()
+            self.get_logger().info(
+                f"Trajectory {traj_id} complete (success). Returning to IDLE."
+            )
+        else:
+            self.get_logger().info(
+                f"Trajectory {traj_id} ended without success. Returning to IDLE."
+            )
 
     def _goto_correcting(self, dist: float):
         self._state = _State.CORRECTING
@@ -387,10 +709,9 @@ class TrajectoryCorrectorNode(Node):
 
     def _on_correcting_tick(self):
         path, mapping = self._build_path_polyline()
-        frame = self._get_planning_frame()
+        frame = self._planning_frame
 
         if not path:
-            # No buffered chunks -- hold still.
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], frame, None, None)
             return
@@ -403,42 +724,31 @@ class TrajectoryCorrectorNode(Node):
 
         rx, ry, rtheta = pose
 
-        # --- End-of-known-path checks ---
-        #
-        # These guard against the recovery strategy driving the robot backward
-        # when the buffered path doesn't extend all the way to the trajectory
-        # end (final chunk not yet received) and the robot has moved past the
-        # last known sample.
         fx, fy, ftheta = path[-1]
         dx, dy = rx - fx, ry - fy
 
         if math.hypot(dx, dy) < self._recovery_corridor_epsilon:
-            # Robot is within the recovery threshold of the last known path
-            # point -- close enough to call the trajectory done.
             self.get_logger().info(
                 f"Within {self._recovery_corridor_epsilon:.3f} m of trajectory end "
                 f"during recovery. Returning to IDLE."
             )
-            self._goto_idle()
+            self._finish_trajectory()
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], frame, None, None)
             return
 
         overshot = dx * math.cos(ftheta) + dy * math.sin(ftheta) > 0
         if overshot:
-            # Robot is past the end of the currently buffered path.
-            last_chunk = self._chunks.get(max(self._chunks.keys()))
-            if last_chunk is not None and last_chunk.is_final:
-                # This IS the complete trajectory -- robot ran past the end.
+            if self._result_received:
+                # Result is in -- this was the complete trajectory.
                 self.get_logger().info(
                     "Overshot trajectory end during recovery. Returning to IDLE."
                 )
-                self._goto_idle()
+                self._finish_trajectory()
                 self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
                 self._publish_debug_markers([], frame, None, None)
             else:
-                # More chunks are expected; hold still until they arrive and
-                # extend the path rather than driving back toward the old end.
+                # More chunks are expected; hold until the path extends.
                 self.get_logger().info(
                     "Overshot end of buffered path during recovery; "
                     "waiting for next chunk.",
@@ -485,8 +795,6 @@ class TrajectoryCorrectorNode(Node):
             self._publish_debug_markers(path, frame, (proj_x, proj_y), (lx, ly))
             return
 
-        # Pass full path to strategies so each can implement its own
-        # projection and look-ahead logic.
         for strategy in self._recovery_strategies:
             if strategy.can_handle(pose, path):
                 v, omega = strategy.compute_twist(pose, path)
@@ -535,12 +843,6 @@ class TrajectoryCorrectorNode(Node):
                 mapping.append((chunk_idx, sample_idx))
         return path, mapping
 
-    def _get_planning_frame(self) -> str:
-        for chunk in self._chunks.values():
-            if chunk.header.frame_id:
-                return chunk.header.frame_id
-        return self._planning_frame
-
     # ----------------------- Pose lookup -----------------------------------
 
     def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float, float]]:
@@ -571,13 +873,6 @@ class TrajectoryCorrectorNode(Node):
         proj: Optional[tuple[float, float]],
         carrot: Optional[tuple[float, float]],
     ) -> None:
-        """Publish a MarkerArray with corridor, state, and recovery debug info.
-
-        path   -- remaining path polyline ((x, y, theta) in order); empty = IDLE
-        frame  -- ROS frame_id for all markers
-        proj   -- (x, y) of nearest projection on path, or None (PLAYING/IDLE)
-        carrot -- (x, y) of look-ahead carrot, or None (PLAYING/IDLE)
-        """
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
 
@@ -650,9 +945,9 @@ class TrajectoryCorrectorNode(Node):
                 Point(x=proj[0], y=proj[1], z=0.0),
                 Point(x=carrot[0], y=carrot[1], z=0.0),
             ]
-            m.scale.x = 0.04  # shaft diameter
-            m.scale.y = 0.08  # head diameter
-            m.scale.z = 0.10  # head length
+            m.scale.x = 0.04
+            m.scale.y = 0.08
+            m.scale.z = 0.10
             m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 0.8, 0.4, 1.0
             markers.markers.append(m)
         else:
@@ -667,7 +962,7 @@ class TrajectoryCorrectorNode(Node):
             m.pose.position.x = robot_pose[0]
             m.pose.position.y = robot_pose[1]
             m.pose.position.z = 0.5
-        m.scale.z = 0.3  # text height in metres
+        m.scale.z = 0.3
         if self._state == _State.IDLE:
             m.text = "IDLE"
             m.color.r, m.color.g, m.color.b, m.color.a = 0.7, 0.7, 0.7, 1.0
@@ -683,6 +978,12 @@ class TrajectoryCorrectorNode(Node):
 
     # ----------------------- Publishing ------------------------------------
 
+    def _publish_cleared_goal_sentinel(self):
+        sentinel = PoseStamped()
+        sentinel.header.stamp = self.get_clock().now().to_msg()
+        sentinel.header.frame_id = ""
+        self._goal_pub.publish(sentinel)
+
     def _publish_twist(self, v: float, omega: float, stamp):
         if self._stamped:
             msg = TwistStamped()
@@ -695,3 +996,19 @@ class TrajectoryCorrectorNode(Node):
             msg.linear.x = v
             msg.angular.z = omega
         self._cmd_pub.publish(msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TrajectoryCorrectorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
