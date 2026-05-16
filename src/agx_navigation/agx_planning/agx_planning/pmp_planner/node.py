@@ -139,7 +139,7 @@ offline: cumulative rolled-out trajectory).
 """
 
 from dataclasses import dataclass
-from math import hypot, pi, tanh
+from math import hypot, pi
 from typing import Optional
 import threading
 import time
@@ -158,12 +158,18 @@ from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from agx_planning_msgs.action import PlanToGoal
-from agx_planning.utils import declare_and_load_dataclass
+from agx_planning.utils import declare_and_load_dataclass, GeneratorReturnCatcher
 from agx_planning.pmp_planner import (
     PMPShootingSolver,
     PlannerConfig,
     VectorFieldGrid,
     TurnDiagnosticLogger,
+    RolloutChunk,
+    RolloutResult,
+    compute_diag_values,
+    goal_reached,
+    parse_field_array,
+    rollout_generator,
 )
 
 
@@ -222,7 +228,13 @@ class PlannerNode(Node):
         # --- Shared state (both modes) ---
         self._field = VectorFieldGrid()
 
-        # Diagnostic logger -- None when diag_log_path is empty.
+        # _field_lock / _field_event are used by _on_field in both modes:
+        # online mode relies on the GIL for atomicity but still needs the
+        # lock so _on_field has a single unconditional code path; offline
+        # mode additionally waits on _field_event before starting a rollout.
+        self._field_lock = threading.Lock()
+        self._field_event = threading.Event()
+
         self._diag_logger: Optional[TurnDiagnosticLogger] = None
         if self.node_cfg.diag_log_path:
             try:
@@ -313,9 +325,6 @@ class PlannerNode(Node):
         # mutually-exclusive group. Together with MultiThreadedExecutor
         # in main(), field updates flow through during long solves.
         self._action_cb_group = ReentrantCallbackGroup()
-
-        self._field_lock = threading.Lock()
-        self._field_event = threading.Event()
 
         # Feedback QoS: the planner solves BVPs much faster than the
         # chassis plays them back (a 30-second sim trajectory at
@@ -422,8 +431,14 @@ class PlannerNode(Node):
         now a pure (start, goal, field) -> trajectory function; replanning
         is a fresh action goal.
         """
-        new_field = self._parse_field_msg(msg)
+        data = np.asarray(msg.data, dtype=np.float32)
+        new_field = parse_field_array(data, self.cfg)
         if new_field is None:
+            self.get_logger().warn(
+                f"Field size mismatch: got {data.size} floats, "
+                f"expected header + n, 3n, or 4n body elements",
+                throttle_duration_sec=5.0,
+            )
             return
 
         with self._field_lock:
@@ -448,57 +463,6 @@ class PlannerNode(Node):
         if self.cfg.mode == "online":
             self._waiting_for_field = False
 
-    def _parse_field_msg(self, msg: Float32MultiArray) -> Optional[VectorFieldGrid]:
-        """Build a fresh VectorFieldGrid from a Float32MultiArray. Returns
-        None on size mismatch (logged, ignored)."""
-        data = np.asarray(msg.data, dtype=np.float32)
-        if data.size < 5:
-            return None
-        h = int(data[0])
-        w = int(data[1])
-        ox = float(data[2])
-        oy = float(data[3])
-        res = float(data[4])
-        n = h * w
-
-        body = data[5:]
-        if body.size == n:
-            channels = 1
-        elif body.size == 3 * n:
-            channels = 3
-        elif body.size == 4 * n:
-            channels = 4
-        else:
-            self.get_logger().warn(
-                f"Field size mismatch: got {data.size}, expected "
-                f"{5 + n} or {5 + 3 * n} or {5 + 4 * n}",
-                throttle_duration_sec=5.0,
-            )
-            return None
-
-        T = body[0:n].reshape(h, w)
-        if channels >= 3:
-            Fx = body[n : 2 * n].reshape(h, w)
-            Fy = body[2 * n : 3 * n].reshape(h, w)
-        else:
-            Fx = None
-            Fy = None
-        # The grad_mag channel (if present) is ignored: we re-normalize
-        # (Fx, Fy) to a unit field internally with our own eps regularizer.
-
-        new_field = VectorFieldGrid()
-        new_field.update(
-            T,
-            Fx,
-            Fy,
-            ox,
-            oy,
-            res,
-            field_eps=self.cfg.field_eps,
-            align_smooth_sigma=self.cfg.align_smooth_sigma,
-        )
-        return new_field
-
     # ---------------- Online control loop ----------------
 
     def _control_loop(self):
@@ -514,21 +478,21 @@ class PlannerNode(Node):
             self._publish_twist(0.0, 0.0)
             return
 
-        d_xy = hypot(self._xi[0] - self._goal[0], self._xi[1] - self._goal[1])
-        d_th_signed = ((self._goal[2] - self._xi[2] + pi) % (2.0 * pi)) - pi
-        d_th = abs(d_th_signed)
-
-        # Drop the warm start on entering or leaving the goal-tolerance ball.
+        # Warm-start reset on goal-zone boundary crossing.
         # The BVP cost landscape is qualitatively different inside vs outside
         # (terminal pursuit collapses, theta_pursuit flips to goal_yaw, the
-        # w_F fade switches), so the warm start from the wrong regime can
-        # land Newton in the wrong basin and cause oscillation or overshoot.
+        # w_F fade switches), so reusing the warm start across the boundary
+        # can land Newton in the wrong basin and cause oscillation or overshoot.
+        d_xy = hypot(self._xi[0] - self._goal[0], self._xi[1] - self._goal[1])
         in_goal_zone = d_xy < self.cfg.goal_tolerance_xy
         if in_goal_zone != self._was_in_goal_zone:
             self._solver.reset_warm_start()
         self._was_in_goal_zone = in_goal_zone
 
-        if d_xy < self.cfg.goal_tolerance_xy and d_th < self.cfg.goal_tolerance_th:
+        # goal_reached accepts N >= 3 arrays, so we can pass the 3-D pose
+        # directly and avoid constructing x0 before we know we need it.
+        if goal_reached(self._xi, self._goal, self.cfg):
+            d_th = abs(((self._goal[2] - self._xi[2] + pi) % (2.0 * pi)) - pi)
             self._publish_twist(0.0, 0.0)
             self._publish_empty_trajectory()
             self.get_logger().info(
@@ -561,12 +525,7 @@ class PlannerNode(Node):
             cs = self._solver._last_costate  # (m, 5): lx, ly, lth, lv, lom
             st = self._solver._last_state  # (m, 5): px, py, th, v, om
             if cs is not None and st is not None:
-                lam_th_0 = float(cs[0, 2])
-                lam_om_0 = float(cs[0, 4])
-                alpha_cmd_0 = float(
-                    self.cfg.alpha_max
-                    * tanh(-lam_om_0 / (self.cfg.gamma_alpha * self.cfg.alpha_max))
-                )
+                lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(cs[0], self.cfg)
                 self._diag_logger.log_plan(
                     traj_id=-1,
                     chunk=-1,
@@ -733,198 +692,71 @@ class PlannerNode(Node):
     def _do_rollout_action(
         self, goal_handle, traj_id: int, x0: np.ndarray, goal: np.ndarray
     ) -> str:
-        """Roll out from x0 to goal by repeated BVP solves, publishing
-        each committed segment as action feedback. Returns one of:
+        """Thin adapter: wire ROS 2 cancel/preempt signals into rollout_generator
+        and handle per-chunk publishing and diagnostics.
 
-          "success"   -- chassis arrived at goal within tolerance,
-          "preempted" -- _exec_stop fired (new goal arrived, or shutdown),
-          "cancelled" -- the action client requested cancellation,
-          "failed"    -- BVP failure, stagnation, or sim-time cap.
-
-        x0 is a 5D state [px, py, theta, v, omega]. goal is 3D [gx, gy, gtheta].
-
-        Termination paths:
-          (a) state-at-iteration-boundary in goal tolerance,
-          (b) any sample WITHIN a segment hits goal tolerance (truncated
-              chunk, last feedback emitted),
-          (c) stagnation: x_next stops making meaningful progress for
-              several consecutive iterations -- defends against BVP
-              quasi-fixed-point behaviour near the goal that would
-              otherwise burn through max_rollout_sim_time,
-          (d) sim-time cap (last-resort backstop).
-
-        The action result carries the end-of-trajectory signal, so no
-        empty is_final terminator chunk is needed (unlike the legacy
-        /pmp_planner/trajectory_chunks topic). The cumulative
-        /pmp_planner/trajectory Path is still published for visualization.
+        Returns the RolloutResult.status string so _action_execute_inner can
+        map it to the appropriate action terminal state.
         """
-        cfg = self.cfg
-        dt_sample = 1.0 / cfg.control_rate
-        # n_samples per chunk = how many ticks of control_rate-spaced
-        # twists each BVP solve commits. Capped by T_horizon.
-        seg_len_s = min(cfg.dt_segment, cfg.T_horizon)
-        n_samples = max(1, int(round(seg_len_s / dt_sample)))
 
-        sim_t = 0.0
-        chunk_idx = 0
-        state = x0.copy()
-        # Cumulative pose log for visualization. Each entry is an
-        # (n_samples, 3) block of [px, py, theta].
-        all_poses: list[np.ndarray] = []
-
-        # Stagnation tracking: if x_next stops making progress, the
-        # rollout has hit a quasi-fixed-point (e.g. BVP is happily
-        # emitting "stay where you are" because the chassis is in the
-        # narrow ring just outside goal_tolerance_xy). The stagnation
-        # backstop ensures finite termination.
-        progress_eps = max(0.5 * cfg.goal_tolerance_xy, 5e-3)  # [m]
-        near_goal_thresh = 4.0 * cfg.goal_tolerance_xy  # [m]
-        stagnation_limit = 5
-        prev_d_xy = float("inf")
-        stagnation_count = 0
-
-        while sim_t < cfg.max_rollout_sim_time:
-            # Preempt / cancel checks BEFORE the solve, so a signal
-            # arriving mid-rollout cancels the next BVP rather than
-            # wasting a ~30 ms solve we'll throw away. Cancel takes
-            # precedence (more specific terminal state).
+        def stop_fn() -> Optional[str]:
+            # Cancel takes precedence: more specific terminal state than preempt.
             if goal_handle.is_cancel_requested:
                 return "cancelled"
-            if self._exec_stop.is_set():
-                return "preempted"
+            return "preempted" if self._exec_stop.is_set() else None
 
-            # Termination (a): state-at-boundary in tolerance.
-            d_xy_state = hypot(state[0] - goal[0], state[1] - goal[1])
-            d_th_state = abs(((goal[2] - state[2] + pi) % (2.0 * pi)) - pi)
-            if (
-                d_xy_state < cfg.goal_tolerance_xy
-                and d_th_state < cfg.goal_tolerance_th
-            ):
-                self._publish_cumulative_path(all_poses)
-                self.get_logger().info(
-                    f"Offline rollout traj_id={traj_id} reached goal "
-                    f"in {sim_t:.2f}s sim, {chunk_idx} chunks."
-                )
-                return "success"
+        all_poses: list[np.ndarray] = []
 
-            # Solve and sample one segment.
-            result = self._solver.sample_committed_segment(
-                state,
-                goal,
-                dt_sample,
-                n_samples,
-            )
-            if result is None:
-                self.get_logger().warn(
-                    f"Offline BVP solve failed at sim_t={sim_t:.2f}s "
-                    f"(traj_id={traj_id}, chunk={chunk_idx}): "
-                    f"{self._solver._last_error}",
-                )
-                return "failed"
-
-            twists, poses, x_next = result
-
-            # Diagnostic: log planned heading profile + t=0 costates.
-            if self._diag_logger is not None:
-                cs = self._solver._last_costate
-                if cs is not None:
-                    lam_th_0 = float(cs[0, 2])
-                    lam_om_0 = float(cs[0, 4])
-                    alpha_cmd_0 = float(
-                        cfg.alpha_max
-                        * tanh(-lam_om_0 / (cfg.gamma_alpha * cfg.alpha_max))
-                    )
-                    self._diag_logger.log_plan(
-                        traj_id=traj_id,
-                        chunk=chunk_idx,
-                        thetas_deg=np.degrees(poses[:, 2]),
-                        omegas=twists[:, 1],
-                        vs=twists[:, 0],
-                        lam_th_0=lam_th_0,
-                        lam_om_0=lam_om_0,
-                        alpha_cmd_0=alpha_cmd_0,
-                    )
-
-            # Termination (b): any sample WITHIN this segment hits the
-            # tolerance ball. Truncate the chunk to twists[0:hit] and
-            # poses[0:hit] -- after the interpreter applies twists[hit-1]
-            # the chassis arrives at poses[hit] which is at goal. The
-            # parallel-arrays invariant (twists[i] applied at poses[i])
-            # is preserved; the goal-arrival pose just isn't included
-            # since no twist is applied AT it.
-            hit_idx = -1
-            for i in range(poses.shape[0]):
-                d_xy = hypot(poses[i, 0] - goal[0], poses[i, 1] - goal[1])
-                d_th = abs(((goal[2] - poses[i, 2] + pi) % (2.0 * pi)) - pi)
-                if d_xy < cfg.goal_tolerance_xy and d_th < cfg.goal_tolerance_th:
-                    hit_idx = i
-                    break
-
-            if hit_idx >= 1:
-                tw_trunc = twists[:hit_idx]
-                ps_trunc = poses[:hit_idx]
-                self._publish_chunk_feedback(
-                    goal_handle,
-                    traj_id,
-                    chunk_idx,
-                    tw_trunc,
-                    ps_trunc,
-                    dt_sample,
-                )
-                all_poses.append(ps_trunc)
-                self._publish_cumulative_path(all_poses)
-                self.get_logger().info(
-                    f"Offline rollout traj_id={traj_id} reached goal "
-                    f"in {sim_t:.2f}s sim (intra-segment, chunk {chunk_idx}, "
-                    f"sample {hit_idx})."
-                )
-                return "success"
-            if hit_idx == 0:
-                # poses[0] == state (BVP boundary condition pins it), so
-                # this means state was at goal already -- caught by the
-                # (a) check above. Falling through here is defensive only.
-                return "success"
-
-            # Normal path: emit the full chunk as action feedback.
-            self._publish_chunk_feedback(
-                goal_handle,
-                traj_id,
-                chunk_idx,
-                twists,
-                poses,
-                dt_sample,
-            )
-            all_poses.append(poses)
-            self._publish_cumulative_path(all_poses)
-
-            state = x_next
-            sim_t += n_samples * dt_sample
-            chunk_idx += 1
-
-            # Termination (c): stagnation. Only counts when chassis is
-            # ALREADY near the goal -- far-from-goal slow progress is
-            # legitimate (e.g. routed around a long obstacle) and is
-            # backstopped by max_rollout_sim_time, not by this check.
-            new_d_xy = hypot(state[0] - goal[0], state[1] - goal[1])
-            if new_d_xy < near_goal_thresh and (prev_d_xy - new_d_xy) < progress_eps:
-                stagnation_count += 1
-                if stagnation_count >= stagnation_limit:
-                    self.get_logger().warn(
-                        f"Offline rollout traj_id={traj_id} stagnated near goal "
-                        f"(d_xy={new_d_xy:.3f}m, no progress for "
-                        f"{stagnation_count} iterations)."
-                    )
-                    return "failed"
-            else:
-                stagnation_count = 0
-            prev_d_xy = new_d_xy
-
-        # Termination (d): sim-time cap.
-        self.get_logger().warn(
-            f"Offline rollout traj_id={traj_id} exceeded "
-            f"max_rollout_sim_time={cfg.max_rollout_sim_time}s; aborting."
+        gen = GeneratorReturnCatcher(
+            rollout_generator(self._solver, self.cfg, x0, goal, stop_fn)
         )
-        return "failed"
+        for chunk in gen:
+            self._handle_rollout_chunk(chunk, traj_id, all_poses, goal_handle)
+
+        terminal: RolloutResult = gen.value
+        if terminal.status == "success":
+            self.get_logger().info(
+                f"Offline rollout traj_id={traj_id}: {terminal.message}"
+            )
+            self._publish_cumulative_path(all_poses)
+        else:
+            self.get_logger().warn(
+                f"Offline rollout traj_id={traj_id}: {terminal.message}"
+            )
+        return terminal.status
+
+    def _handle_rollout_chunk(
+        self,
+        chunk: RolloutChunk,
+        traj_id: int,
+        all_poses: list[np.ndarray],
+        goal_handle,
+    ):
+        """Process one RolloutChunk: log diagnostics, publish feedback and path."""
+        if self._diag_logger is not None and chunk.costate_t0 is not None:
+            lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(
+                chunk.costate_t0, self.cfg
+            )
+            self._diag_logger.log_plan(
+                traj_id=traj_id,
+                chunk=chunk.chunk_idx,
+                thetas_deg=np.degrees(chunk.poses[:, 2]),
+                omegas=chunk.twists[:, 1],
+                vs=chunk.twists[:, 0],
+                lam_th_0=lam_th_0,
+                lam_om_0=lam_om_0,
+                alpha_cmd_0=alpha_cmd_0,
+            )
+        self._publish_chunk_feedback(
+            goal_handle,
+            traj_id,
+            chunk.chunk_idx,
+            chunk.twists,
+            chunk.poses,
+            chunk.dt_sample,
+        )
+        all_poses.append(chunk.poses)
+        self._publish_cumulative_path(all_poses)
 
     # ---------------- Publishing ----------------
 
@@ -1021,8 +853,8 @@ class PlannerNode(Node):
         Empty chunks are silently skipped: there's no "is_final" flag in
         the action feedback (the action result signals end-of-trajectory),
         so an empty feedback message would carry no information. The
-        intra-segment-hit case in _do_rollout_action guards against
-        ever calling this with an empty truncation.
+        intra-segment-hit case in rollout_generator guards against
+        ever yielding an empty truncation.
         """
         if twists.shape[0] == 0:
             return

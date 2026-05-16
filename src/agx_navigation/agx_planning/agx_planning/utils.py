@@ -26,3 +26,35 @@ def declare_and_load_dataclass(node: Node, instance: Any, prefix: str = "") -> A
         node.declare_parameter(name, default)
         updates[f.name] = node.get_parameter(name).value
     return replace(instance, **updates)
+
+
+# Source - https://stackoverflow.com/a/34073559
+# Posted by Ferdinand Beyer, modified by community. See post 'Timeline' for change history
+# Retrieved 2025-12-08, License - CC BY-SA 4.0
+class GeneratorReturnCatcher:
+    """
+    Used to receive the return value from a generator.
+    Use as follows:
+
+    ```
+    def foobar():
+        yield 1
+        yield 2
+        return 3
+
+    gen = GeneratorReturnCatcher(foobar())
+    for x in gen:
+        print('item', x)
+
+    print('return', gen.value)
+
+    # prints: item 1, item 2, return 3
+    ```
+    """
+
+    def __init__(self, gen):
+        self.gen = gen
+
+    def __iter__(self):
+        self.value = yield from self.gen
+        return self.value
