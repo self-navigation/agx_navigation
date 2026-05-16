@@ -2,7 +2,15 @@ from .shooting_solver import PMPShootingSolver
 from .config import PlannerConfig
 from .vf_grid import VectorFieldGrid
 from .diagnostic import TurnDiagnosticLogger
-from .planner import PlannerNode
+from .rollout import (
+    RolloutChunk,
+    RolloutResult,
+    compute_diag_values,
+    goal_reached,
+    parse_field_array,
+    rollout_generator,
+)
+from .node import PlannerNode
 
 __all__ = [
     "PMPShootingSolver",
@@ -10,6 +18,12 @@ __all__ = [
     "VectorFieldGrid",
     "TurnDiagnosticLogger",
     "PlannerNode",
+    "RolloutResult",
+    "compute_diag_values",
+    "goal_reached",
+    "parse_field_array",
+    "rollout_generator",
+    "RolloutChunk",
 ]
 
 
