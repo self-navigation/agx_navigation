@@ -71,7 +71,7 @@ class VizConfig:
     # the world-space step: step_world = viz_path_step * resolution.
     viz_path_step: float = 0.5
     viz_path_max_iter: int = 2000
-    viz_rate: float = 5.0  # [Hz]
+    viz_path_rate: float = 5.0  # [Hz] -- path only; field data is event-driven
 
 
 class VectorFieldNode(Node):
@@ -79,7 +79,6 @@ class VectorFieldNode(Node):
     def __init__(self):
         super().__init__("vector_field")
 
-        # All parameters come from dataclass defaults via the generic loader.
         self.frame_cfg = declare_and_load_dataclass(self, FrameConfig())
         self.speed_cfg = declare_and_load_dataclass(self, SpeedConfig())
         self.cutlocus_cfg = declare_and_load_dataclass(self, CutLocusConfig())
@@ -100,7 +99,6 @@ class VectorFieldNode(Node):
         self.map_msg: Optional[OccupancyGrid] = None
         self.map_array: Optional[np.ndarray] = None
         self.current_goal: Optional[PoseStamped] = None
-        self.field_dirty = False
         self._field_result: Optional[VectorFieldResult] = None
 
         map_qos = QoSProfile(
@@ -120,9 +118,11 @@ class VectorFieldNode(Node):
             Float32MultiArray, "/vector_field/planner_data", 1
         )
 
-        self.viz_timer = self.create_timer(
-            1.0 / self.viz_cfg.viz_rate,
-            self._viz_timer_cb,
+        # Only the path needs a timer: it traces from the live robot pose,
+        # so it should refresh even when the field itself has not changed.
+        self.path_timer = self.create_timer(
+            1.0 / self.viz_cfg.viz_path_rate,
+            self._publish_optimal_path,
         )
 
         # NOTE on caching. EDT and the speed field depend only on the
@@ -142,14 +142,13 @@ class VectorFieldNode(Node):
         self.map_array = np.array(msg.data, dtype=np.int8).reshape(
             (msg.info.height, msg.info.width)
         )
-        self.field_dirty = True
         self.get_logger().info(
             f"Map received: {msg.info.width}x{msg.info.height} "
             f"res={msg.info.resolution:.3f} m/cell",
             throttle_duration_sec=10.0,
         )
-        if self.current_goal is not None:
-            self._recompute_field()
+        # Recompute and publish immediately; no need to wait for the timer.
+        self._recompute_and_publish()
 
     def _goal_cb(self, msg: PoseStamped):
         if msg.header.frame_id == "":
@@ -158,20 +157,30 @@ class VectorFieldNode(Node):
             return
 
         self.current_goal = msg
-        self.field_dirty = True
         self.get_logger().info(
             f"Goal: ({msg.pose.position.x:.2f}, {msg.pose.position.y:.2f})"
         )
-        self._recompute_field()
+        self._recompute_and_publish()
 
-    def _viz_timer_cb(self):
-        if self.field_dirty:
-            self._recompute_field()
-        self._publish_visualization()
+    def _recompute_and_publish(self):
+        """Recompute the field and immediately push all field-derived topics.
 
-    def _recompute_field(self):
-        if self.map_msg is None or self.current_goal is None:
+        Called directly from the map/goal callbacks so field data is always
+        fresh on the subscriber side without waiting for a timer tick.
+        The path is excluded here because it depends on the live robot pose
+        and is handled separately by the path timer.
+        """
+        if not self._recompute_field():
             return
+
+        self._publish_arrows()
+        self._publish_cost_to_go_grid()
+        self._publish_planner_data()
+
+    def _recompute_field(self) -> bool:
+        """Run FM2 and store the result.  Returns True on success."""
+        if self.map_msg is None or self.current_goal is None:
+            return False
 
         info = self.map_msg.info
         goal = world_to_grid(
@@ -185,12 +194,12 @@ class VectorFieldNode(Node):
         )
         if goal is None:
             self.get_logger().error("Goal is outside map bounds.")
-            return
+            return False
         goal_col, goal_row = goal
 
         if self.map_array[goal_row, goal_col] >= self.frame_cfg.occupancy_threshold:
             self.get_logger().error("Goal cell is inside an obstacle.")
-            return
+            return False
 
         t0 = time.monotonic()
         outcome = compute_field(
@@ -211,11 +220,11 @@ class VectorFieldNode(Node):
             self.get_logger().error(
                 "compute_field() failed (goal in obstacle or outside grid)."
             )
-            return
+            return False
 
         self._field_result, message = outcome
-        self.field_dirty = False
         self.get_logger().info(f"{message}, {elapsed_ms:.1f} ms")
+        return True
 
     def query_vector(
         self, wx: float, wy: float
@@ -268,25 +277,6 @@ class VectorFieldNode(Node):
         pose.pose.position.z = t.transform.translation.z
         pose.pose.orientation = t.transform.rotation
         return pose
-
-    def _publish_visualization(self):
-        if self._field_result is None or self.current_goal is None:
-            return
-        self._publish_arrows()
-        self._publish_optimal_path()
-        self._publish_cost_to_go_grid()
-        self._publish_planner_data()
-
-    def _cost_to_color(self, t_val: float, t_max: float) -> ColorRGBA:
-        if not math.isfinite(t_val) or t_max < 1e-8:
-            return ColorRGBA(r=0.5, g=0.5, b=0.5, a=1.0)
-        ratio = min(max(t_val / t_max, 0.0), 1.0)
-        return ColorRGBA(
-            r=float(ratio),
-            g=float(0.2 * (1.0 - ratio)),
-            b=float(1.0 - ratio),
-            a=0.85,
-        )
 
     def _publish_arrows(self):
         r = self._field_result
@@ -345,7 +335,8 @@ class VectorFieldNode(Node):
         self.lines_pub.publish(marker)
 
     def _publish_optimal_path(self):
-        if self._field_result is None:
+        """Timer callback -- traces from the current robot pose each tick."""
+        if self._field_result is None or self.current_goal is None:
             self._publish_empty_path()
             return
         pose = self.get_robot_pose()
@@ -439,3 +430,14 @@ class VectorFieldNode(Node):
         msg = Float32MultiArray()
         msg.data = pack_field_array(self._field_result).tolist()
         self.planner_data_pub.publish(msg)
+
+    def _cost_to_color(self, t_val: float, t_max: float) -> ColorRGBA:
+        if not math.isfinite(t_val) or t_max < 1e-8:
+            return ColorRGBA(r=0.5, g=0.5, b=0.5, a=1.0)
+        ratio = min(max(t_val / t_max, 0.0), 1.0)
+        return ColorRGBA(
+            r=float(ratio),
+            g=float(0.2 * (1.0 - ratio)),
+            b=float(1.0 - ratio),
+            a=0.85,
+        )
