@@ -159,10 +159,10 @@ from tf2_ros import Buffer, TransformListener, TransformException
 
 from agx_planning_msgs.action import PlanToGoal
 from agx_planning.utils import declare_and_load_dataclass, GeneratorReturnCatcher
+from agx_planning.vector_field import VectorFieldGrid
 from agx_planning.pmp_planner import (
     PMPShootingSolver,
     PlannerConfig,
-    VectorFieldGrid,
     TurnDiagnosticLogger,
     RolloutChunk,
     RolloutResult,

@@ -5,7 +5,7 @@ import numpy as np
 from scipy.integrate import solve_bvp
 
 from agx_planning.pmp_planner.config import PlannerConfig
-from agx_planning.pmp_planner.vf_grid import VectorFieldGrid
+from agx_planning.vector_field import VectorFieldGrid
 
 
 class PMPShootingSolver:
