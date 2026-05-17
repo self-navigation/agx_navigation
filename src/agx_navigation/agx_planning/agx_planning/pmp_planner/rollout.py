@@ -65,16 +65,10 @@ def parse_field_array(
     """Build a VectorFieldGrid from a flat float32 buffer.
 
     Expected layout:
-      [h, w, origin_x, origin_y, resolution,
-       travel_time(H*W) [, grad_x(H*W), grad_y(H*W) [, grad_mag(H*W)]]]
+      [h, w, origin_x, origin_y, resolution, travel_time(H*W), ...]
 
-    Backward-compatible channel handling:
-      1-channel -- Fx/Fy derived internally from -grad T
-      3-channel -- explicit Fx, Fy provided
-      4-channel -- same as 3-channel; trailing grad_mag is ignored
-
-    Returns None on a size mismatch. The caller is responsible for any
-    logging -- this function intentionally has no logger dependency.
+    Any channels after travel_time (grad_x, grad_y, grad_mag) are ignored --
+    the grid recomputes the direction field internally from grad T.
     """
     if data.size < 5:
         return None
@@ -82,28 +76,13 @@ def parse_field_array(
     h, w = int(data[0]), int(data[1])
     ox, oy, res = float(data[2]), float(data[3]), float(data[4])
     n = h * w
-    body = data[5:]
 
-    if body.size == n:
-        Fx, Fy = None, None
-    elif body.size in (3 * n, 4 * n):
-        Fx = body[n : 2 * n].reshape(h, w)
-        Fy = body[2 * n : 3 * n].reshape(h, w)
-    else:
+    if data.size < 5 + n:
         return None
 
-    T = body[:n].reshape(h, w)
+    T = data[5 : 5 + n].reshape(h, w)
     grid = VectorFieldGrid()
-    grid.update(
-        T,
-        Fx,
-        Fy,
-        ox,
-        oy,
-        res,
-        field_eps=cfg.field_eps,
-        align_smooth_sigma=cfg.align_smooth_sigma,
-    )
+    grid.update(T, ox, oy, res, field_eps=cfg.field_eps)
     return grid
 
 
