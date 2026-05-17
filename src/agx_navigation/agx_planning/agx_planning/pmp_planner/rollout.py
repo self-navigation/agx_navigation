@@ -21,7 +21,9 @@ from typing import Callable, Generator, Optional
 
 import numpy as np
 
-from agx_planning.pmp_planner import PMPShootingSolver, PlannerConfig, VectorFieldGrid
+
+from agx_planning.vector_field import VectorFieldGrid
+from agx_planning.pmp_planner import PMPShootingSolver, PlannerConfig
 
 
 @dataclass(frozen=True)
