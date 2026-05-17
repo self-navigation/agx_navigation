@@ -15,6 +15,7 @@ PARAM_VARS := SIM \
 							HEADLESS \
 							NAV_MODE \
 							PMP_MODE \
+							USE_SERVER \
 							DO_CORRECTIONS \
 							PORT_NAME
 
@@ -177,6 +178,13 @@ run: build can-bus
 		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
+		$(PARAMS)
+
+server:
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
+		ros2 launch $(DEBUG_INFIX) \
+		agx_bringup planner.launch.py \
 		$(PARAMS)
 
 teleop:

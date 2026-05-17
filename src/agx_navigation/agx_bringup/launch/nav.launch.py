@@ -25,18 +25,17 @@ def generate_launch_description():
         ),
     ]
 
+    nav_mode = LaunchConfiguration("nav_mode")
+
     launch_nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("nav2")),
-        condition=IfCondition(
-            EqualsSubstitution(LaunchConfiguration("nav_mode"), NAV2_NAV_MODE)
-        ),
+        condition=IfCondition(EqualsSubstitution(nav_mode, NAV2_NAV_MODE)),
     )
     launch_custom = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("vec_pmp")),
-        condition=IfCondition(
-            EqualsSubstitution(LaunchConfiguration("nav_mode"), CUSTOM_NAV_MODE)
-        ),
+        condition=IfCondition(EqualsSubstitution(nav_mode, CUSTOM_NAV_MODE)),
     )
+
     frontier_explorer = Node(
         package="agx_planning",
         executable="frontier_explorer",
