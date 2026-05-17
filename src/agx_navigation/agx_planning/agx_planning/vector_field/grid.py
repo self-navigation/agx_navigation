@@ -1,48 +1,31 @@
 from typing import Optional, Tuple
 import numpy as np
-from scipy.ndimage import gaussian_filter
 
 
 class VectorFieldGrid:
-    """T(x, y), its gradient, and a unit-vector direction field F.
+    """T(x, y), its gradient, and a derived unit-vector direction field.
 
-    Two field sources are kept because they serve different purposes:
+    The direction field F_unit = -normalize(grad T, eps) is computed
+    on the fly from the stored gradient during query, so only three
+    arrays are stored: T, dT/dx, dT/dy.
 
-    - dT/dx, dT/dy: recomputed from np.gradient so the position-costate
-      ODEs (beta * grad T) stay consistent with the T grid being penalised,
-      regardless of upstream smoothing or sign convention.
-    - F_unit: derived from the upstream (Fx, Fy) channels and re-normalised
-      with eps regularisation so |F_unit| -> 0 where the underlying field
-      magnitude collapses (goal sink, saddles, flat regions), fading the
-      alignment cost instead of fighting the terminal target.
+    field_eps controls how fast the alignment cost fades near the goal
+    and at cut loci: |F_unit| -> 1 where |grad T| >> eps, -> 0 where
+    |grad T| << eps (goal sink, saddles, flat regions).
 
-    Sign convention: (Fx, Fy) is the "follow this direction" field. If the
-    upstream publishes raw +grad T (away from goal), flip the sign upstream
-    or set align_smooth_sigma > 0 to derive F from -grad(smooth(T)) here.
-
-    Concurrency: instances are immutable after update(). The node uses
-    atomic-reference-swap of self._field on field arrival (atomic under
-    CPython's GIL on bare attribute assignment), so threaded readers
-    never observe a torn update. Replan-trigger code keeps a reference
-    to the previous instance for path-masked diffing against the new one.
+    Sign convention: F points in the direction of descending T (toward goal).
     """
 
     def __init__(self):
         self._tt: Optional[np.ndarray] = None
         self._dT_dx: Optional[np.ndarray] = None
         self._dT_dy: Optional[np.ndarray] = None
-        self._Fu_x: Optional[np.ndarray] = None
-        self._Fu_y: Optional[np.ndarray] = None
         self._origin_x = 0.0
         self._origin_y = 0.0
         self._res = 1.0
         self._tt_max = 1.0
+        self._field_eps = 1e-2
         self._ready = False
-        # Monotonic counter; bumped on every update so the solver can
-        # detect a replaced field and drop a now-stale warm start. With
-        # atomic-swap of grid instances (offline mode), this counter
-        # resets per-instance, so the node also calls reset_warm_start()
-        # on every swap regardless of version.
         self._version = 0
 
     @property
@@ -56,63 +39,27 @@ class VectorFieldGrid:
     def update(
         self,
         T_field: np.ndarray,
-        Fx_field: Optional[np.ndarray],
-        Fy_field: Optional[np.ndarray],
         origin_x: float,
         origin_y: float,
         resolution: float,
         field_eps: float = 1e-2,
-        align_smooth_sigma: float = 0.0,
     ):
         T = T_field.astype(np.float64)
-        # FMM may produce inf for unreachable cells; replace with the largest
-        # finite value before differentiation so the gradient stays finite.
         finite_mask = np.isfinite(T)
-        if finite_mask.any():
-            T_max_finite = float(T[finite_mask].max())
-        else:
-            T_max_finite = 1.0
+        T_max_finite = float(T[finite_mask].max()) if finite_mask.any() else 1.0
         T_filled = np.where(finite_mask, T, T_max_finite)
 
-        # np.gradient returns (dT/drow, dT/dcol). ROS map convention:
-        # rows index y, cols index x. Position costates use the raw
-        # (un-smoothed) gradient so the position penalty stays sharp.
+        # np.gradient returns (dT/drow, dT/dcol); rows index y, cols index x.
         d_drow, d_dcol = np.gradient(T_filled, resolution, resolution)
-
-        # Alignment direction field source priority:
-        #   1. align_smooth_sigma > 0: derive from grad(gaussian_filter(T)).
-        #   2. Upstream-provided (Fx, Fy): use as-is.
-        #   3. Fallback: derive from -grad T (legacy 1-channel message).
-        if align_smooth_sigma > 0.0:
-            T_align = gaussian_filter(T_filled, sigma=align_smooth_sigma)
-            d_drow_align, d_dcol_align = np.gradient(
-                T_align,
-                resolution,
-                resolution,
-            )
-            Fx = -d_dcol_align
-            Fy = -d_drow_align
-        elif Fx_field is not None and Fy_field is not None:
-            Fx = Fx_field.astype(np.float64)
-            Fy = Fy_field.astype(np.float64)
-        else:
-            Fx = -d_dcol
-            Fy = -d_drow
-        # Smooth re-normalize: |F_unit| -> 1 for |F| >> eps and -> 0 for
-        # |F| << eps. The latter fades the alignment cost in flat regions.
-        norm = np.sqrt(Fx * Fx + Fy * Fy + field_eps * field_eps)
-        Fu_x = Fx / norm
-        Fu_y = Fy / norm
 
         self._tt = T_filled
         self._dT_dx = d_dcol
         self._dT_dy = d_drow
-        self._Fu_x = Fu_x
-        self._Fu_y = Fu_y
         self._origin_x = origin_x
         self._origin_y = origin_y
         self._res = resolution
         self._tt_max = T_max_finite
+        self._field_eps = field_eps
         self._ready = True
         self._version += 1
 
@@ -123,10 +70,10 @@ class VectorFieldGrid:
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Vectorized bilinear sample at world (px, py).
 
-        Returns (T, dT/dx, dT/dy, F_unit_x, F_unit_y). World (origin_x,
-        origin_y) is the corner of cell (0, 0); grid index = (world -
-        origin) / resolution. Out-of-bounds: returns zero gradient and
-        zero direction (no force) and the max-T sentinel (still penalised).
+        Returns (T, dT/dx, dT/dy, F_unit_x, F_unit_y).
+        F_unit = -normalize(grad T, eps): fades to zero where the field
+        collapses (goal sink, cut loci) instead of producing noise.
+        Out-of-bounds: zero gradient/direction, max-T sentinel.
         """
         if not self._ready:
             zero = np.zeros_like(px)
@@ -156,8 +103,13 @@ class VectorFieldGrid:
         T = bilerp(self._tt)
         dx = bilerp(self._dT_dx)
         dy = bilerp(self._dT_dy)
-        fux = bilerp(self._Fu_x)
-        fuy = bilerp(self._Fu_y)
+
+        # Unit direction: descend T. Eps regularisation fades alignment
+        # cost near the goal and at cut loci rather than fighting noise.
+        eps = self._field_eps
+        norm = np.sqrt(dx * dx + dy * dy + eps * eps)
+        fux = -dx / norm
+        fuy = -dy / norm
 
         T = np.where(in_bounds, T, self._tt_max)
         dx = np.where(in_bounds, dx, 0.0)
@@ -175,13 +127,6 @@ class VectorFieldGrid:
         return float(T[0]), float(dx[0]), float(dy[0]), float(fux[0]), float(fuy[0])
 
     def in_bounds(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
-        """Boolean mask: which (px, py) lie within the grid extent.
-
-        Used by the offline-mode path-masked field-diff replan trigger:
-        cells out-of-bounds in either old-or-new grid are tagged as
-        infinite diff so newly-discovered terrain on the planned path
-        always triggers a replan.
-        """
         if not self._ready:
             return np.zeros_like(px, dtype=bool)
         u = (px - self._origin_x) / self._res
@@ -197,40 +142,17 @@ class VectorFieldGrid:
         ds: Optional[float] = None,
         goal_xy: Optional[Tuple[float, float]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Trace dp/ds = F_unit(p) starting at (x0, y0) for up to length_m.
-
-        Stops on (a) |F| < 1e-3 (goal sink or saddle), (b) length_m of arc
-        length consumed, (c) leaving the grid bounds, or (d) within
-        sqrt(0.01) m of goal_xy. Early goal-stop means p_pursuit naturally
-        collapses to p_goal when the streamline reaches it within the
-        lookahead distance.
-
-        Returns (ref_pts (N, 2), n_perp (N, 2)) where n_perp is the unit
-        normal rotated 90 deg CCW from F at each sample (used for the
-        cross-track residual). Both arrays are empty if the trace cannot
-        start (e.g. already at goal, F collapses immediately).
-        """
+        """Trace dp/ds = F_unit(p) starting at (x0, y0) for up to length_m."""
         if not self._ready:
             return np.zeros((0, 2)), np.zeros((0, 2))
         if ds is None:
             ds = self._res
 
-        # If we're already inside the goal stop ball, the loop below would
-        # record exactly one ref point (chassis) before tripping the stop
-        # check and breaking. The caller (solve) then sets p_pursuit =
-        # chassis position, which makes the BVP terminal cost pull toward
-        # "stay where you are" -- chassis never moves. Return empty
-        # instead so the caller's fallback sets p_pursuit = goal directly.
-        # (This fixes a long-standing online-mode bug where the chassis
-        # would idle in the [goal_tolerance_xy, 0.1m] ring around the goal
-        # until TF noise pushed it inside; offline mode exposed it because
-        # there's no observation noise to bail us out.)
         if goal_xy is not None:
             if (x0 - goal_xy[0]) ** 2 + (y0 - goal_xy[1]) ** 2 < 1e-2:
                 return np.zeros((0, 2)), np.zeros((0, 2))
 
         n_max = max(8, int(np.ceil(length_m / ds)) + 1)
-
         ref_x = np.empty(n_max, dtype=np.float64)
         ref_y = np.empty(n_max, dtype=np.float64)
         nx = np.empty(n_max, dtype=np.float64)
@@ -252,10 +174,11 @@ class VectorFieldGrid:
             if goal_xy is not None:
                 if (px - goal_xy[0]) ** 2 + (py - goal_xy[1]) ** 2 < 1e-2:
                     break
-            px = px + ds * tx
-            py = py + ds * ty
+            px += ds * tx
+            py += ds * ty
+
         if n == 0:
             return np.zeros((0, 2)), np.zeros((0, 2))
-        ref_pts = np.column_stack([ref_x[:n], ref_y[:n]])
-        n_perp = np.column_stack([nx[:n], ny[:n]])
-        return ref_pts, n_perp
+        return np.column_stack([ref_x[:n], ref_y[:n]]), np.column_stack(
+            [nx[:n], ny[:n]]
+        )

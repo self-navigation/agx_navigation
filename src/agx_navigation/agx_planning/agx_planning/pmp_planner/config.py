@@ -132,13 +132,7 @@ class PlannerConfig:
     #    the underlying field collapses (goal sink, saddles), fading the
     #    alignment cost instead of letting it fight the terminal target.
     #    Set comparable to the upstream gradient noise floor (~1e-2).
-    # align_smooth_sigma: in-planner Gaussian smoothing on T (in grid
-    #    cells) before deriving F for the alignment direction. Smooths
-    #    corner curvature; preserves the goal singularity (T, not F, is
-    #    smoothed). Leave at 0 unless the upstream T field has unusually
-    #    sharp features; sigma 2-4 cells is the useful range.
     field_eps: float = 1e-2
-    align_smooth_sigma: float = 0.0
 
     # --- Terminal-cost weights ---
     # w_T_terminal: Lyapunov-in-T-space terminal weight on T_lin^2 where

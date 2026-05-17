@@ -360,7 +360,6 @@ def pack_field_array(result: VectorFieldResult) -> np.ndarray:
 def field_result_to_grid(
     result: VectorFieldResult,
     field_eps: float = 1e-2,
-    align_smooth_sigma: float = 0.0,
 ) -> VectorFieldGrid:
     """Build a VectorFieldGrid directly from a VectorFieldResult.
 
@@ -375,18 +374,13 @@ def field_result_to_grid(
     result              output of compute_field().
     field_eps           normalisation regulariser passed to VectorFieldGrid.update();
                         controls how fast the alignment cost fades near the goal.
-    align_smooth_sigma  if > 0, VectorFieldGrid re-derives F from a smoothed T
-                        internally; set to 0 to use grad_x/grad_y as-is.
     """
     grid = VectorFieldGrid()
     grid.update(
         result.travel_time,
-        result.grad_x,
-        result.grad_y,
         result.origin_x,
         result.origin_y,
         result.resolution,
         field_eps=field_eps,
-        align_smooth_sigma=align_smooth_sigma,
     )
     return grid
