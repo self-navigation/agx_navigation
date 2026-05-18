@@ -12,8 +12,9 @@ recovery_corridor_epsilon and aligned with the path tangent. A replan is
 requested when the path_diff_percentile-th percentile of cross-track distance
 between /vector_field/optimal_path and the buffered trajectory exceeds
 path_diff_threshold. A chunk with a higher trajectory_id replaces the buffer
-and resumes PLAYING. Chunks are consumed in chunk_index order, and if the next
-one is missing the node publishes zero and waits.
+and enters CORRECTING, which aligns the robot with the new trajectory before
+playback. Chunks are consumed in chunk_index order, and if the next one is
+missing the node publishes zero and waits.
 """
 
 import math
@@ -428,7 +429,26 @@ class TrajectoryCorrectorNode(Node):
             [[x, y] for x, y, _ in future_path_tuples], dtype=np.float64
         )
         plan_start = int(np.argmin((plan_xy[:, 0] - rx) ** 2 + (plan_xy[:, 1] - ry) ** 2))
-        grad_start = int(np.argmin((gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2))
+
+        # Direction-aware grad_start: among gradient points near the robot, prefer
+        # those heading in the same direction as the plan at plan_start. This
+        # prevents the gradient's return leg from being selected when the plan is
+        # still outbound (and vice versa) -- two topologically different paths whose
+        # return legs happen to be spatially close would otherwise appear compatible
+        # and suppress the replan trigger.
+        dist_sq_g = (gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2
+        if self._path_diff_min_tangent_dot > -1.0 and plan_start + 1 < len(plan_xy):
+            plan_dir = _path_tangents(plan_xy)[plan_start]  # (2,) unit vector
+            grad_tan = _path_tangents(gpath)                 # (N, 2)
+            cos_with_plan = grad_tan @ plan_dir              # (N,)
+            valid_dir = cos_with_plan > self._path_diff_min_tangent_dot
+            if valid_dir.any():
+                dist_sq_g = np.where(valid_dir, dist_sq_g, np.inf)
+            # If no gradient point heads in the plan's direction (entire gradient
+            # anti-parallel), fall through: np.argmin of all-inf returns 0, i.e.
+            # gpath[0], near the robot's reference pose. The subsequent comparison
+            # will produce all-inf deviations and the window check will fire.
+        grad_start = int(np.argmin(dist_sq_g))
 
         if self._path_diff_skip_ahead > 0.0:
             plan_start = _advance_by_arc(plan_xy, plan_start, self._path_diff_skip_ahead)
@@ -618,11 +638,12 @@ class TrajectoryCorrectorNode(Node):
 
         if traj_id > self._active_traj_id:
             self.get_logger().info(
-                f"Switching to trajectory {traj_id} (was {self._active_traj_id})."
+                f"Switching to trajectory {traj_id} (was {self._active_traj_id}): "
+                "entering alignment correction before playback."
             )
             self._goal_in_flight = False
             self._active_traj_id = traj_id
-            self._state = _State.PLAYING
+            self._state = _State.CORRECTING
             self._chunks = {}
             self._cur_chunk_idx = 0
             self._cur_sample_idx = 0
