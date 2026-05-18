@@ -38,13 +38,21 @@ from nav_msgs.msg import OccupancyGrid, Path
 from geometry_msgs.msg import PoseStamped, Point
 from std_msgs.msg import ColorRGBA, Float32MultiArray
 from visualization_msgs.msg import Marker
-from builtin_interfaces.msg import Duration
-from tf2_ros import Buffer, TransformListener, TransformException
+from builtin_interfaces.msg import Duration, Time
+from tf2_ros import (
+    Buffer,
+    ConnectivityException,
+    ExtrapolationException,
+    LookupException,
+    TransformListener,
+    TransformException,
+)
 
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.vector_field import (
     SpeedConfig,
     CutLocusConfig,
+    EarlyExitConfig,
     VectorFieldResult,
     world_to_grid,
     grid_to_world,
@@ -82,6 +90,7 @@ class VectorFieldNode(Node):
         self.frame_cfg = declare_and_load_dataclass(self, FrameConfig())
         self.speed_cfg = declare_and_load_dataclass(self, SpeedConfig())
         self.cutlocus_cfg = declare_and_load_dataclass(self, CutLocusConfig())
+        self.early_exit_cfg = declare_and_load_dataclass(self, EarlyExitConfig())
         self.viz_cfg = declare_and_load_dataclass(self, VizConfig())
 
         if self.speed_cfg.speed_profile not in ("linear", "exponential"):
@@ -201,6 +210,22 @@ class VectorFieldNode(Node):
             self.get_logger().error("Goal cell is inside an obstacle.")
             return False
 
+        robot_col, robot_row = (None, None)
+        robot_pose = self._get_current_pose_2d(self.frame_cfg.map_frame)
+        if robot_pose is not None:
+            rx, ry = robot_pose
+            robot = world_to_grid(
+                rx,
+                ry,
+                info.origin.position.x,
+                info.origin.position.y,
+                info.resolution,
+                info.width,
+                info.height,
+            )
+            if robot is not None:
+                robot_col, robot_row = robot
+
         t0 = time.monotonic()
         outcome = compute_field(
             self.map_array,
@@ -211,8 +236,11 @@ class VectorFieldNode(Node):
             info.origin.position.y,
             self.speed_cfg,
             self.cutlocus_cfg,
-            occupancy_threshold=self.frame_cfg.occupancy_threshold,
-            allow_unknown=self.frame_cfg.allow_unknown,
+            self.early_exit_cfg,
+            robot_col,
+            robot_row,
+            self.frame_cfg.occupancy_threshold,
+            self.frame_cfg.allow_unknown,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
 
@@ -225,6 +253,22 @@ class VectorFieldNode(Node):
         self._field_result, message = outcome
         self.get_logger().info(f"{message}, {elapsed_ms:.1f} ms")
         return True
+
+    def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float]]:
+        """Return (x, y) of robot_frame in frame, or None on TF failure."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                frame, self.frame_cfg.robot_frame, Time()
+            )
+            x = t.transform.translation.x
+            y = t.transform.translation.y
+            return x, y
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(
+                f"TF lookup {self.frame_cfg.robot_frame} -> {frame} failed: {e}",
+                throttle_duration_sec=1.0,
+            )
+            return None
 
     def query_vector(
         self, wx: float, wy: float

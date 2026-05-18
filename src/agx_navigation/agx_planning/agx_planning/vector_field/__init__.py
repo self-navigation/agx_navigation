@@ -2,6 +2,7 @@ from .grid import VectorFieldGrid
 from .field import (
     SpeedConfig,
     CutLocusConfig,
+    EarlyExitConfig,
     VectorFieldResult,
     world_to_grid,
     grid_to_world,
@@ -14,6 +15,7 @@ __all__ = [
     "VectorFieldGrid",
     "SpeedConfig",
     "CutLocusConfig",
+    "EarlyExitConfig",
     "VectorFieldResult",
     "world_to_grid",
     "grid_to_world",
