@@ -59,6 +59,7 @@ import numpy as np
 from builtin_interfaces.msg import Duration as BuiltinDuration
 from geometry_msgs.msg import Point, PoseStamped, Twist, TwistStamped
 from nav_msgs.msg import Path
+from std_msgs.msg import Float64, String
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from rclpy.node import Node
@@ -328,6 +329,12 @@ class TrajectoryCorrectorNode(Node):
 
         self._marker_pub = self.create_publisher(
             MarkerArray, "/pmp_trajectory_corrector/debug_markers", 10
+        )
+        self._deviation_pub = self.create_publisher(
+            Float64, "/pmp_trajectory_corrector/deviation", 10
+        )
+        self._state_pub = self.create_publisher(
+            String, "/pmp_trajectory_corrector/state", 10
         )
 
         # depth=64 matches the planner's ActionServer feedback QoS to avoid
@@ -738,8 +745,13 @@ class TrajectoryCorrectorNode(Node):
             self.destroy_timer(self._tick_timer)
         self._tick_timer = self.create_timer(dt, self._on_tick)
 
+    def _publish_metrics(self, deviation: float) -> None:
+        self._deviation_pub.publish(Float64(data=deviation))
+        self._state_pub.publish(String(data=self._state.name))
+
     def _on_tick(self):
         if self._state == _State.IDLE:
+            self._publish_metrics(0.0)
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], self._planning_frame, None, None)
             return
@@ -777,6 +789,7 @@ class TrajectoryCorrectorNode(Node):
                 rx, ry, _ = pose
                 proj_x, proj_y, _, _, _ = nearest_projection_on_path(rx, ry, path)
                 dist = math.hypot(rx - proj_x, ry - proj_y)
+                self._publish_metrics(dist)
                 if dist > self._corridor_epsilon:
                     if not self._enable_recovery:
                         self.get_logger().warn(
@@ -940,6 +953,7 @@ class TrajectoryCorrectorNode(Node):
             rx, ry, path
         )
         perp_dist = math.hypot(rx - proj_x, ry - proj_y)
+        self._publish_metrics(perp_dist)
         angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
 
         lx, ly, _ = walk_ahead_on_path(
