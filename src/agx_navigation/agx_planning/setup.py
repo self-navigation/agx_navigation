@@ -1,6 +1,10 @@
+import os
 from setuptools import find_packages, setup
 
 package_name = "agx_planning"
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_skfmm_fork = os.path.realpath(os.path.join(_here, "../../../depend/scikit-fmm"))
 
 setup(
     name=package_name,
@@ -12,7 +16,7 @@ setup(
     ],
     install_requires=[
         "setuptools",
-        "scikit-fmm",
+        f"scikit-fmm @ file://{_skfmm_fork}",
         "numpy",
     ],
     zip_safe=True,
