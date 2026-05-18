@@ -439,6 +439,30 @@ class TrajectoryCorrectorNode(Node):
         if len(msg.poses) < 2 or self._goal_in_flight:
             return
 
+        # Wrong-endpoint guard: when the planner has reported success the
+        # remaining buffer shrinks to near-zero arc length, making the spatial
+        # comparison below ineffective (gradient truncated to tiny window,
+        # locally agrees with plan). Directly check the last buffered pose
+        # against the true goal instead.
+        if self._result_received and self._result_success and self._goal_xyth is not None:
+            if self._chunks:
+                last_chunk_idx = max(self._chunks)
+                lc = self._chunks[last_chunk_idx]
+                if lc.pose_x:
+                    ep_dist = math.hypot(
+                        float(lc.pose_x[-1]) - self._goal_xyth[0],
+                        float(lc.pose_y[-1]) - self._goal_xyth[1],
+                    )
+                    if ep_dist > self._path_diff_threshold:
+                        sent = self._send_action_goal()
+                        if sent:
+                            self.get_logger().info(
+                                f"Plan endpoint is {ep_dist:.3f} m from goal "
+                                f"(>{self._path_diff_threshold:.3f} m) with result "
+                                "received; replanning."
+                            )
+                        return
+
         # Parse gradient path into (N, 2).
         gpath = np.array(
             [[p.pose.position.x, p.pose.position.y] for p in msg.poses],
@@ -878,11 +902,38 @@ class TrajectoryCorrectorNode(Node):
         self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
 
         if success:
-            self._goal_xyth = None
-            self._publish_cleared_goal_sentinel()
-            self.get_logger().info(
-                f"Trajectory {traj_id} complete (success). Returning to IDLE."
-            )
+            # Verify the robot actually arrived near the goal before clearing it.
+            # If the planner reported success but the trajectory ended at the wrong
+            # place (e.g. a stale field navigated it to the wrong side of a wall),
+            # retaining the goal lets the next gradient-path update fire a replan
+            # via the initial-fire path instead of leaving the robot stuck.
+            near_goal = True
+            if self._goal_xyth is not None:
+                pose = self._get_current_pose_2d(self._planning_frame)
+                if pose is not None:
+                    rx, ry, _ = pose
+                    dist = math.hypot(
+                        rx - self._goal_xyth[0], ry - self._goal_xyth[1]
+                    )
+                    if dist > self._path_diff_threshold:
+                        near_goal = False
+                        self.get_logger().warn(
+                            f"Trajectory {traj_id} reported success but robot is "
+                            f"{dist:.2f} m from goal "
+                            f"(>{self._path_diff_threshold:.2f} m); "
+                            "retaining goal for replan on next gradient update."
+                        )
+            if near_goal:
+                self._goal_xyth = None
+                self._publish_cleared_goal_sentinel()
+                self.get_logger().info(
+                    f"Trajectory {traj_id} complete (success). Returning to IDLE."
+                )
+            else:
+                self.get_logger().info(
+                    f"Trajectory {traj_id} ended away from goal. "
+                    "Returning to IDLE; will replan on next gradient update."
+                )
         else:
             self.get_logger().info(
                 f"Trajectory {traj_id} ended without success. Returning to IDLE."
