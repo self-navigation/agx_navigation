@@ -288,10 +288,6 @@ class TrajectoryCorrectorNode(Node):
         # The tick handler drains any remaining buffer before going IDLE.
         self._result_received: bool = False
         self._result_success: bool = False
-        # Cumulative (x, y) of every feedback chunk seen for the active
-        # trajectory. Used by _on_gradient_path to compare against the FM2
-        # gradient path and detect when a replan is needed.
-        self._latest_plan_xy: np.ndarray = np.zeros((0, 2), dtype=np.float32)
 
         # ---- Pending-send guard --------------------------------------
         # _pending_send: True from send_goal_async until server ACCEPT/REJECT.
@@ -387,9 +383,9 @@ class TrajectoryCorrectorNode(Node):
         trajectory and re-fire the action goal if they have diverged.
 
         Both paths suffer from message latency: the gradient path is traced
-        from the VF node's TF snapshot at publish time, and _latest_plan_xy
-        grows from chunks committed before the robot's current position. By
-        the time either message is processed here, the robot has moved on.
+        from the VF node's TF snapshot at publish time, and the buffered plan
+        was committed before the robot's current position. By the time either
+        message is processed here, the robot has moved on.
         Both are therefore trimmed symmetrically: find the nearest point on
         each path to the robot's current pose, then advance both by the same
         arc-length skip (path_diff_skip_ahead) before comparing.
@@ -416,8 +412,8 @@ class TrajectoryCorrectorNode(Node):
             of a gradient path message implies the field is live; (re)send
             the action goal. This replaces the old field-arrival initial-fire
             logic and also acts as a retry if the previous send was rejected.
-          - Active trajectory, plan available, result not yet received: run
-            the comparison and replan if either check fires.
+          - Active trajectory, plan available: run the comparison and replan
+            if either check fires.
         """
         if self._goal_xyth is None:
             return
@@ -435,13 +431,9 @@ class TrajectoryCorrectorNode(Node):
 
         # Path comparison: only when we have something to compare against and
         # the trajectory is still in progress. Also skip when a new goal is
-        # already in flight -- the stale _latest_plan_xy from the old
-        # trajectory would produce a misleading comparison.
-        if (
-            self._latest_plan_xy.shape[0] < 2
-            or len(msg.poses) < 2
-            or self._goal_in_flight
-        ):
+        # already in flight -- the buffered plan is stale and would produce a
+        # misleading comparison.
+        if len(msg.poses) < 2 or self._goal_in_flight:
             return
 
         # Parse gradient path into (N, 2).
@@ -459,11 +451,7 @@ class TrajectoryCorrectorNode(Node):
         rx, ry, _ = pose
 
         # Build plan_xy from the CURRENT playback position onward so that
-        # argmin cannot reach back into already-consumed samples. Using
-        # _latest_plan_xy (which starts from the trajectory's first pose)
-        # lets argmin find a past expected position when the robot deviates,
-        # causing future_plan to start near the trajectory's origin rather
-        # than the robot's actual current location.
+        # argmin cannot reach back into already-consumed samples.
         future_path_tuples, _ = self._build_path_polyline()
         if len(future_path_tuples) < 2:
             return
@@ -671,7 +659,6 @@ class TrajectoryCorrectorNode(Node):
             self._cur_sample_idx = 0
             self._result_received = False
             self._result_success = False
-            self._latest_plan_xy = np.zeros((0, 2), dtype=np.float32)
             self._current_traj_start_time = self.get_clock().now()
             self._current_traj_samples_consumed = 0
             if chunk.dt > 0.0 and abs(chunk.dt - self._active_dt) > 1e-6:
@@ -681,17 +668,6 @@ class TrajectoryCorrectorNode(Node):
             return
 
         self._chunks[int(chunk.chunk_index)] = chunk
-
-        if len(chunk.pose_x) > 0:
-            new_xy = np.column_stack(
-                [
-                    np.asarray(chunk.pose_x, dtype=np.float32),
-                    np.asarray(chunk.pose_y, dtype=np.float32),
-                ]
-            )
-            self._latest_plan_xy = np.concatenate(
-                [self._latest_plan_xy, new_xy], axis=0
-            )
 
     def _on_action_result(self, future, expected_gh: ClientGoalHandle):
         wrapped = future.result()
@@ -875,7 +851,6 @@ class TrajectoryCorrectorNode(Node):
         self._cur_sample_idx = 0
         self._result_received = False
         self._result_success = False
-        self._latest_plan_xy = np.zeros((0, 2), dtype=np.float32)
         self._current_traj_samples_consumed = 0
         self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
 
