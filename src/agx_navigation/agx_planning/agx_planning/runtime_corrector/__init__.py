@@ -1,12 +1,19 @@
 from .strategies import RecoveryConfig, default_strategies
-from .corrector import TrajectoryCorrectorNode
+from .corrector import TrajectoryCorrectorNode, CorrectorNodeConfig
 from .config import CorrectorConfig
+from .deviation_detector import DeviationDetector
+from .correction_controller import CorrectionController, CorrectionResult, ExitKind
 
 __all__ = [
     "TrajectoryCorrectorNode",
     "CorrectorConfig",
+    "CorrectorNodeConfig",
     "RecoveryConfig",
     "default_strategies",
+    "DeviationDetector",
+    "CorrectionController",
+    "CorrectionResult",
+    "ExitKind",
 ]
 
 import rclpy
