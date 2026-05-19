@@ -52,6 +52,7 @@ graceful fallback.
 
 import math
 import time
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Dict, Optional
 
@@ -83,9 +84,10 @@ from agx_planning_msgs.action import PlanToGoal
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.runtime_corrector import RecoveryConfig, default_strategies
 from agx_planning.runtime_corrector.config import CorrectorConfig
-from agx_planning.runtime_corrector.geometry import (
-    nearest_projection_on_path,
-    walk_ahead_on_path,
+from agx_planning.runtime_corrector.deviation_detector import DeviationDetector
+from agx_planning.runtime_corrector.correction_controller import (
+    CorrectionController,
+    ExitKind,
 )
 
 _MARKER_NS = "pmp_trajectory_corrector"
@@ -114,51 +116,28 @@ def _advance_by_arc(path_xy: np.ndarray, start: int, distance: float) -> int:
     return len(path_xy) - 1
 
 
-def _path_tangents(path_xy: np.ndarray) -> np.ndarray:
-    """Unit tangent vectors for each point in path_xy (N, 2).
+@dataclass
+class CorrectorNodeConfig:
+    """ROS2 infrastructure parameters for TrajectoryCorrectorNode.
 
-    Uses forward differences for all points, repeating the last tangent
-    at the endpoint. Zero-length segments produce a zero vector (the
-    direction filter will treat them as invalid matches, which is safe).
+    Pure algorithm parameters live in CorrectorConfig (config.py).
     """
-    diffs = np.diff(path_xy, axis=0)  # (N-1, 2)
-    norms = np.hypot(diffs[:, 0], diffs[:, 1])
-    # Avoid division by zero; zero-norm tangents are left as (0, 0).
-    safe = norms > 1e-9
-    unit = np.where(
-        safe[:, np.newaxis], diffs / np.where(safe, norms, 1.0)[:, np.newaxis], 0.0
-    )
-    # Repeat last tangent for the final point.
-    return np.vstack([unit, unit[-1:]])  # (N, 2)
 
-
-def _windowed_max_deviation(
-    deviations: np.ndarray, arc_s: np.ndarray, window_size: float
-) -> float:
-    """Largest per-point deviation found within any arc-length window.
-
-    Uses a two-pointer sweep so the right boundary is never moved backward;
-    total pointer travel is O(N). np.max over the (typically short) window
-    slice is fast enough for N <= 2000 at 5 Hz.
-
-    inf values in deviations (points with no valid directional match)
-    propagate naturally through np.max, so a window containing a genuinely
-    unmatched point always reports inf and triggers a replan.
-    """
-    n = len(deviations)
-    if n == 0:
-        return 0.0
-    best = 0.0
-    right = 0
-    for left in range(n):
-        if right < left:
-            right = left
-        while right + 1 < n and arc_s[right + 1] - arc_s[left] <= window_size:
-            right += 1
-        w_max = float(np.max(deviations[left : right + 1]))
-        if w_max > best:
-            best = w_max
-    return best
+    robot_frame: str = "base_link"
+    planning_frame: str = "map"
+    enable_stamped_cmd_vel: bool = False
+    # Tick-rate fallback used only before the first chunk arrives; after
+    # that we use chunk.dt (whatever rate the planner committed to).
+    default_tick_rate: float = 10.0
+    enable_recovery: bool = True
+    # How long after a replan to suppress further gradient-path replans.
+    replan_cooldown: float = 0.0
+    # Arc-length [m] to skip forward along both paths before comparing.
+    # Avoids transient disagreement at the robot's feet due to message latency.
+    path_diff_skip_ahead: float = 0.0
+    action_name: str = "pmp_planner/plan_to_goal"
+    # How long to wait for the server to ACCEPT a sent goal before retrying.
+    goal_accept_timeout: float = 2.0
 
 
 class _State(Enum):
@@ -171,23 +150,26 @@ class TrajectoryCorrectorNode(Node):
 
     @property
     def _default_dt(self) -> float:
-        return 1.0 / self._cfg.default_tick_rate
+        return 1.0 / self.node_cfg.default_tick_rate
 
     def __init__(self):
         super().__init__("pmp_trajectory_corrector")
 
-        self._cfg = declare_and_load_dataclass(self, CorrectorConfig())
+        self.cfg = declare_and_load_dataclass(self, CorrectorConfig())
+        self.node_cfg = declare_and_load_dataclass(self, CorrectorNodeConfig())
         recovery_cfg = RecoveryConfig(
-            recovery_corridor_epsilon=self._cfg.recovery_corridor_epsilon,
-            recovery_angle_tolerance=self._cfg.recovery_angle_tolerance,
-            look_ahead_distance=self._cfg.recovery_look_ahead,
-            v_max=self._cfg.recovery_v_max,
-            omega_max=self._cfg.recovery_omega_max,
-            K_v=self._cfg.recovery_K_v,
-            K_bearing=self._cfg.recovery_K_bearing,
-            K_theta=self._cfg.recovery_K_theta,
+            recovery_corridor_epsilon=self.cfg.recovery_corridor_epsilon,
+            recovery_angle_tolerance=self.cfg.recovery_angle_tolerance,
+            look_ahead_distance=self.cfg.recovery_look_ahead,
+            v_max=self.cfg.recovery_v_max,
+            omega_max=self.cfg.recovery_omega_max,
+            K_v=self.cfg.recovery_K_v,
+            K_bearing=self.cfg.recovery_K_bearing,
+            K_theta=self.cfg.recovery_K_theta,
         )
         self._recovery_strategies = default_strategies(recovery_cfg)
+        self._detector = DeviationDetector(self.cfg)
+        self._controller = CorrectionController(self.cfg, self._recovery_strategies)
 
         # ---- TF -------------------------------------------------------
         self._tf_buffer = Buffer()
@@ -238,7 +220,7 @@ class TrajectoryCorrectorNode(Node):
 
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
 
-        if self._cfg.enable_stamped_cmd_vel:
+        if self.node_cfg.enable_stamped_cmd_vel:
             self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
         else:
             self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -265,7 +247,7 @@ class TrajectoryCorrectorNode(Node):
         self._action_client = ActionClient(
             self,
             PlanToGoal,
-            self._cfg.action_name,
+            self.node_cfg.action_name,
             feedback_sub_qos_profile=feedback_qos,
         )
 
@@ -274,10 +256,10 @@ class TrajectoryCorrectorNode(Node):
 
         self.get_logger().info(
             f"Trajectory corrector ready (default tick {self._default_dt:.3f} s; "
-            f"corridor_epsilon={self._cfg.corridor_epsilon:.3f} m, "
-            f"recovery_corridor_epsilon={self._cfg.recovery_corridor_epsilon:.3f} m; "
-            f"action '{self._cfg.action_name}'; replan path_diff "
-            f"p{self._cfg.path_diff_percentile:.0f}={self._cfg.path_diff_threshold:.3f} m)."
+            f"corridor_epsilon={self.cfg.corridor_epsilon:.3f} m, "
+            f"recovery_corridor_epsilon={self.cfg.recovery_corridor_epsilon:.3f} m; "
+            f"action '{self.node_cfg.action_name}'; replan path_diff "
+            f"p{self.cfg.path_diff_percentile:.0f}={self.cfg.path_diff_threshold:.3f} m)."
         )
 
     # ----------------------- Goal subscription -----------------------
@@ -374,12 +356,12 @@ class TrajectoryCorrectorNode(Node):
                         float(lc.pose_x[-1]) - self._goal_xyth[0],
                         float(lc.pose_y[-1]) - self._goal_xyth[1],
                     )
-                    if ep_dist > self._cfg.path_diff_threshold:
+                    if ep_dist > self.cfg.path_diff_threshold:
                         sent = self._send_action_goal()
                         if sent:
                             self.get_logger().info(
                                 f"Plan endpoint is {ep_dist:.3f} m from goal "
-                                f"(>{self._cfg.path_diff_threshold:.3f} m) with result "
+                                f"(>{self.cfg.path_diff_threshold:.3f} m) with result "
                                 "received; replanning."
                             )
                         return
@@ -391,7 +373,7 @@ class TrajectoryCorrectorNode(Node):
         )
 
         # One TF lookup for both trims so they share the same reference pose.
-        pose = self._get_current_pose_2d(self._cfg.planning_frame)
+        pose = self._get_current_pose_2d(self.node_cfg.planning_frame)
         if pose is None:
             # Can't determine robot position; skip rather than compare
             # untrimmed paths whose stale heads would bias the result.
@@ -409,11 +391,13 @@ class TrajectoryCorrectorNode(Node):
         )
         grad_start = int(np.argmin((gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2))
 
-        if self._cfg.path_diff_skip_ahead > 0.0:
+        if self.node_cfg.path_diff_skip_ahead > 0.0:
             plan_start = _advance_by_arc(
-                plan_xy, plan_start, self._cfg.path_diff_skip_ahead
+                plan_xy, plan_start, self.node_cfg.path_diff_skip_ahead
             )
-            grad_start = _advance_by_arc(gpath, grad_start, self._cfg.path_diff_skip_ahead)
+            grad_start = _advance_by_arc(
+                gpath, grad_start, self.node_cfg.path_diff_skip_ahead
+            )
 
         future_plan = plan_xy[plan_start:]
         future_grad = gpath[grad_start:]
@@ -448,56 +432,14 @@ class TrajectoryCorrectorNode(Node):
         if future_grad.shape[0] < 2:
             return
 
-        # Squared-distance matrix: (N, M) where N = gradient points, M = plan points.
-        diff = future_grad[:, np.newaxis, :] - future_plan[np.newaxis, :, :]
-        sq_dist = (diff**2).sum(axis=2)  # (N, M)
-
-        if self._cfg.path_diff_min_tangent_dot > -1.0:
-            # Direction-aware matching: reject plan points whose travel
-            # direction is more than acos(min_tangent_dot) from the gradient
-            # direction at the query point. This prevents a U-turn's return
-            # leg from absorbing gradient path points on the outbound leg and
-            # reporting a spuriously small distance.
-            grad_tan = _path_tangents(future_grad)  # (N, 2)
-            plan_tan = _path_tangents(future_plan)  # (M, 2)
-            dot = grad_tan @ plan_tan.T  # (N, M)
-            invalid = dot < self._cfg.path_diff_min_tangent_dot
-            sq_dist = np.where(invalid, np.inf, sq_dist)
-
-        min_sq = sq_dist.min(axis=1)  # (N,)
-        min_dist = np.where(np.isfinite(min_sq), np.sqrt(min_sq), np.inf)
-
-        # --- Check 1: global percentile over finite deviations ---
-        # inf values (no valid directional match) are excluded from the
-        # percentile; the windowed check handles them.
-        finite_mask = np.isfinite(min_dist)
-        pct_val = (
-            float(np.percentile(min_dist[finite_mask], self._cfg.path_diff_percentile))
-            if finite_mask.any()
-            else 0.0
+        should_replan, pct_val, win_val = self._detector.check_gradient_path(
+            future_grad, future_plan
         )
-        pct_triggered = pct_val > self._cfg.path_diff_threshold
+        pct_triggered = pct_val > self.cfg.path_diff_threshold
 
-        # --- Check 2: sliding window maximum ---
-        # Catches short but severe detours that the global percentile dilutes.
-        # inf values propagate naturally through np.max, so a window of
-        # topologically-unmatched points (e.g. the apex of a U-turn the plan
-        # has no segment for) always fires.
-        win_val = 0.0
-        win_triggered = False
-        if self._cfg.path_diff_window_size > 0.0:
-            segs = np.hypot(np.diff(future_grad[:, 0]), np.diff(future_grad[:, 1]))
-            arc_s = np.concatenate([[0.0], np.cumsum(segs)])
-            win_val = _windowed_max_deviation(
-                min_dist, arc_s, self._cfg.path_diff_window_size
-            )
-            win_triggered = win_val > self._cfg.path_diff_threshold
-
-        should_replan = pct_triggered or win_triggered
-
-        if should_replan and self._cfg.replan_cooldown > 0.0:
+        if should_replan and self.node_cfg.replan_cooldown > 0.0:
             now = time.monotonic()
-            if now - self._last_replan_wall_time < self._cfg.replan_cooldown:
+            if now - self._last_replan_wall_time < self.node_cfg.replan_cooldown:
                 should_replan = False
             else:
                 self._last_replan_wall_time = now
@@ -506,13 +448,13 @@ class TrajectoryCorrectorNode(Node):
             sent = self._send_action_goal()
             if sent:
                 reason = (
-                    f"p{self._cfg.path_diff_percentile:.0f}={pct_val:.3f} m"
+                    f"p{self.cfg.path_diff_percentile:.0f}={pct_val:.3f} m"
                     if pct_triggered
-                    else f"window({self._cfg.path_diff_window_size:.1f} m) max={win_val:.3f} m"
+                    else f"window({self.cfg.path_diff_window_size:.1f} m) max={win_val:.3f} m"
                 )
                 self.get_logger().info(
                     f"Gradient path diverged ({reason} > "
-                    f"{self._cfg.path_diff_threshold:.3f} m): replanning."
+                    f"{self.cfg.path_diff_threshold:.3f} m): replanning."
                 )
 
     # ----------------------- Action client ---------------------------
@@ -526,11 +468,11 @@ class TrajectoryCorrectorNode(Node):
 
         if self._pending_send:
             elapsed = time.monotonic() - self._last_send_time
-            if elapsed < self._cfg.goal_accept_timeout:
+            if elapsed < self.node_cfg.goal_accept_timeout:
                 return False
             self.get_logger().warn(
                 f"Goal accept pending for {elapsed:.1f}s "
-                f"(> {self._cfg.goal_accept_timeout:.1f}s timeout); "
+                f"(> {self.node_cfg.goal_accept_timeout:.1f}s timeout); "
                 "retrying with current pose."
             )
 
@@ -543,13 +485,13 @@ class TrajectoryCorrectorNode(Node):
 
         try:
             t = self._tf_buffer.lookup_transform(
-                self._cfg.planning_frame,
-                self._cfg.robot_frame,
+                self.node_cfg.planning_frame,
+                self.node_cfg.robot_frame,
                 Time(),
             )
         except TransformException as e:
             self.get_logger().warn(
-                f"TF {self._cfg.planning_frame}->{self._cfg.robot_frame} unavailable; "
+                f"TF {self.node_cfg.planning_frame}->{self.node_cfg.robot_frame} unavailable; "
                 f"cannot send action goal: {e}",
                 throttle_duration_sec=2.0,
             )
@@ -561,7 +503,7 @@ class TrajectoryCorrectorNode(Node):
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
 
         goal_msg = PlanToGoal.Goal()
-        goal_msg.frame_id = self._cfg.planning_frame
+        goal_msg.frame_id = self.node_cfg.planning_frame
         goal_msg.start_x = float(tx)
         goal_msg.start_y = float(ty)
         goal_msg.start_theta = float(yaw)
@@ -688,7 +630,7 @@ class TrajectoryCorrectorNode(Node):
         if self._state == _State.IDLE:
             self._publish_metrics(0.0)
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], self._cfg.planning_frame, None, None)
+            self._publish_debug_markers([], self.node_cfg.planning_frame, None, None)
             return
 
         if self._state == _State.CORRECTING:
@@ -710,33 +652,31 @@ class TrajectoryCorrectorNode(Node):
             )
             self._current_traj_start_time = self.get_clock().now()
             self._current_traj_samples_consumed = 0
-            self._publish_debug_markers([], self._cfg.planning_frame, None, None)
+            self._publish_debug_markers([], self.node_cfg.planning_frame, None, None)
             return
 
         n = len(cur.linear_x)
 
         # Build path polyline and check corridor once per tick.
         path, mapping = self._build_path_polyline()
-        frame = self._cfg.planning_frame
+        frame = self.node_cfg.planning_frame
         if path:
             pose = self._get_current_pose_2d(frame)
             if pose is not None:
-                rx, ry, _ = pose
-                proj_x, proj_y, _, _, _ = nearest_projection_on_path(rx, ry, path)
-                dist = math.hypot(rx - proj_x, ry - proj_y)
+                deviated, dist = self._detector.check_corridor(pose, path)
                 self._publish_metrics(dist)
-                if dist > self._cfg.corridor_epsilon:
-                    if not self._cfg.enable_recovery:
+                if deviated:
+                    if not self.node_cfg.enable_recovery:
                         self.get_logger().warn(
                             f"Corridor deviation {dist:.3f} m > "
-                            f"{self._cfg.corridor_epsilon:.3f} m; "
+                            f"{self.cfg.corridor_epsilon:.3f} m; "
                             f"recovery disabled, continuing playback.",
                             throttle_duration_sec=1.0,
                         )
                     else:
                         self.get_logger().warn(
                             f"Corridor deviation {dist:.3f} m > "
-                            f"{self._cfg.corridor_epsilon:.3f} m; "
+                            f"{self.cfg.corridor_epsilon:.3f} m; "
                             f"entering recovery."
                         )
                         self._goto_correcting(dist)
@@ -821,16 +761,16 @@ class TrajectoryCorrectorNode(Node):
             # via the initial-fire path instead of leaving the robot stuck.
             near_goal = True
             if self._goal_xyth is not None:
-                pose = self._get_current_pose_2d(self._cfg.planning_frame)
+                pose = self._get_current_pose_2d(self.node_cfg.planning_frame)
                 if pose is not None:
                     rx, ry, _ = pose
                     dist = math.hypot(rx - self._goal_xyth[0], ry - self._goal_xyth[1])
-                    if dist > self._cfg.path_diff_threshold:
+                    if dist > self.cfg.path_diff_threshold:
                         near_goal = False
                         self.get_logger().warn(
                             f"Trajectory {traj_id} reported success but robot is "
                             f"{dist:.2f} m from goal "
-                            f"(>{self._cfg.path_diff_threshold:.2f} m); "
+                            f"(>{self.cfg.path_diff_threshold:.2f} m); "
                             "retaining goal for replan on next gradient update."
                         )
             if near_goal:
@@ -854,12 +794,12 @@ class TrajectoryCorrectorNode(Node):
         self.get_logger().warn(
             f"Trajectory {self._active_traj_id} at chunk {self._cur_chunk_idx}, "
             f"sample {self._cur_sample_idx}: corridor deviation {dist:.3f} m "
-            f"(limit {self._cfg.corridor_epsilon:.3f} m). Suspending playback."
+            f"(limit {self.cfg.corridor_epsilon:.3f} m). Suspending playback."
         )
 
     def _on_correcting_tick(self):
         path, mapping = self._build_path_polyline()
-        frame = self._cfg.planning_frame
+        frame = self.node_cfg.planning_frame
 
         if not path:
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
@@ -872,70 +812,44 @@ class TrajectoryCorrectorNode(Node):
             self._publish_debug_markers(path, frame, None, None)
             return
 
-        rx, ry, rtheta = pose
+        result = self._controller.step(pose, path, self._result_received)
+        self._publish_metrics(result.perp_dist)
 
-        fx, fy, ftheta = path[-1]
-        dx, dy = rx - fx, ry - fy
-
-        if math.hypot(dx, dy) < self._cfg.recovery_corridor_epsilon:
-            self.get_logger().info(
-                f"Within {self._cfg.recovery_corridor_epsilon:.3f} m of trajectory end "
-                f"during recovery. Returning to IDLE."
-            )
+        if result.should_exit:
+            if result.exit_kind == ExitKind.ENDPOINT:
+                self.get_logger().info(
+                    f"Within {self.cfg.recovery_corridor_epsilon:.3f} m of trajectory end "
+                    f"during recovery. Returning to IDLE."
+                )
+            elif result.exit_kind == ExitKind.OVERSHOT:
+                self.get_logger().info(
+                    "Overshot trajectory end during recovery. Returning to IDLE."
+                )
             self._finish_trajectory()
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], frame, None, None)
             return
 
-        overshot = dx * math.cos(ftheta) + dy * math.sin(ftheta) > 0
-        if overshot:
-            if self._result_received:
-                # Result is in -- this was the complete trajectory.
-                self.get_logger().info(
-                    "Overshot trajectory end during recovery. Returning to IDLE."
-                )
-                self._finish_trajectory()
-                self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-                self._publish_debug_markers([], frame, None, None)
-            else:
-                # More chunks are expected; hold until the path extends.
-                self.get_logger().info(
-                    "Overshot end of buffered path during recovery; "
-                    "waiting for next chunk.",
-                    throttle_duration_sec=1.0,
-                )
-                self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-                self._publish_debug_markers(path, frame, None, None)
+        if result.waiting_for_chunks:
+            self.get_logger().info(
+                "Overshot end of buffered path during recovery; "
+                "waiting for next chunk.",
+                throttle_duration_sec=1.0,
+            )
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+            self._publish_debug_markers(path, frame, None, None)
             return
 
-        proj_x, proj_y, proj_theta, seg_idx, t = nearest_projection_on_path(
-            rx, ry, path
-        )
-        perp_dist = math.hypot(rx - proj_x, ry - proj_y)
-        self._publish_metrics(perp_dist)
-        angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
-
-        lx, ly, _ = walk_ahead_on_path(
-            path, seg_idx, t, self._recovery_strategies[0]._cfg.look_ahead_distance
-        )
-
-        exiting = (
-            perp_dist < self._cfg.recovery_corridor_epsilon
-            and angle_err < self._cfg.recovery_angle_tolerance
-        )
         self.get_logger().info(
-            f"Correcting: perp={perp_dist:.3f} m  "
-            f"angle={math.degrees(angle_err):.1f} deg  "
-            f"{'[acceptable -- resuming]' if exiting else '[recovering]'}",
+            f"Correcting: perp={result.perp_dist:.3f} m  "
+            f"{'[acceptable -- resuming]' if result.snap_index is not None else '[recovering]'}",
             throttle_duration_sec=0.5,
         )
 
-        if exiting:
-            snap_idx = seg_idx if t <= 0.5 else min(seg_idx + 1, len(mapping) - 1)
-            chunk_idx, sample_idx = mapping[snap_idx]
+        if result.snap_index is not None:
+            chunk_idx, sample_idx = mapping[result.snap_index]
             self.get_logger().info(
-                f"Pose recovered (perp={perp_dist:.3f} m, "
-                f"angle={math.degrees(angle_err):.1f} deg). "
+                f"Pose recovered (perp={result.perp_dist:.3f} m). "
                 f"Resuming at chunk {chunk_idx}, sample {sample_idx}."
             )
             self._cur_chunk_idx = chunk_idx
@@ -943,27 +857,17 @@ class TrajectoryCorrectorNode(Node):
             self._current_traj_start_time = self.get_clock().now()
             self._current_traj_samples_consumed = 0
             self._state = _State.PLAYING
-            self._publish_debug_markers(path, frame, (proj_x, proj_y), (lx, ly))
+            self._publish_debug_markers(path, frame, result.proj, result.carrot)
             return
 
-        for strategy in self._recovery_strategies:
-            if strategy.can_handle(pose, path):
-                v, omega = strategy.compute_twist(pose, path)
-                self.get_logger().info(
-                    f"{strategy.__class__.__name__}: "
-                    f"v={v:.3f} m/s  omega={omega:.3f} rad/s",
-                    throttle_duration_sec=0.5,
-                )
-                self._publish_twist(v, omega, self.get_clock().now().to_msg())
-                self._publish_debug_markers(path, frame, (proj_x, proj_y), (lx, ly))
-                return
-
-        self.get_logger().warn(
-            "No recovery strategy matched -- holding.",
-            throttle_duration_sec=1.0,
-        )
-        self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-        self._publish_debug_markers(path, frame, (proj_x, proj_y), (lx, ly))
+        v, omega = result.twist if result.twist is not None else (0.0, 0.0)
+        if result.twist is None:
+            self.get_logger().warn(
+                "No recovery strategy matched -- holding.",
+                throttle_duration_sec=1.0,
+            )
+        self._publish_twist(v, omega, self.get_clock().now().to_msg())
+        self._publish_debug_markers(path, frame, result.proj, result.carrot)
 
     # ----------------------- Path helpers ----------------------------------
 
@@ -999,7 +903,7 @@ class TrajectoryCorrectorNode(Node):
     def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float, float]]:
         """Return (x, y, theta) of robot_frame in frame, or None on TF failure."""
         try:
-            t = self._tf_buffer.lookup_transform(frame, self._cfg.robot_frame, Time())
+            t = self._tf_buffer.lookup_transform(frame, self.node_cfg.robot_frame, Time())
             x = t.transform.translation.x
             y = t.transform.translation.y
             q = t.transform.rotation
@@ -1010,7 +914,7 @@ class TrajectoryCorrectorNode(Node):
             return x, y, theta
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
             self.get_logger().warn(
-                f"TF lookup {self._cfg.robot_frame} -> {frame} failed: {e}",
+                f"TF lookup {self.node_cfg.robot_frame} -> {frame} failed: {e}",
                 throttle_duration_sec=1.0,
             )
             return None
@@ -1056,7 +960,7 @@ class TrajectoryCorrectorNode(Node):
         # -- 1: corridor tube (thick semi-transparent LINE_STRIP) --
         if path:
             m = _make(1, Marker.LINE_STRIP, namespace="corridor")
-            m.scale.x = 2.0 * self._cfg.corridor_epsilon
+            m.scale.x = 2.0 * self.cfg.corridor_epsilon
             m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.4, 1.0, 0.2
             m.points = [Point(x=x, y=y, z=0.0) for x, y, _ in path]
             markers.markers.append(m)
@@ -1136,10 +1040,10 @@ class TrajectoryCorrectorNode(Node):
         self._goal_pub.publish(sentinel)
 
     def _publish_twist(self, v: float, omega: float, stamp):
-        if self._cfg.enable_stamped_cmd_vel:
+        if self.node_cfg.enable_stamped_cmd_vel:
             msg = TwistStamped()
             msg.header.stamp = stamp
-            msg.header.frame_id = self._cfg.robot_frame
+            msg.header.frame_id = self.node_cfg.robot_frame
             msg.twist.linear.x = v
             msg.twist.angular.z = omega
         else:
