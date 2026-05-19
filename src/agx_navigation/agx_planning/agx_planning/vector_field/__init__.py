@@ -1,3 +1,5 @@
+import importlib.util
+
 from .grid import VectorFieldGrid
 from .field import (
     SpeedConfig,
@@ -9,7 +11,6 @@ from .field import (
     compute_field,
     pack_field_array,
 )
-from .node import VectorFieldNode
 
 __all__ = [
     "VectorFieldGrid",
@@ -21,24 +22,27 @@ __all__ = [
     "grid_to_world",
     "compute_field",
     "pack_field_array",
-    "VectorFieldNode",
 ]
 
+ROS2_AVAILABLE = importlib.util.find_spec("rclpy") is not None
 
-import rclpy
+if ROS2_AVAILABLE:
+    import rclpy
+    from .node import VectorFieldNode
 
+    __all__.append("VectorFieldNode")
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = VectorFieldNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    def main(args=None):
 
+        rclpy.init(args=args)
+        node = VectorFieldNode()
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
 
-if __name__ == "__main__":
-    main()
+    if __name__ == "__main__":
+        main()
