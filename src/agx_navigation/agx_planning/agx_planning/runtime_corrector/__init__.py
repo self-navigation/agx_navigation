@@ -1,8 +1,10 @@
 from .strategies import RecoveryConfig, default_strategies
 from .corrector import TrajectoryCorrectorNode
+from .config import CorrectorConfig
 
 __all__ = [
     "TrajectoryCorrectorNode",
+    "CorrectorConfig",
     "RecoveryConfig",
     "default_strategies",
 ]
