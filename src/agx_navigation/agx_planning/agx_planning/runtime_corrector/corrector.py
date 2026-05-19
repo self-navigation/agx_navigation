@@ -53,15 +53,13 @@ graceful fallback.
 import math
 import time
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Dict, Optional
+from typing import Optional
 
 import rclpy
 
 import numpy as np
 
-from builtin_interfaces.msg import Duration as BuiltinDuration
-from geometry_msgs.msg import Point, PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Float64, String
 from rclpy.action import ActionClient
@@ -78,42 +76,25 @@ from tf2_ros import (
     TransformException,
 )
 from tf_transformations import euler_from_quaternion
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import MarkerArray
 
 from agx_planning_msgs.action import PlanToGoal
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.runtime_corrector import RecoveryConfig, default_strategies
 from agx_planning.runtime_corrector.config import CorrectorConfig
+from agx_planning.runtime_corrector.geometry import advance_by_arc
 from agx_planning.runtime_corrector.deviation_detector import DeviationDetector
 from agx_planning.runtime_corrector.correction_controller import (
     CorrectionController,
     ExitKind,
 )
-
-_MARKER_NS = "pmp_trajectory_corrector"
-_MARKER_LIFETIME = BuiltinDuration(sec=1, nanosec=0)
-
+from agx_planning.runtime_corrector.visualization import TrajectoryVisualizer
+from agx_planning.runtime_corrector.trajectory_buffer import TrajectoryBuffer
+from agx_planning.runtime_corrector.strategies import State
 
 # ---------------------------------------------------------------------------
 # Corrector node
 # ---------------------------------------------------------------------------
-
-
-def _advance_by_arc(path_xy: np.ndarray, start: int, distance: float) -> int:
-    """Return the index in path_xy that is at least `distance` metres of
-    cumulative arc length ahead of `start`. Returns the last valid index
-    if the path is shorter than `distance`.
-    """
-    acc = 0.0
-    for i in range(start, len(path_xy) - 1):
-        acc += float(
-            np.hypot(
-                path_xy[i + 1, 0] - path_xy[i, 0], path_xy[i + 1, 1] - path_xy[i, 1]
-            )
-        )
-        if acc >= distance:
-            return i + 1
-    return len(path_xy) - 1
 
 
 @dataclass
@@ -138,12 +119,6 @@ class CorrectorNodeConfig:
     action_name: str = "pmp_planner/plan_to_goal"
     # How long to wait for the server to ACCEPT a sent goal before retrying.
     goal_accept_timeout: float = 2.0
-
-
-class _State(Enum):
-    IDLE = auto()
-    PLAYING = auto()
-    CORRECTING = auto()
 
 
 class TrajectoryCorrectorNode(Node):
@@ -176,20 +151,10 @@ class TrajectoryCorrectorNode(Node):
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # ---- Playback state ------------------------------------------
-        self._state: _State = _State.IDLE
-        # Trajectory currently being played/corrected; -1 means IDLE.
-        self._active_traj_id: int = -1
-        # chunk_index -> feedback message, for the active trajectory only.
-        self._chunks: Dict[int, "PlanToGoal.Feedback"] = {}
-        self._cur_chunk_idx: int = 0
-        self._cur_sample_idx: int = 0
-        self._active_dt: float = self._default_dt
+        self._state: State = State.IDLE
+        self._buf = TrajectoryBuffer(self._default_dt)
+        # ROS2 timestamp of when playback timing started; reset on hold/snap.
         self._current_traj_start_time: Time = self.get_clock().now()
-        self._current_traj_samples_consumed: int = 0
-        # Set when the action result for the active trajectory arrives.
-        # The tick handler drains any remaining buffer before going IDLE.
-        self._result_received: bool = False
-        self._result_success: bool = False
 
         # ---- Pending-send guard --------------------------------------
         # _pending_send: True from send_goal_async until server ACCEPT/REJECT.
@@ -228,6 +193,7 @@ class TrajectoryCorrectorNode(Node):
         self._marker_pub = self.create_publisher(
             MarkerArray, "/pmp_trajectory_corrector/debug_markers", 10
         )
+        self._visualizer = TrajectoryVisualizer(self._marker_pub, self.cfg)
         self._deviation_pub = self.create_publisher(
             Float64, "/pmp_trajectory_corrector/deviation", 10
         )
@@ -322,7 +288,7 @@ class TrajectoryCorrectorNode(Node):
 
         # Initial fire / retry: no trajectory running and we are not already
         # waiting on an accept from the server.
-        if self._active_traj_id < 0 and not self._goal_in_flight:
+        if self._buf.active_traj_id < 0 and not self._goal_in_flight:
             sent = self._send_action_goal()
             if sent:
                 self.get_logger().info(
@@ -344,27 +310,25 @@ class TrajectoryCorrectorNode(Node):
         # locally agrees with plan). Directly check the last buffered pose
         # against the true goal instead.
         if (
-            self._result_received
-            and self._result_success
+            self._buf.result_received
+            and self._buf.result_success
             and self._goal_xyth is not None
         ):
-            if self._chunks:
-                last_chunk_idx = max(self._chunks)
-                lc = self._chunks[last_chunk_idx]
-                if lc.pose_x:
-                    ep_dist = math.hypot(
-                        float(lc.pose_x[-1]) - self._goal_xyth[0],
-                        float(lc.pose_y[-1]) - self._goal_xyth[1],
-                    )
-                    if ep_dist > self.cfg.path_diff_threshold:
-                        sent = self._send_action_goal()
-                        if sent:
-                            self.get_logger().info(
-                                f"Plan endpoint is {ep_dist:.3f} m from goal "
-                                f"(>{self.cfg.path_diff_threshold:.3f} m) with result "
-                                "received; replanning."
-                            )
-                        return
+            ep = self._buf.last_endpoint()
+            if ep is not None:
+                ep_dist = math.hypot(
+                    ep[0] - self._goal_xyth[0],
+                    ep[1] - self._goal_xyth[1],
+                )
+                if ep_dist > self.cfg.path_diff_threshold:
+                    sent = self._send_action_goal()
+                    if sent:
+                        self.get_logger().info(
+                            f"Plan endpoint is {ep_dist:.3f} m from goal "
+                            f"(>{self.cfg.path_diff_threshold:.3f} m) with result "
+                            "received; replanning."
+                        )
+                    return
 
         # Parse gradient path into (N, 2).
         gpath = np.array(
@@ -382,7 +346,7 @@ class TrajectoryCorrectorNode(Node):
 
         # Build plan_xy from the CURRENT playback position onward so that
         # argmin cannot reach back into already-consumed samples.
-        future_path_tuples, _ = self._build_path_polyline()
+        future_path_tuples, _ = self._buf.build_polyline()
         if len(future_path_tuples) < 2:
             return
         plan_xy = np.array([[x, y] for x, y, _ in future_path_tuples], dtype=np.float64)
@@ -392,10 +356,10 @@ class TrajectoryCorrectorNode(Node):
         grad_start = int(np.argmin((gpath[:, 0] - rx) ** 2 + (gpath[:, 1] - ry) ** 2))
 
         if self.node_cfg.path_diff_skip_ahead > 0.0:
-            plan_start = _advance_by_arc(
+            plan_start = advance_by_arc(
                 plan_xy, plan_start, self.node_cfg.path_diff_skip_ahead
             )
-            grad_start = _advance_by_arc(
+            grad_start = advance_by_arc(
                 gpath, grad_start, self.node_cfg.path_diff_skip_ahead
             )
 
@@ -547,28 +511,23 @@ class TrajectoryCorrectorNode(Node):
         chunk = fb_msg.feedback
         traj_id = int(chunk.trajectory_id)
 
-        if traj_id > self._active_traj_id:
+        if traj_id > self._buf.active_traj_id:
             self.get_logger().info(
-                f"Switching to trajectory {traj_id} (was {self._active_traj_id}): "
+                f"Switching to trajectory {traj_id} (was {self._buf.active_traj_id}): "
                 "entering alignment correction before playback."
             )
             self._goal_in_flight = False
-            self._active_traj_id = traj_id
-            self._state = _State.CORRECTING
-            self._chunks = {}
-            self._cur_chunk_idx = 0
-            self._cur_sample_idx = 0
-            self._result_received = False
-            self._result_success = False
+            old_dt = self._buf.active_dt
+            new_dt = float(chunk.dt) if chunk.dt > 0.0 else old_dt
+            self._buf.reset(traj_id, new_dt)
+            self._state = State.CORRECTING
             self._current_traj_start_time = self.get_clock().now()
-            self._current_traj_samples_consumed = 0
-            if chunk.dt > 0.0 and abs(chunk.dt - self._active_dt) > 1e-6:
-                self._active_dt = float(chunk.dt)
-                self._ensure_tick_timer(self._active_dt)
-        elif traj_id < self._active_traj_id:
+            if abs(new_dt - old_dt) > 1e-6:
+                self._ensure_tick_timer(new_dt)
+        elif traj_id < self._buf.active_traj_id:
             return
 
-        self._chunks[int(chunk.chunk_index)] = chunk
+        self._buf.add_chunk(int(chunk.chunk_index), chunk)
 
     def _on_action_result(self, future, expected_gh: ClientGoalHandle):
         wrapped = future.result()
@@ -591,9 +550,8 @@ class TrajectoryCorrectorNode(Node):
                 self._goal_in_flight = False
             return
 
-        if traj_id == self._active_traj_id:
-            self._result_received = True
-            self._result_success = bool(result.success)
+        if traj_id == self._buf.active_traj_id:
+            self._buf.mark_result(bool(result.success))
             # Let the tick handler drain whatever chunks are already buffered
             # before transitioning to IDLE. On abort this keeps the chassis
             # moving along the last known plan until either the buffer runs out
@@ -603,7 +561,7 @@ class TrajectoryCorrectorNode(Node):
         # No feedback was ever received for this goal (chassis already at
         # goal, or aborted before first chunk). Clear _goal_in_flight only
         # if this is still the latest accepted goal.
-        if self._active_traj_id < 0:
+        if self._buf.active_traj_id < 0:
             if expected_gh is self._latest_goal_handle:
                 self._goal_in_flight = False
             if bool(result.success):
@@ -627,39 +585,21 @@ class TrajectoryCorrectorNode(Node):
         self._state_pub.publish(String(data=self._state.name))
 
     def _on_tick(self):
-        if self._state == _State.IDLE:
+        if self._state == State.IDLE:
             self._publish_metrics(0.0)
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], self.node_cfg.planning_frame, None, None)
             return
 
-        if self._state == _State.CORRECTING:
+        if self._state == State.CORRECTING:
             self._on_correcting_tick()
             return
 
         # PLAYING ------------------------------------------------------------
 
-        cur = self._chunks.get(self._cur_chunk_idx)
-        if cur is None:
-            if self._result_received and self._chunks_exhausted():
-                self._finish_trajectory()
-                return
-            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self.get_logger().warn(
-                f"Chunk {self._cur_chunk_idx} of trajectory "
-                f"{self._active_traj_id} not yet received; holding.",
-                throttle_duration_sec=1.0,
-            )
-            self._current_traj_start_time = self.get_clock().now()
-            self._current_traj_samples_consumed = 0
-            self._publish_debug_markers([], self.node_cfg.planning_frame, None, None)
-            return
-
-        n = len(cur.linear_x)
-
-        # Build path polyline and check corridor once per tick.
-        path, mapping = self._build_path_polyline()
+        path, mapping = self._buf.build_polyline()
         frame = self.node_cfg.planning_frame
+
         if path:
             pose = self._get_current_pose_2d(frame)
             if pose is not None:
@@ -684,73 +624,40 @@ class TrajectoryCorrectorNode(Node):
                         self._publish_debug_markers(path, frame, None, None)
                         return
 
-        # Consume one sample.
-        if self._cur_sample_idx < n:
-            v = float(cur.linear_x[self._cur_sample_idx])
-            w = float(cur.angular_z[self._cur_sample_idx])
-            due = self._current_traj_start_time + Duration(
-                nanoseconds=int(
-                    self._current_traj_samples_consumed * self._active_dt * 1e9
-                )
-            )
-            self._publish_twist(v, w, due.to_msg())
-            self._publish_debug_markers(path, frame, None, None)
-            self._current_traj_samples_consumed += 1
-            self._cur_sample_idx += 1
-            return
+        sample = self._buf.advance()
 
-        # Chunk exhausted. Drop it from the buffer and advance.
-        del self._chunks[self._cur_chunk_idx]
-        self._cur_chunk_idx += 1
-        self._cur_sample_idx = 0
-
-        if self._result_received and self._chunks_exhausted():
-            self._finish_trajectory()
-            return
-
-        # Try to consume the first sample of the next chunk on this same tick.
-        nxt = self._chunks.get(self._cur_chunk_idx)
-        if nxt is not None and len(nxt.linear_x) > 0:
-            v = float(nxt.linear_x[0])
-            w = float(nxt.angular_z[0])
-            due = self._current_traj_start_time + Duration(
-                nanoseconds=int(
-                    self._current_traj_samples_consumed * self._active_dt * 1e9
-                )
-            )
-            self._publish_twist(v, w, due.to_msg())
-            self._publish_debug_markers(path, frame, None, None)
-            self._current_traj_samples_consumed += 1
-            self._cur_sample_idx = 1
-        else:
+        if sample is None:
+            if self._buf.is_done():
+                self._finish_trajectory()
+                return
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self.get_logger().warn(
-                f"Chunk {self._cur_chunk_idx} (which is meant to be received after "
-                f"the current one) of trajectory {self._active_traj_id} not yet "
-                f"received; holding.",
+                f"Chunk {self._buf.cur_chunk_idx} of trajectory "
+                f"{self._buf.active_traj_id} not yet received; holding.",
                 throttle_duration_sec=1.0,
             )
-            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers(path, frame, None, None)
+            self._buf.reset_timing()
             self._current_traj_start_time = self.get_clock().now()
-            self._current_traj_samples_consumed = 0
+            self._publish_debug_markers([], frame, None, None)
+            return
 
-    def _chunks_exhausted(self) -> bool:
-        return not self._chunks
+        due = self._current_traj_start_time + Duration(
+            nanoseconds=int(sample.samples_consumed * self._buf.active_dt * 1e9)
+        )
+        self._publish_twist(sample.v, sample.omega, due.to_msg())
+        self._publish_debug_markers(path, frame, None, None)
+
+        if self._buf.is_done():
+            self._finish_trajectory()
 
     def _finish_trajectory(self):
         """Transition to IDLE. On success, clear the goal and signal completion."""
-        success = self._result_success
-        traj_id = self._active_traj_id
+        success = self._buf.result_success
+        traj_id = self._buf.active_traj_id
 
-        self._state = _State.IDLE
-        self._active_traj_id = -1
+        self._state = State.IDLE
         self._goal_in_flight = False
-        self._chunks.clear()
-        self._cur_chunk_idx = 0
-        self._cur_sample_idx = 0
-        self._result_received = False
-        self._result_success = False
-        self._current_traj_samples_consumed = 0
+        self._buf.clear()
         self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
 
         if success:
@@ -790,15 +697,15 @@ class TrajectoryCorrectorNode(Node):
             )
 
     def _goto_correcting(self, dist: float):
-        self._state = _State.CORRECTING
+        self._state = State.CORRECTING
         self.get_logger().warn(
-            f"Trajectory {self._active_traj_id} at chunk {self._cur_chunk_idx}, "
-            f"sample {self._cur_sample_idx}: corridor deviation {dist:.3f} m "
+            f"Trajectory {self._buf.active_traj_id} at chunk {self._buf.cur_chunk_idx}, "
+            f"sample {self._buf.cur_sample_idx}: corridor deviation {dist:.3f} m "
             f"(limit {self.cfg.corridor_epsilon:.3f} m). Suspending playback."
         )
 
     def _on_correcting_tick(self):
-        path, mapping = self._build_path_polyline()
+        path, mapping = self._buf.build_polyline()
         frame = self.node_cfg.planning_frame
 
         if not path:
@@ -812,7 +719,7 @@ class TrajectoryCorrectorNode(Node):
             self._publish_debug_markers(path, frame, None, None)
             return
 
-        result = self._controller.step(pose, path, self._result_received)
+        result = self._controller.step(pose, path, self._buf.result_received)
         self._publish_metrics(result.perp_dist)
 
         if result.should_exit:
@@ -852,11 +759,9 @@ class TrajectoryCorrectorNode(Node):
                 f"Pose recovered (perp={result.perp_dist:.3f} m). "
                 f"Resuming at chunk {chunk_idx}, sample {sample_idx}."
             )
-            self._cur_chunk_idx = chunk_idx
-            self._cur_sample_idx = sample_idx
+            self._buf.snap_to(chunk_idx, sample_idx)
             self._current_traj_start_time = self.get_clock().now()
-            self._current_traj_samples_consumed = 0
-            self._state = _State.PLAYING
+            self._state = State.PLAYING
             self._publish_debug_markers(path, frame, result.proj, result.carrot)
             return
 
@@ -869,41 +774,14 @@ class TrajectoryCorrectorNode(Node):
         self._publish_twist(v, omega, self.get_clock().now().to_msg())
         self._publish_debug_markers(path, frame, result.proj, result.carrot)
 
-    # ----------------------- Path helpers ----------------------------------
-
-    def _build_path_polyline(
-        self,
-    ) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:
-        """Build an ordered path polyline from all buffered chunks.
-
-        Returns:
-          path    -- list of (x, y, theta) poses in trajectory order, starting
-                     from the current playback position.
-          mapping -- parallel list of (chunk_idx, sample_idx) for each point,
-                     used to snap playback position after recovery.
-        """
-        path: list[tuple[float, float, float]] = []
-        mapping: list[tuple[int, int]] = []
-        for chunk_idx in sorted(self._chunks):
-            chunk = self._chunks[chunk_idx]
-            start = self._cur_sample_idx if chunk_idx == self._cur_chunk_idx else 0
-            for sample_idx in range(start, len(chunk.pose_x)):
-                path.append(
-                    (
-                        float(chunk.pose_x[sample_idx]),
-                        float(chunk.pose_y[sample_idx]),
-                        float(chunk.pose_theta[sample_idx]),
-                    )
-                )
-                mapping.append((chunk_idx, sample_idx))
-        return path, mapping
-
     # ----------------------- Pose lookup -----------------------------------
 
     def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float, float]]:
         """Return (x, y, theta) of robot_frame in frame, or None on TF failure."""
         try:
-            t = self._tf_buffer.lookup_transform(frame, self.node_cfg.robot_frame, Time())
+            t = self._tf_buffer.lookup_transform(
+                frame, self.node_cfg.robot_frame, Time()
+            )
             x = t.transform.translation.x
             y = t.transform.translation.y
             q = t.transform.rotation
@@ -928,108 +806,15 @@ class TrajectoryCorrectorNode(Node):
         proj: Optional[tuple[float, float]],
         carrot: Optional[tuple[float, float]],
     ) -> None:
-        now = self.get_clock().now().to_msg()
-        markers = MarkerArray()
-
-        def _make(
-            mid: int, mtype: int, action: int = Marker.ADD, namespace: str = _MARKER_NS
-        ) -> Marker:
-            m = Marker()
-            m.header.stamp = now
-            m.header.frame_id = frame
-            m.ns = namespace
-            m.id = mid
-            m.type = mtype
-            m.action = action
-            m.lifetime = _MARKER_LIFETIME
-            m.pose.orientation.w = 1.0
-            return m
-
-        # -- 0: path centerline (thin blue LINE_STRIP) --
-        if path:
-            m = _make(0, Marker.LINE_STRIP, namespace="centerline")
-            m.scale.x = 0.02
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.4, 1.0, 1.0
-            m.points = [Point(x=x, y=y, z=0.0) for x, y, _ in path]
-            markers.markers.append(m)
-        else:
-            markers.markers.append(
-                _make(0, Marker.LINE_STRIP, Marker.DELETE, namespace="centerline")
-            )
-
-        # -- 1: corridor tube (thick semi-transparent LINE_STRIP) --
-        if path:
-            m = _make(1, Marker.LINE_STRIP, namespace="corridor")
-            m.scale.x = 2.0 * self.cfg.corridor_epsilon
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.4, 1.0, 0.2
-            m.points = [Point(x=x, y=y, z=0.0) for x, y, _ in path]
-            markers.markers.append(m)
-        else:
-            markers.markers.append(
-                _make(1, Marker.LINE_STRIP, Marker.DELETE, namespace="corridor")
-            )
-
-        # -- 2: nearest projection point (yellow sphere) --
-        if proj is not None:
-            m = _make(2, Marker.SPHERE, namespace="projection")
-            m.pose.position.x, m.pose.position.y = proj[0], proj[1]
-            m.scale.x = m.scale.y = m.scale.z = 0.15
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 0.0, 1.0
-            markers.markers.append(m)
-        else:
-            markers.markers.append(
-                _make(2, Marker.SPHERE, Marker.DELETE, namespace="projection")
-            )
-
-        # -- 3: look-ahead carrot (green sphere) --
-        if carrot is not None:
-            m = _make(3, Marker.SPHERE, namespace="carrot")
-            m.pose.position.x, m.pose.position.y = carrot[0], carrot[1]
-            m.scale.x = m.scale.y = m.scale.z = 0.2
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 1.0, 0.0, 1.0
-            markers.markers.append(m)
-        else:
-            markers.markers.append(
-                _make(3, Marker.SPHERE, Marker.DELETE, namespace="carrot")
-            )
-
-        # -- 4: look-ahead arrow (projection → carrot) --
-        if proj is not None and carrot is not None:
-            m = _make(4, Marker.ARROW, namespace="lookahead")
-            m.points = [
-                Point(x=proj[0], y=proj[1], z=0.0),
-                Point(x=carrot[0], y=carrot[1], z=0.0),
-            ]
-            m.scale.x = 0.04
-            m.scale.y = 0.08
-            m.scale.z = 0.10
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.0, 0.8, 0.4, 1.0
-            markers.markers.append(m)
-        else:
-            markers.markers.append(
-                _make(4, Marker.ARROW, Marker.DELETE, namespace="lookahead")
-            )
-
-        # -- 5: state text above robot (colour-coded) --
-        robot_pose = self._get_current_pose_2d(frame)
-        m = _make(5, Marker.TEXT_VIEW_FACING, namespace="state")
-        if robot_pose is not None:
-            m.pose.position.x = robot_pose[0]
-            m.pose.position.y = robot_pose[1]
-            m.pose.position.z = 0.5
-        m.scale.z = 0.3
-        if self._state == _State.IDLE:
-            m.text = "IDLE"
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.7, 0.7, 0.7, 1.0
-        elif self._state == _State.PLAYING:
-            m.text = "PLAY"
-            m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 1.0, 0.2, 1.0
-        else:
-            m.text = "FIX"
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 1.0
-        markers.markers.append(m)
-
-        self._marker_pub.publish(markers)
+        self._visualizer.publish(
+            path=path,
+            frame=frame,
+            proj=proj,
+            carrot=carrot,
+            state=self._state,
+            robot_pose=self._get_current_pose_2d(frame),
+            stamp=self.get_clock().now().to_msg(),
+        )
 
     # ----------------------- Publishing ------------------------------------
 

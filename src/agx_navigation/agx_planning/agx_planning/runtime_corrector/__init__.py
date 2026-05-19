@@ -3,6 +3,8 @@ from .corrector import TrajectoryCorrectorNode, CorrectorNodeConfig
 from .config import CorrectorConfig
 from .deviation_detector import DeviationDetector
 from .correction_controller import CorrectionController, CorrectionResult, ExitKind
+from .visualization import TrajectoryVisualizer
+from .trajectory_buffer import TrajectoryBuffer, PlaybackSample
 
 __all__ = [
     "TrajectoryCorrectorNode",
@@ -14,6 +16,9 @@ __all__ = [
     "CorrectionController",
     "CorrectionResult",
     "ExitKind",
+    "TrajectoryVisualizer",
+    "TrajectoryBuffer",
+    "PlaybackSample",
 ]
 
 import rclpy

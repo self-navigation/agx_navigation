@@ -2,6 +2,25 @@
 
 import math
 
+import numpy as np
+
+
+def advance_by_arc(path_xy: np.ndarray, start: int, distance: float) -> int:
+    """Return the index in path_xy that is at least `distance` metres of
+    cumulative arc length ahead of `start`. Returns the last valid index
+    if the path is shorter than `distance`.
+    """
+    acc = 0.0
+    for i in range(start, len(path_xy) - 1):
+        acc += float(
+            np.hypot(
+                path_xy[i + 1, 0] - path_xy[i, 0], path_xy[i + 1, 1] - path_xy[i, 1]
+            )
+        )
+        if acc >= distance:
+            return i + 1
+    return len(path_xy) - 1
+
 
 def project_onto_segment(
     px: float,
