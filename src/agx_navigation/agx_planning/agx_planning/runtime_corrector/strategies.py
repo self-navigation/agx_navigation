@@ -7,6 +7,7 @@ as an ordered list of poses from the playback position, and do their own
 projection and look-ahead. Put more specific strategies earlier in the list.
 """
 
+from enum import Enum, auto
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -15,6 +16,12 @@ from agx_planning.runtime_corrector.geometry import (
     nearest_projection_on_path,
     walk_ahead_on_path,
 )
+
+
+class State(Enum):
+    IDLE = auto()
+    PLAYING = auto()
+    CORRECTING = auto()
 
 
 def _clamp(value: float, limit: float) -> float:
@@ -117,7 +124,9 @@ class LookAheadPursuitStrategy(RecoveryStrategy):
             return False
         rx, ry, _ = current
         proj_x, proj_y, _, _, _ = nearest_projection_on_path(rx, ry, path)
-        return math.hypot(rx - proj_x, ry - proj_y) > self._cfg.recovery_corridor_epsilon
+        return (
+            math.hypot(rx - proj_x, ry - proj_y) > self._cfg.recovery_corridor_epsilon
+        )
 
     def compute_twist(
         self,
