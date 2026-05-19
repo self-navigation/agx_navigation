@@ -18,6 +18,7 @@ setup(
         "setuptools",
         f"scikit-fmm @ file://{_skfmm_fork}",
         "numpy",
+        "scipy",
     ],
     zip_safe=True,
     maintainer="agilex",
