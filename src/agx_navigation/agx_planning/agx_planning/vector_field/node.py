@@ -50,9 +50,7 @@ from tf2_ros import (
 
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.vector_field import (
-    SpeedConfig,
-    CutLocusConfig,
-    EarlyExitConfig,
+    VectorFieldConfig,
     VectorFieldResult,
     world_to_grid,
     grid_to_world,
@@ -62,15 +60,11 @@ from agx_planning.vector_field import (
 
 
 @dataclass
-class FrameConfig:
+class NodeConfig:
     map_frame: str = "map"
     robot_frame: str = "base_link"
     occupancy_threshold: int = 65
     allow_unknown: bool = False
-
-
-@dataclass
-class VizConfig:
     viz_subsample: int = 4
     viz_arrow_length: float = 0.3  # [m]; max arrow length
     viz_scale_arrows: bool = True  # scale by |grad T|
@@ -87,19 +81,16 @@ class VectorFieldNode(Node):
     def __init__(self):
         super().__init__("vector_field")
 
-        self.frame_cfg = declare_and_load_dataclass(self, FrameConfig())
-        self.speed_cfg = declare_and_load_dataclass(self, SpeedConfig())
-        self.cutlocus_cfg = declare_and_load_dataclass(self, CutLocusConfig())
-        self.early_exit_cfg = declare_and_load_dataclass(self, EarlyExitConfig())
-        self.viz_cfg = declare_and_load_dataclass(self, VizConfig())
+        self.node_cfg = declare_and_load_dataclass(self, NodeConfig())
+        self.field_cfg = declare_and_load_dataclass(self, VectorFieldConfig())
 
-        if self.speed_cfg.speed_profile not in ("linear", "exponential"):
+        if self.field_cfg.speed_profile not in ("linear", "exponential"):
             self.get_logger().warn(
-                f"Unknown speed_profile '{self.speed_cfg.speed_profile}', "
+                f"Unknown speed_profile '{self.field_cfg.speed_profile}', "
                 "falling back to 'linear'."
             )
-            self.speed_cfg = replace(self.speed_cfg, speed_profile="linear")
-        if self.speed_cfg.speed_v_min <= 0.0:
+            self.field_cfg = replace(self.field_cfg, speed_profile="linear")
+        if self.field_cfg.speed_v_min <= 0.0:
             raise ValueError("speed_v_min must be > 0 (eikonal diverges as v -> 0)")
 
         self.tf_buffer = Buffer()
@@ -130,7 +121,7 @@ class VectorFieldNode(Node):
         # Only the path needs a timer: it traces from the live robot pose,
         # so it should refresh even when the field itself has not changed.
         self.path_timer = self.create_timer(
-            1.0 / self.viz_cfg.viz_path_rate,
+            1.0 / self.node_cfg.viz_path_rate,
             self._publish_optimal_path,
         )
 
@@ -206,12 +197,12 @@ class VectorFieldNode(Node):
             return False
         goal_col, goal_row = goal
 
-        if self.map_array[goal_row, goal_col] >= self.frame_cfg.occupancy_threshold:
+        if self.map_array[goal_row, goal_col] >= self.node_cfg.occupancy_threshold:
             self.get_logger().error("Goal cell is inside an obstacle.")
             return False
 
         robot_col, robot_row = (None, None)
-        robot_pose = self._get_current_pose_2d(self.frame_cfg.map_frame)
+        robot_pose = self._get_current_pose_2d(self.node_cfg.map_frame)
         if robot_pose is not None:
             rx, ry = robot_pose
             robot = world_to_grid(
@@ -234,13 +225,11 @@ class VectorFieldNode(Node):
             info.resolution,
             info.origin.position.x,
             info.origin.position.y,
-            self.speed_cfg,
-            self.cutlocus_cfg,
-            self.early_exit_cfg,
+            self.field_cfg,
             robot_col,
             robot_row,
-            self.frame_cfg.occupancy_threshold,
-            self.frame_cfg.allow_unknown,
+            self.node_cfg.occupancy_threshold,
+            self.node_cfg.allow_unknown,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
 
@@ -258,55 +247,23 @@ class VectorFieldNode(Node):
         """Return (x, y) of robot_frame in frame, or None on TF failure."""
         try:
             t = self.tf_buffer.lookup_transform(
-                frame, self.frame_cfg.robot_frame, Time()
+                frame, self.node_cfg.robot_frame, Time()
             )
             x = t.transform.translation.x
             y = t.transform.translation.y
             return x, y
         except (LookupException, ConnectivityException, ExtrapolationException) as e:
             self.get_logger().warn(
-                f"TF lookup {self.frame_cfg.robot_frame} -> {frame} failed: {e}",
+                f"TF lookup {self.node_cfg.robot_frame} -> {frame} failed: {e}",
                 throttle_duration_sec=1.0,
             )
             return None
 
-    def query_vector(
-        self, wx: float, wy: float
-    ) -> Optional[tuple[float, float, float]]:
-        """Bilinear interpolation of (vx, vy, T) at world (wx, wy).
-
-        Uses cell-corner convention, consistent with world_to_grid() and
-        VectorFieldGrid.query_vec(): u = (wx - origin_x) / resolution.
-        """
-        if self._field_result is None:
-            return None
-
-        r = self._field_result
-        gx = (wx - r.origin_x) / r.resolution
-        gy = (wy - r.origin_y) / r.resolution
-
-        h, w = r.grad_x.shape
-        if not (0 <= gx < w - 1 and 0 <= gy < h - 1):
-            return None
-
-        x0, y0 = int(gx), int(gy)
-        fx, fy = gx - x0, gy - y0
-
-        def _bilerp(arr: np.ndarray) -> float:
-            return float(
-                arr[y0, x0] * (1.0 - fx) * (1.0 - fy)
-                + arr[y0, x0 + 1] * fx * (1.0 - fy)
-                + arr[y0 + 1, x0] * (1.0 - fx) * fy
-                + arr[y0 + 1, x0 + 1] * fx * fy
-            )
-
-        return _bilerp(r.grad_x), _bilerp(r.grad_y), _bilerp(r.travel_time)
-
     def get_robot_pose(self) -> Optional[PoseStamped]:
         try:
             t = self.tf_buffer.lookup_transform(
-                self.frame_cfg.map_frame,
-                self.frame_cfg.robot_frame,
+                self.node_cfg.map_frame,
+                self.node_cfg.robot_frame,
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.1),
             )
@@ -314,7 +271,7 @@ class VectorFieldNode(Node):
             self.get_logger().warn(f"TF lookup failed: {e}", throttle_duration_sec=2.0)
             return None
         pose = PoseStamped()
-        pose.header.frame_id = self.frame_cfg.map_frame
+        pose.header.frame_id = self.node_cfg.map_frame
         pose.header.stamp = t.header.stamp
         pose.pose.position.x = t.transform.translation.x
         pose.pose.position.y = t.transform.translation.y
@@ -325,9 +282,9 @@ class VectorFieldNode(Node):
     def _publish_arrows(self):
         r = self._field_result
         h, w = r.grad_x.shape
-        step = self.viz_cfg.viz_subsample
-        max_len = self.viz_cfg.viz_arrow_length
-        scale = self.viz_cfg.viz_scale_arrows
+        step = self.node_cfg.viz_subsample
+        max_len = self.node_cfg.viz_arrow_length
+        scale = self.node_cfg.viz_scale_arrows
         t_max = r.free_max_T if r.free_max_T > 1e-8 else 1.0
 
         if scale:
@@ -339,7 +296,7 @@ class VectorFieldNode(Node):
             mag_ref = 1.0
 
         marker = Marker()
-        marker.header.frame_id = self.frame_cfg.map_frame
+        marker.header.frame_id = self.node_cfg.map_frame
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "vector_field"
         marker.id = 0
@@ -389,57 +346,32 @@ class VectorFieldNode(Node):
             return
 
         r = self._field_result
-        wx = pose.pose.position.x
-        wy = pose.pose.position.y
-        gx = self.current_goal.pose.position.x
-        gy = self.current_goal.pose.position.y
-        step_world = self.viz_cfg.viz_path_step * r.resolution
-        max_iter = self.viz_cfg.viz_path_max_iter
-        stop_radius_sq = (1.5 * r.resolution) ** 2
+        points = r.gradient_path(
+            origin_x=pose.pose.position.x,
+            origin_y=pose.pose.position.y,
+            goal_x=self.current_goal.pose.position.x,
+            goal_y=self.current_goal.pose.position.y,
+            step=self.node_cfg.viz_path_step * r.resolution,
+            max_iter=self.node_cfg.viz_path_max_iter,
+            stop_radius_cells=1.5,
+        )
 
         path = Path()
-        path.header.frame_id = self.frame_cfg.map_frame
+        path.header.frame_id = self.node_cfg.map_frame
         path.header.stamp = self.get_clock().now().to_msg()
 
-        prev = (wx, wy)
-        stalled = 0
-        for _ in range(max_iter):
+        for x, y in points:
             ps = PoseStamped()
             ps.header = path.header
-            ps.pose.position.x = wx
-            ps.pose.position.y = wy
+            ps.pose.position.x = x
+            ps.pose.position.y = y
             path.poses.append(ps)
-
-            dx = gx - wx
-            dy = gy - wy
-            if dx * dx + dy * dy < stop_radius_sq:
-                break
-
-            q = self.query_vector(wx, wy)
-            if q is None:
-                break
-            vx, vy, _ = q
-            if abs(vx) < 1e-6 and abs(vy) < 1e-6:
-                break
-
-            wx += step_world * vx
-            wy += step_world * vy
-
-            ddx = wx - prev[0]
-            ddy = wy - prev[1]
-            if ddx * ddx + ddy * ddy < (0.1 * step_world) ** 2:
-                stalled += 1
-                if stalled >= 3:
-                    break
-            else:
-                stalled = 0
-            prev = (wx, wy)
 
         self.path_pub.publish(path)
 
     def _publish_empty_path(self):
         msg = Path()
-        msg.header.frame_id = self.frame_cfg.map_frame
+        msg.header.frame_id = self.node_cfg.map_frame
         msg.header.stamp = self.get_clock().now().to_msg()
         self.path_pub.publish(msg)
 
@@ -455,7 +387,7 @@ class VectorFieldNode(Node):
             100.0,
         )
         msg = OccupancyGrid()
-        msg.header.frame_id = self.frame_cfg.map_frame
+        msg.header.frame_id = self.node_cfg.map_frame
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.info = self.map_msg.info
         msg.data = ratio.astype(np.int8).flatten().tolist()

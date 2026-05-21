@@ -5,10 +5,7 @@ pulling in rclpy.
 
 Public API
 ----------
-  SpeedConfig         -- EDT-to-speed profile parameters
-  CutLocusConfig      -- optional T-smoothing for FMM cut-locus fix
-  EarlyExitConfig     -- optional early-termination of the FMM solve
-  VectorFieldResult   -- output of compute_field(); holds T, grad, metadata
+  VectorFieldConfig   -- full generation parameters
   world_to_grid       -- world (x, y) -> (col, row), returns None if OOB
   grid_to_world       -- (col, row) -> world (x, y) cell-centre
   compute_field       -- full FM2 pipeline; returns VectorFieldResult or None
@@ -35,7 +32,7 @@ from agx_planning.vector_field import VectorFieldGrid
 
 
 @dataclass
-class SpeedConfig:
+class VectorFieldConfig:
     # Clearance band: cells with EDT < inflation_radius see reduced speed.
     inflation_radius: float = 0.5  # [m]
     # Speed at the wall surface. Strictly > 0; eikonal diverges as v -> 0.
@@ -48,9 +45,6 @@ class SpeedConfig:
     # Decay rate for the exponential profile only; ignored otherwise.
     speed_decay_rate: float = 2.5
 
-
-@dataclass
-class CutLocusConfig:
     # Smooth T before differentiating. This regularises FMM ridges, where
     # the central-difference gradient otherwise averages two opposing sides
     # and produces an unstable unit direction. Default OFF: with the
@@ -60,24 +54,6 @@ class CutLocusConfig:
     # disabled in the planner.
     smooth_T_before_grad: bool = False
     smooth_T_sigma: float = 0.10  # [m]
-
-
-@dataclass
-class EarlyExitConfig:
-    """Optional early termination of the FMM solve.
-
-    When enabled, the wavefront halts once the robot's cell has been
-    frozen, plus a physical margin. Cells the wavefront never reaches are
-    treated as no-go territory by the downstream gradient pipeline: they
-    get the same large-T sentinel as obstacles, which (a) makes the
-    planner's cost-to-go term avoid them and (b) produces an outward-
-    pointing gradient at the reached/unreached boundary that pushes the
-    robot back into the computed region if it strays.
-
-    Useful when the grid is large (multi-thousand cells per side) but the
-    goal and robot are only tens of metres apart -- a full FMM is wasted
-    work on cells the robot will never visit.
-    """
 
     early_exit_enable: bool = True
     # Physical margin past the robot. The wavefront keeps propagating
@@ -116,6 +92,97 @@ class VectorFieldResult:
     origin_y: float
     resolution: float
 
+    def query_vec(self, wx: float, wy: float) -> Optional[np.ndarray]:
+        """Bilinear interpolation of [vx, vy, T] at world position (wx, wy).
+
+        Returns a shape-(3,) array so callers can slice by component index,
+        e.g. result[0], result[:2], etc.
+        Returns None if (wx, wy) falls outside the interpolable interior.
+        """
+        gx = (wx - self.origin_x) / self.resolution
+        gy = (wy - self.origin_y) / self.resolution
+
+        h, w = self.grad_x.shape
+        if not (0 <= gx < w - 1 and 0 <= gy < h - 1):
+            return None
+
+        x0, y0 = int(gx), int(gy)
+        fx, fy = gx - x0, gy - y0
+
+        # Bilinear weights for the four surrounding corners
+        w00 = (1.0 - fx) * (1.0 - fy)
+        w10 = fx * (1.0 - fy)
+        w01 = (1.0 - fx) * fy
+        w11 = fx * fy
+
+        def _bilerp(arr: np.ndarray) -> float:
+            return float(
+                arr[y0, x0] * w00
+                + arr[y0, x0 + 1] * w10
+                + arr[y0 + 1, x0] * w01
+                + arr[y0 + 1, x0 + 1] * w11
+            )
+
+        return np.array(
+            [
+                _bilerp(self.grad_x),
+                _bilerp(self.grad_y),
+                _bilerp(self.travel_time),
+            ]
+        )
+
+    def gradient_path(
+        self,
+        origin_x: float,
+        origin_y: float,
+        goal_x: float,
+        goal_y: float,
+        step: float,
+        max_iter: int,
+        stop_radius_cells: float,
+    ) -> np.ndarray:
+        """
+        Trace a path through a vector field from origin toward goal.
+
+        Returns a (N, 2) array of world-space waypoints, columns are [x, y].
+        stop_radius_cells is multiplied by field.resolution for the stopping distance.
+        """
+        stop_radius_sq = (stop_radius_cells * self.resolution) ** 2
+        stall_threshold_sq = (0.1 * step) ** 2
+
+        wx, wy = origin_x, origin_y
+        points: list[tuple[float, float]] = []
+        prev = (wx, wy)
+        stalled = 0
+
+        for _ in range(max_iter):
+            points.append((wx, wy))
+
+            dx, dy = goal_x - wx, goal_y - wy
+            if dx * dx + dy * dy < stop_radius_sq:
+                break
+
+            q = self.query_vec(wx, wy)
+            if q is None:
+                break
+            vx, vy = q[0], q[1]
+            if abs(vx) < 1e-6 and abs(vy) < 1e-6:
+                break
+
+            wx += step * vx
+            wy += step * vy
+
+            ddx, ddy = wx - prev[0], wy - prev[1]
+            if ddx * ddx + ddy * ddy < stall_threshold_sq:
+                stalled += 1
+                if stalled >= 3:
+                    break
+            else:
+                stalled = 0
+            prev = (wx, wy)
+
+        return np.array(points, dtype=np.float64)
+
 
 def world_to_grid(
     wx: float,
@@ -151,7 +218,7 @@ def grid_to_world(
 def build_speed_field(
     edt_free: np.ndarray,
     obstacle_mask: np.ndarray,
-    cfg: SpeedConfig,
+    cfg: VectorFieldConfig,
 ) -> np.ndarray:
     """Map EDT distance to wave speed v(x) for the eikonal solve."""
     R = cfg.inflation_radius
@@ -308,9 +375,7 @@ def compute_field(
     resolution: float,
     origin_x: float,
     origin_y: float,
-    speed_cfg: SpeedConfig,
-    cutlocus_cfg: CutLocusConfig,
-    early_exit_cfg: Optional[EarlyExitConfig] = None,
+    cfg: VectorFieldConfig,
     robot_col: Optional[int] = None,
     robot_row: Optional[int] = None,
     occupancy_threshold: int = 65,
@@ -329,12 +394,7 @@ def compute_field(
     goal_col, goal_row  target cell in grid coordinates.
     resolution          [m/cell].
     origin_x, origin_y  world coordinates of the cell-corner of cell (0, 0).
-    speed_cfg           EDT-to-speed profile.
-    cutlocus_cfg        optional T-smoothing.
-    early_exit_cfg      optional. With .enabled=True the FMM halts shortly
-                        after reaching the robot's cell. Requires
-                        robot_col/robot_row. Cells the wavefront does not
-                        reach are treated as no-go by the gradient pipeline.
+    cfg                 field config.
     robot_col, robot_row  robot's cell coordinates. Only consulted when
                         early exit is enabled; otherwise ignored.
     occupancy_threshold cells with value >= this are treated as obstacles.
@@ -359,7 +419,7 @@ def compute_field(
     # ---- Early-exit setup ------------------------------------------------
     early_exit_target: Optional[Tuple[int, int]] = None
     early_exit_margin_cells = 0
-    use_early_exit = early_exit_cfg is not None and early_exit_cfg.early_exit_enable
+    use_early_exit = cfg is not None and cfg.early_exit_enable
 
     if use_early_exit:
         if robot_col is None or robot_row is None:
@@ -372,11 +432,11 @@ def compute_field(
         # Convert physical margin to cells, rounded up so we never under-
         # shoot the configured buffer.
         early_exit_margin_cells = int(
-            np.ceil(max(0.0, early_exit_cfg.early_exit_margin) / resolution)
+            np.ceil(max(0.0, cfg.early_exit_margin) / resolution)
         )
 
     edt_free = distance_transform_edt(~obstacle_mask) * resolution
-    speed = build_speed_field(edt_free, obstacle_mask, speed_cfg)
+    speed = build_speed_field(edt_free, obstacle_mask, cfg)
     tt = solve_eikonal(
         obstacle_mask,
         speed,
@@ -390,7 +450,7 @@ def compute_field(
     free_tt = tt[np.isfinite(tt)]
     free_max_T = float(free_tt.max()) if free_tt.size else 1.0
 
-    sigma = cutlocus_cfg.smooth_T_sigma if cutlocus_cfg.smooth_T_before_grad else 0.0
+    sigma = cfg.smooth_T_sigma if cfg.smooth_T_before_grad else 0.0
     gx, gy, mag = field_from_T(tt, obstacle_mask, speed, resolution, sigma)
 
     n_free = int((~obstacle_mask).sum())
@@ -400,7 +460,7 @@ def compute_field(
     if use_early_exit:
         ee_desc = (
             f"on, robot=({robot_row},{robot_col}), "
-            f"margin={early_exit_cfg.early_exit_margin:.2f}m={early_exit_margin_cells}c"
+            f"margin={cfg.early_exit_margin:.2f}m={early_exit_margin_cells}c"
         )
     else:
         ee_desc = "off"
@@ -408,9 +468,9 @@ def compute_field(
     message = (
         f"Field computed: {w}x{h} cells, "
         f"{n_reached}/{n_free} free cells reached ({pct:.1f}%) "
-        f"[smooth_T={cutlocus_cfg.smooth_T_before_grad}, "
-        f"profile={speed_cfg.speed_profile}, "
-        f"R={speed_cfg.inflation_radius:.2f}m, "
+        f"[smooth_T={cfg.smooth_T_before_grad}, "
+        f"profile={cfg.speed_profile}, "
+        f"R={cfg.inflation_radius:.2f}m, "
         f"early_exit={ee_desc}]"
     )
 
