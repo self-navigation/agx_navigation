@@ -3,7 +3,12 @@
 
 Sends step commands of varying magnitude on the linear and angular
 channels, records the response from /odom, and prints derived
-parameters per test plus an aggregated summary.
+parameters per test plus an aggregated summary. The summary recommends
+both the BVP planning-model bounds (v_max/omega_max, a_max/alpha_max)
+and the chassis feedforward-inversion model the planner inverts at
+publication: chassis_gain_{v,omega}, chassis_tau_{v,omega}, and the
+post-inversion command caps chassis_{v,omega}_max. All of these are
+derived from the same step responses -- no extra robot motion is added.
 
 Each test runs in three phases:
   1. step phase: command +mag, record response
@@ -524,26 +529,95 @@ def summarize(results: List[dict]):
     block("LINEAR",  lin, "m/s^2")
 
     print("\nSuggested planner config (conservative):")
-    if ang:
-        ceil = max(abs(r["steady"]) for r in ang)
-        a_max = max((abs(r["alpha_ramp"]) for r in ang if "alpha_ramp" in r),
+
+    def suggest(group, lbl):
+        """Print recommended params for one channel group.
+
+        lbl maps logical roles -> the channel-specific PlannerConfig field
+        names. Emits the BVP planning-model bounds (as the original
+        calibrator did) plus the chassis feedforward-inversion model
+        (chassis_gain_*, chassis_tau_*, chassis_*_max) that _predistort
+        consumes at publication. Every value below is derived from the
+        step responses already recorded -- no additional robot motion.
+        """
+        if not group:
+            return
+
+        # --- BVP planning-model bounds (unchanged behaviour) ---
+        # The measured |steady| is the chassis BODY velocity (= gain * cmd),
+        # which is exactly what v_max / omega_max bound inside the BVP.
+        ceil = max(abs(r["steady"]) for r in group)
+        accel = max((abs(r["alpha_ramp"]) for r in group if "alpha_ramp" in r),
                     default=0.0)
-        print(f"  omega_max          = {ceil * 0.95:.3f}")
-        if a_max > 0:
-            print(f"  alpha_max          = {a_max * 0.8:.3f}")
-        taus = [r["tau_decay"] for r in ang if "tau_decay" in r]
-        if taus:
-            print(f"  chassis_tau_omega  = {sum(taus)/len(taus):.3f}")
-    if lin:
-        ceil = max(abs(r["steady"]) for r in lin)
-        a_max = max((abs(r["alpha_ramp"]) for r in lin if "alpha_ramp" in r),
-                    default=0.0)
-        print(f"  v_max              = {ceil * 0.95:.3f}")
-        if a_max > 0:
-            print(f"  a_max              = {a_max * 0.8:.3f}")
-        taus = [r["tau_decay"] for r in lin if "tau_decay" in r]
-        if taus:
-            print(f"  chassis_tau_v      = {sum(taus)/len(taus):.3f}")
+        v_bound = ceil * 0.95
+        a_bound = accel * 0.8 if accel > 0 else 0.0
+        print(f"  {lbl['vmax']:<18} = {v_bound:.3f}")
+        if accel > 0:
+            print(f"  {lbl['amax']:<18} = {a_bound:.3f}")
+
+        # --- Chassis feedforward-inversion model (publication side) ---
+        # Static gain = steady_actual / cmd. Prefer tests that actually
+        # settled; fall back to peak surrogates only if none did -- and warn,
+        # because a peak-derived gain reads LOW, which makes the inversion
+        # over-command and risks exactly the overshoot the config warns about.
+        settled = [r for r in group if r.get("reached_steady") and "gain" in r]
+        pool = settled if settled else [r for r in group if "gain" in r]
+        gain = None
+        if pool:
+            gain = sum(r["gain"] for r in pool) / len(pool)
+            if settled:
+                tag = f"(mean of {len(pool)} settled tests)"
+            else:
+                tag = (f"(mean of {len(pool)} PEAK surrogates -- reads LOW; "
+                       f"re-run with longer holds / more clearance)")
+            print(f"  {lbl['gain']:<18} = {gain:.3f}  {tag}")
+
+        # First-order time constant. The config says ERR LOW (over-estimating
+        # tau amplifies the inversion's lead term and causes overshoot), so
+        # take the smaller of the mean decay tau and -- when the rise was
+        # identified as first-order -- the mean rise tau.
+        taus_d = [r["tau_decay"] for r in group if "tau_decay" in r]
+        taus_r = [r["tau_rise"] for r in group if "tau_rise" in r]
+        tau = None
+        cands = []
+        if taus_d:
+            cands.append(sum(taus_d) / len(taus_d))
+        if taus_r:
+            cands.append(sum(taus_r) / len(taus_r))
+        if cands:
+            tau = min(cands)
+            src = "min(decay,rise)" if len(cands) > 1 else (
+                "decay" if taus_d else "rise")
+            print(f"  {lbl['tau']:<18} = {tau:.3f}  (err-low: {src})")
+
+        # Post-inversion command cap. It must not clip the inversion's lead
+        # term: the published cmd peaks near (state + tau*accel) / gain at the
+        # planning-model bound. Recommend that floor with margin. NOTE the
+        # measured ceiling can understate the true v_max/omega_max when tests
+        # are kept small for safety, so treat this as a lower bound -- set the
+        # cap to at least this OR the chassis controller's own max velocity,
+        # whichever is higher.
+        if gain and gain > 1e-6:
+            lead = (tau or 0.0) * a_bound
+            cmd_floor = (v_bound + lead) / gain
+            print(f"  {lbl['cmdmax']:<18} >= {cmd_floor * 1.5:.3f}  "
+                  f"(lead-term floor; or chassis ctrl max, whichever higher)")
+
+    suggest(ang, {"vmax": "omega_max", "amax": "alpha_max",
+                  "gain": "chassis_gain_omega", "tau": "chassis_tau_omega",
+                  "cmdmax": "chassis_omega_max"})
+    suggest(lin, {"vmax": "v_max", "amax": "a_max",
+                  "gain": "chassis_gain_v", "tau": "chassis_tau_v",
+                  "cmdmax": "chassis_v_max"})
+
+    # cmd_deadzone_{v,omega} are intentionally NOT recommended here: per the
+    # spec they gate the BVP solve-noise floor, not chassis physics, so a
+    # step-response test can't identify them. Keep the config defaults
+    # (~0.03 m/s, ~0.05 rad/s) unless the chassis jitters at rest.
+    print("\n  cmd_deadzone_v / cmd_deadzone_omega: keep config defaults "
+          "(~0.03 m/s, ~0.05 rad/s)")
+    print("    -- not chassis-identifiable from step tests (they gate the "
+          "BVP solve-noise floor).")
 
 
 def preflight(node: ChassisIdent, executor: SingleThreadedExecutor) -> bool:
