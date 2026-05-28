@@ -36,18 +36,18 @@ def generate_launch_description():
                 "enable_stamped_cmd_vel": True,
                 "enable_confidence_weighting": False,
                 "use_sim_time": sim,
-                "diag_log_path": "",
+                "diag_log_path": "/tmp/pmp.csv",
                 # PlannerConfig
-                "omega_max": 0.60,  # BVP's planning bound on desired body omega
-                "alpha_max": 0.80,
-                "v_max": 0.40,
-                "a_max": 1.00,
-                "chassis_gain_omega": 0.77,  # measured slip ratio
+                "omega_max": 1.099,  # BVP's planning bound on desired body omega
+                "alpha_max": 0.777,
+                "v_max": 0.547,
+                "a_max": 1.339,
+                "chassis_gain_omega": 1.187,  # measured slip ratio
                 "chassis_gain_v": 1.0,
-                "chassis_tau_omega": 0.3,
-                "chassis_tau_v": 0.05,
-                "chassis_omega_max": 5.00,  # well above the inversion's peak demand
-                "chassis_v_max": 5.00,
+                "chassis_tau_omega": 0.163,
+                "chassis_tau_v": 0.135,
+                "chassis_omega_max": 1.549,  # well above the inversion's peak demand
+                "chassis_v_max": 1.306,
                 "dt_segment": 0.5,
                 "pursuit_lookahead_mult": 0.6,
                 "align_gate_power": 10.0,  # was 4.0

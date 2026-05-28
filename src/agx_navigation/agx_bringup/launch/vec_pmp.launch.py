@@ -48,6 +48,7 @@ def generate_launch_description():
                 "robot_frame": "base_link",
                 "allow_unknown": True,
                 "speed_profile": "exponential",
+                "inflation_radius": 0.5,
                 "smooth_T_before_grad": False,
                 "use_sim_time": sim,
             }
