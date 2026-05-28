@@ -520,7 +520,9 @@ class TrajectoryCorrectorNode(Node):
             old_dt = self._buf.active_dt
             new_dt = float(chunk.dt) if chunk.dt > 0.0 else old_dt
             self._buf.reset(traj_id, new_dt)
-            self._state = State.CORRECTING
+            self._state = (
+                State.CORRECTING if self.node_cfg.enable_recovery else State.PLAYING
+            )
             self._current_traj_start_time = self.get_clock().now()
             if abs(new_dt - old_dt) > 1e-6:
                 self._ensure_tick_timer(new_dt)
