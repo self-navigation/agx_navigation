@@ -20,8 +20,8 @@ from agx_planning.runtime_corrector.strategies import RecoveryStrategy
 
 
 class ExitKind(Enum):
-    ENDPOINT = auto()   # robot is within recovery_corridor_epsilon of path end
-    OVERSHOT = auto()   # robot passed path end and action result is in
+    ENDPOINT = auto()  # robot is within recovery_corridor_epsilon of path end
+    OVERSHOT = auto()  # robot passed path end and action result is in
     RECOVERED = auto()  # robot is back within corridor and heading is aligned
 
 
@@ -98,7 +98,12 @@ class CorrectionController:
         fx, fy, ftheta = path[-1]
         dx, dy = rx - fx, ry - fy
 
-        if math.hypot(dx, dy) < self._cfg.recovery_corridor_epsilon:
+        # Only treat proximity to path[-1] as "reached the end" once the full
+        # trajectory has arrived (result_received).  Without this gate a
+        # turn-in-place trajectory's first chunk (v ~ 0, no XY progress) places
+        # path[-1] within recovery_corridor_epsilon of the robot, triggering a
+        # false ENDPOINT exit before the turn has even started.
+        if result_received and math.hypot(dx, dy) < self._cfg.recovery_corridor_epsilon:
             return CorrectionResult(
                 should_exit=True,
                 waiting_for_chunks=False,
@@ -140,9 +145,7 @@ class CorrectionController:
         perp_dist = math.hypot(rx - proj_x, ry - proj_y)
         angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
 
-        lx, ly, _ = walk_ahead_on_path(
-            path, seg_idx, t, self._cfg.recovery_look_ahead
-        )
+        lx, ly, _ = walk_ahead_on_path(path, seg_idx, t, self._cfg.recovery_look_ahead)
 
         exiting = (
             perp_dist < self._cfg.recovery_corridor_epsilon
