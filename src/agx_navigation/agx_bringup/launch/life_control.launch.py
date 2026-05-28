@@ -67,6 +67,7 @@ def generate_launch_description():
                 "publish_tf": False,
             }
         ],
+        arguments=["--ros-args", "--log-level", "scout:=WARN"],
     )
 
     imu_driver = Node(
