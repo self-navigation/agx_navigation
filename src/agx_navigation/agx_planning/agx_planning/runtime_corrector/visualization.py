@@ -34,6 +34,7 @@ class TrajectoryVisualizer:
         carrot: Optional[tuple[float, float]],
         state: State,
         robot_pose: Optional[tuple[float, float, float]],
+        strat_name: Optional[str],
         stamp,
     ) -> None:
         """Publish all debug markers for one tick.
@@ -44,6 +45,7 @@ class TrajectoryVisualizer:
         carrot     -- (x, y) look-ahead carrot point, or None
         state_name -- string name of the current _State enum value
         robot_pose -- (x, y, theta) of the robot, or None if TF failed
+        strat_name -- Strategy name for correcting
         stamp      -- ROS2 timestamp (from node.get_clock().now().to_msg())
         """
         markers = MarkerArray()
@@ -141,7 +143,7 @@ class TrajectoryVisualizer:
             m.text = "PLAY"
             m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 1.0, 0.2, 1.0
         else:
-            m.text = "FIX"
+            m.text = "FIX " + str(strat_name)
             m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 1.0
         markers.markers.append(m)
 

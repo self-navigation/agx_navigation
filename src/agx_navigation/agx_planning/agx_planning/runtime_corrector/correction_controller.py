@@ -29,6 +29,10 @@ class ExitKind(Enum):
 class CorrectionResult:
     """Outcome of one correction step; tells the node what to do next."""
 
+    correction_strat: str
+    """Name of the recovery strategy that returned this result.
+    """
+
     should_exit: bool
     """True when the node should call _finish_trajectory() and leave CORRECTING.
     Covers: near endpoint, overshoot with action result, and spatial+heading
@@ -105,6 +109,7 @@ class CorrectionController:
         # false ENDPOINT exit before the turn has even started.
         if result_received and math.hypot(dx, dy) < self._cfg.recovery_corridor_epsilon:
             return CorrectionResult(
+                correction_strat="builtin:reached recovery corridor epsilon",
                 should_exit=True,
                 waiting_for_chunks=False,
                 snap_index=None,
@@ -119,6 +124,7 @@ class CorrectionController:
         if overshot:
             if result_received:
                 return CorrectionResult(
+                    correction_strat="builtin:overshot trajectory end",
                     should_exit=True,
                     waiting_for_chunks=False,
                     snap_index=None,
@@ -129,6 +135,7 @@ class CorrectionController:
                     exit_kind=ExitKind.OVERSHOT,
                 )
             return CorrectionResult(
+                correction_strat="builtin:overshot trajectory end",
                 should_exit=False,
                 waiting_for_chunks=True,
                 snap_index=None,
@@ -155,6 +162,7 @@ class CorrectionController:
         if exiting:
             snap_idx = seg_idx if t <= 0.5 else min(seg_idx + 1, len(path) - 1)
             return CorrectionResult(
+                correction_strat="builtin:recovered",
                 should_exit=False,
                 waiting_for_chunks=False,
                 snap_index=snap_idx,
@@ -169,6 +177,7 @@ class CorrectionController:
             if strategy.can_handle(pose, path):
                 v, omega = strategy.compute_twist(pose, path)
                 return CorrectionResult(
+                    correction_strat=strategy.__class__.__name__,
                     should_exit=False,
                     waiting_for_chunks=False,
                     snap_index=None,
@@ -180,6 +189,7 @@ class CorrectionController:
                 )
 
         return CorrectionResult(
+            correction_strat="builtin:no strat matches",
             should_exit=False,
             waiting_for_chunks=False,
             snap_index=None,

@@ -828,7 +828,7 @@ class TrajectoryCorrectorNode(Node):
                 )
             self._finish_trajectory()
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], frame, None, None)
+            self._publish_debug_markers([], frame, None, None, None)
             return
 
         if result.waiting_for_chunks:
@@ -838,11 +838,11 @@ class TrajectoryCorrectorNode(Node):
                 throttle_duration_sec=1.0,
             )
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers(path, frame, None, None)
+            self._publish_debug_markers(path, frame, None, None, None)
             return
 
         self.get_logger().info(
-            f"Correcting: perp={result.perp_dist:.3f} m  "
+            f"Correcting: perp={result.perp_dist:.3f} m strat={result.correction_strat} "
             f"{'[acceptable -- resuming]' if result.snap_index is not None else '[recovering]'}",
             throttle_duration_sec=0.5,
         )
@@ -856,7 +856,9 @@ class TrajectoryCorrectorNode(Node):
             self._buf.snap_to(chunk_idx, sample_idx)
             self._current_traj_start_time = self.get_clock().now()
             self._state = State.PLAYING
-            self._publish_debug_markers(path, frame, result.proj, result.carrot)
+            self._publish_debug_markers(
+                path, frame, result.proj, result.carrot, result.correction_strat
+            )
             return
 
         v, omega = result.twist if result.twist is not None else (0.0, 0.0)
@@ -866,7 +868,9 @@ class TrajectoryCorrectorNode(Node):
                 throttle_duration_sec=1.0,
             )
         self._publish_twist(v, omega, self.get_clock().now().to_msg())
-        self._publish_debug_markers(path, frame, result.proj, result.carrot)
+        self._publish_debug_markers(
+            path, frame, result.proj, result.carrot, result.correction_strat
+        )
 
     # ----------------------- Pose lookup -----------------------------------
 
@@ -899,6 +903,7 @@ class TrajectoryCorrectorNode(Node):
         frame: str,
         proj: Optional[tuple[float, float]],
         carrot: Optional[tuple[float, float]],
+        strat_name: Optional[str] = None,
     ) -> None:
         self._visualizer.publish(
             path=path,
@@ -907,6 +912,7 @@ class TrajectoryCorrectorNode(Node):
             carrot=carrot,
             state=self._state,
             robot_pose=self._get_current_pose_2d(frame),
+            strat_name=strat_name,
             stamp=self.get_clock().now().to_msg(),
         )
 
