@@ -38,22 +38,28 @@ def generate_launch_description():
                 "use_sim_time": sim,
                 "diag_log_path": "/tmp/pmp.csv",
                 # PlannerConfig
-                "omega_max": 1.099,  # BVP's planning bound on desired body omega
-                "alpha_max": 0.777,
-                "v_max": 0.547,
-                "a_max": 1.339,
-                "chassis_gain_omega": 1.187,  # measured slip ratio
-                "chassis_gain_v": 1.0,
-                "chassis_tau_omega": 0.163,
-                "chassis_tau_v": 0.135,
-                "chassis_omega_max": 1.549,  # well above the inversion's peak demand
-                "chassis_v_max": 1.306,
+                "T_horizon": 4.0,
+                "bvp_max_nodes": 3000,
+                "N": 40,
+                "w_h": 10.0,
+                "w_break": 200,
                 "dt_segment": 0.5,
                 "pursuit_lookahead_mult": 0.6,
-                "align_gate_power": 10.0,  # was 4.0
-                "L_brake": 0.30,  # was 0.5
-                "w_v_barrier": 200.0,  # was 50.0
-                "w_v_terminal": 15.0,  # was 5.0
+                "align_gate_power": 15.0,
+                "L_brake": 0.50,
+                "w_v_barrier": 200.0,
+                "w_v_terminal": 15.0,
+                # calibrated
+                "omega_max": 1.049,
+                "alpha_max": 0.962,
+                "chassis_gain_omega": 1.053,
+                "chassis_tau_omega": 0.128,
+                "chassis_omega_max": 1.668,
+                "v_max": 0.448,
+                "a_max": 1.408,
+                "chassis_gain_v": 0.939,
+                "chassis_tau_v": 0.122,
+                "chassis_v_max": 0.990,
             }
         ],
         remappings=[
