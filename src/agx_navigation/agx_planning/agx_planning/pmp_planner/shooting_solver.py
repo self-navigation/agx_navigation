@@ -179,14 +179,21 @@ class PMPShootingSolver:
             - ly * v * cos_t
         )
 
+        # Gate the position-costate contribution to dlv by heading alighnment.
+        # Without this, the positin costates (O(beta*T) in magnitude) overwhelms
+        # the quadratic brake/speed costs instantly, driving forward acceleration
+        # at any heading error -- the root cause of consistent understeering.
+        # The gate matches v_ref_eff: no position pull when the heading gate is
+        # closed, full pull when aligned.
+        pos_gate = half_one_plus ** cfg.align_gate_power
+
         # v-costate. No self-coupling -- a is an unrestricted control
         # affecting only dv/dt, so dH/dv has no -lambda_v term. This
         # is the same structure as the original 5D acceleration model.
         dlv = (
             -cfg.w_v * (v - v_ref_eff)
             - cfg.w_brake * one_minus_dot * one_minus_dot * v
-            - lx * cos_t
-            - ly * sin_t
+            - (lx * cos_t + ly * sin_t) * pos_gate
         )
 
         # omega-costate. No self-coupling -- alpha is an unrestricted
