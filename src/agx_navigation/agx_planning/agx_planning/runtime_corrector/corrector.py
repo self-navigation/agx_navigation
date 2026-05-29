@@ -80,6 +80,7 @@ from visualization_msgs.msg import MarkerArray
 
 try:
     from scout_msgs.msg import ScoutStatus
+
     _SCOUT_MSGS_AVAILABLE = True
 except ImportError:
     ScoutStatus = None
@@ -143,8 +144,10 @@ class TrajectoryCorrectorNode(Node):
     def __init__(self):
         super().__init__("pmp_trajectory_corrector")
 
-        self.cfg = declare_and_load_dataclass(self, CorrectorConfig())
-        self.node_cfg = declare_and_load_dataclass(self, CorrectorNodeConfig())
+        self.cfg: CorrectorConfig = declare_and_load_dataclass(self, CorrectorConfig())
+        self.node_cfg: CorrectorNodeConfig = declare_and_load_dataclass(
+            self, CorrectorNodeConfig()
+        )
         recovery_cfg = RecoveryConfig(
             recovery_corridor_epsilon=self.cfg.recovery_corridor_epsilon,
             recovery_angle_tolerance=self.cfg.recovery_angle_tolerance,
@@ -669,7 +672,18 @@ class TrajectoryCorrectorNode(Node):
             # RC is driving; hold the buffer cursor and send zero (ignored by HW).
             self._publish_metrics(0.0)
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+            self.get_logger().warn(
+                "RC override active: suspending trajectory playback.",
+                throttle_duration_sec=5.0,
+            )
             return
+
+        if self._state == State.CORRECTING and not self.node_cfg.enable_recovery:
+            self.get_logger().warn(
+                "Recovery disabled; continuing playback.",
+                throttle_duration_sec=1.0,
+            )
+            self._state = State.PLAYING
 
         if self._state == State.CORRECTING:
             self._on_correcting_tick()
