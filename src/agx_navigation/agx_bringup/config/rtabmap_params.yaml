@@ -21,7 +21,7 @@ rtabmap:
 
     approx_sync: true
     wait_for_transform: 0.2
-    # sync_queue_size: 30
+    sync_queue_size: 30
 
     map_filter_radius: 2.0
     map_filter_angle: 70.0
@@ -40,14 +40,14 @@ rtabmap:
     RGBD/ProximityBySpace: "true"
     RGBD/CreateOccupancyGrid: "true"
     RGBD/NeighborLinkRefining: "true"
-    RGBD/OptimizeFromGraphEnd: "false"
-    RGBD/ProximityPathMaxNeighbors: "10"
+    RGBD/OptimizeFromGraphEnd: "true"
+    RGBD/ProximityPathMaxNeighbors: "5"
     RGBD/LinearUpdate: "0.2"
     RGBD/AngularUpdate: "0.2"
 
     Vis/FeatureType: "2"
     Vis/MaxFeatures: "500"
-    Vis/MinInliers: "15"
+    Vis/MinInliers: "20"
     Vis/InlierDistance: "0.1"
 
     Kp/MaxDepth: "0.0"
@@ -59,16 +59,16 @@ rtabmap:
     Icp/VoxelSize: "0.05"
     Icp/DownsamplingStep: "1"
     Icp/Iterations: "30"
-    Icp/MaxCorrespondenceDistance: "0.1"
+    Icp/MaxCorrespondenceDistance: "0.15"
     Icp/PointToPlane: "true"
     # PointToPlaneK and PointToPlaneRadius cannot be specified simultaneously, set one to 0
     Icp/PointToPlaneK: "10"
     Icp/PointToPlaneRadius: "0.0"
-    Icp/CorrespondenceRatio: "0.2"
+    Icp/CorrespondenceRatio: "0.5"
     Icp/PMMatcherIntensity: "false"
 
     Grid/Sensor: "0"
-    Grid/3D: "true"
+    Grid/3D: "false"
     Grid/CellSize: "0.05"
     Grid/RangeMin: "0.0"
     Grid/RangeMax: "10.0"
@@ -94,7 +94,9 @@ rtabmap:
     GridGlobal/ProbMiss: "0.3"
     GridGlobal/UpdateError: "0.05"
 
-    Rtabmap/DetectionRate: "1.0"
+    Rtabmap/DetectionRate: "2.0"
     Rtabmap/TimeThr: "0"
-    Rtabmap/LoopThr: "0.11"
+    Rtabmap/LoopThr: "0.15"
     database_path: "~/.ros/rtabmap.db"
+
+    Optimizer/Slam2D: "true"
