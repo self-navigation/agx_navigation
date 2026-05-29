@@ -123,6 +123,26 @@ class CorrectionController:
         overshot = dx * math.cos(ftheta) + dy * math.sin(ftheta) > 0
         if overshot:
             if result_received:
+                angle_err = math.remainder(ftheta - rtheta, 2 * math.pi)
+                if abs(angle_err) >= self._cfg.recovery_angle_tolerance:
+                    omega = max(
+                        -self._cfg.recovery_omega_max,
+                        min(
+                            self._cfg.recovery_omega_max,
+                            self._cfg.recovery_K_theta * angle_err,
+                        ),
+                    )
+                    return CorrectionResult(
+                        correction_strat="builtin:overshot -- aligning to endpoint heading",
+                        should_exit=False,
+                        waiting_for_chunks=False,
+                        snap_index=None,
+                        twist=(0.0, omega),
+                        proj=(fx, fy),
+                        carrot=None,
+                        perp_dist=math.hypot(dx, dy),
+                        exit_kind=None,
+                    )
                 return CorrectionResult(
                     correction_strat="builtin:overshot trajectory end",
                     should_exit=True,
