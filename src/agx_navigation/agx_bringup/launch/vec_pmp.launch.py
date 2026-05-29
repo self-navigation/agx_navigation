@@ -72,6 +72,8 @@ def generate_launch_description():
             {
                 "enable_stamped_cmd_vel": True,
                 "enable_recovery": do_corrections,
+                "recovery_look_ahead": 2.0,
+                "recovery_v_max": 0.448,
                 "path_diff_window_size": 0.5,
                 "replan_cooldown": 1.0,
                 "use_sim_time": sim,

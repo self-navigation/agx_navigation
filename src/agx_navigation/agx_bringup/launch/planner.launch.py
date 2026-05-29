@@ -46,7 +46,8 @@ def generate_launch_description():
                 "dt_segment": 0.5,
                 "pursuit_lookahead_mult": 0.6,
                 "align_gate_power": 15.0,
-                "L_brake": 0.50,
+                "L_brake": 1.50,
+                "w_v": 3.0,
                 "w_v_barrier": 200.0,
                 "w_v_terminal": 15.0,
                 # calibrated
