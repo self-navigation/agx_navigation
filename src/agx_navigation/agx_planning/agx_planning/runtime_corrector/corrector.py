@@ -78,6 +78,13 @@ from tf2_ros import (
 from tf_transformations import euler_from_quaternion
 from visualization_msgs.msg import MarkerArray
 
+try:
+    from scout_msgs.msg import ScoutStatus
+    _SCOUT_MSGS_AVAILABLE = True
+except ImportError:
+    ScoutStatus = None
+    _SCOUT_MSGS_AVAILABLE = False
+
 from agx_planning_msgs.action import PlanToGoal
 from agx_planning.utils import declare_and_load_dataclass
 from agx_planning.runtime_corrector import RecoveryConfig, default_strategies
@@ -111,6 +118,12 @@ class CorrectorNodeConfig:
     # that we use chunk.dt (whatever rate the planner committed to).
     default_tick_rate: float = 10.0
     enable_recovery: bool = True
+    # Topic for chassis control-mode status (scout_msgs/ScoutStatus).
+    # Set to "" to disable RC-override detection (e.g. in simulation).
+    scout_status_topic: str = "/scout_status"
+    # If no ScoutStatus arrives for this many seconds while RC is active,
+    # assume control has returned (covers driver restart / simulator).
+    scout_status_timeout: float = 1.0
     # How long after a replan to suppress further gradient-path replans.
     replan_cooldown: float = 0.0
     # Arc-length [m] to skip forward along both paths before comparing.
@@ -150,6 +163,15 @@ class TrajectoryCorrectorNode(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
+        # ---- Control-override tracking -------------------------------
+        # True whenever we own /cmd_vel (chassis not in RC mode).
+        # Starts True so simulation (no scout_status) runs unimpeded.
+        self._has_control: bool = True
+        # Monotonic timestamp of the last ScoutStatus message; -inf means
+        # none received yet, which keeps _has_control True via the timeout
+        # path in _refresh_has_control (only activates when already False).
+        self._last_status_time: float = -math.inf
+
         # ---- Playback state ------------------------------------------
         self._state: State = State.IDLE
         self._buf = TrajectoryBuffer(self._default_dt)
@@ -182,6 +204,19 @@ class TrajectoryCorrectorNode(Node):
         self.create_subscription(
             Path, "/vector_field/optimal_path", self._on_gradient_path, qos
         )
+        if self.node_cfg.scout_status_topic:
+            if _SCOUT_MSGS_AVAILABLE:
+                self.create_subscription(
+                    ScoutStatus,
+                    self.node_cfg.scout_status_topic,
+                    self._on_scout_status,
+                    qos,
+                )
+            else:
+                self.get_logger().warn(
+                    "scout_msgs not installed; RC-override detection disabled. "
+                    "Trajectory will play back regardless of control mode."
+                )
 
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
 
@@ -227,6 +262,42 @@ class TrajectoryCorrectorNode(Node):
             f"action '{self.node_cfg.action_name}'; replan path_diff "
             f"p{self.cfg.path_diff_percentile:.0f}={self.cfg.path_diff_threshold:.3f} m)."
         )
+
+    # ----------------------- RC-override tracking --------------------
+
+    def _on_scout_status(self, msg) -> None:
+        """Detect transitions into/out of RC mode (control_mode == 3)."""
+        in_rc = msg.control_mode == 3  # AgxControlMode::CONTROL_MODE_RC
+        had_control = self._has_control
+        self._last_status_time = time.monotonic()
+        self._has_control = not in_rc
+        if had_control and not self._has_control:
+            self.get_logger().warn(
+                "RC override active: suspending trajectory playback."
+            )
+        elif not had_control and self._has_control:
+            self._on_control_regained()
+
+    def _refresh_has_control(self) -> None:
+        """Time-out guard: if no ScoutStatus has arrived while RC was active,
+        assume control has returned (handles driver restart and simulation)."""
+        if self._has_control:
+            return
+        elapsed = time.monotonic() - self._last_status_time
+        if elapsed > self.node_cfg.scout_status_timeout:
+            self.get_logger().warn(
+                f"No scout_status for {elapsed:.1f} s while RC was active; "
+                "assuming control has returned."
+            )
+            self._has_control = True
+            self._on_control_regained()
+
+    def _on_control_regained(self) -> None:
+        if self._state == State.PLAYING:
+            self.get_logger().info(
+                "Control regained; entering alignment correction before resuming."
+            )
+            self._state = State.CORRECTING
 
     # ----------------------- Goal subscription -----------------------
 
@@ -591,6 +662,13 @@ class TrajectoryCorrectorNode(Node):
             self._publish_metrics(0.0)
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             self._publish_debug_markers([], self.node_cfg.planning_frame, None, None)
+            return
+
+        self._refresh_has_control()
+        if not self._has_control:
+            # RC is driving; hold the buffer cursor and send zero (ignored by HW).
+            self._publish_metrics(0.0)
+            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
             return
 
         if self._state == State.CORRECTING:
