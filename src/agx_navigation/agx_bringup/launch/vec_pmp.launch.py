@@ -70,6 +70,7 @@ def generate_launch_description():
         name="runtime_corrector",
         parameters=[
             {
+                "goal_accept_timeout": 5.0,
                 "enable_stamped_cmd_vel": True,
                 "enable_recovery": do_corrections,
                 "recovery_look_ahead": 2.0,
