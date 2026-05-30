@@ -187,14 +187,20 @@ class NearEndpointStrategy(RecoveryStrategy):
         if not path:
             return False
         rx, ry, rtheta = current
-        proj_x, proj_y, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
+        proj_x, proj_y, _, seg_idx, t = nearest_projection_on_path(rx, ry, path)
         if math.hypot(rx - proj_x, ry - proj_y) <= self._cfg.recovery_corridor_epsilon:
             return False  # RotateInPlaceStrategy handles this
         fx, fy = path[-1][0], path[-1][1]
         if math.hypot(proj_x - fx, proj_y - fy) >= self._cfg.near_endpoint_distance:
             return False  # not near the end
-        angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
-        return angle_err > self._cfg.recovery_angle_tolerance
+        # Only fire when the carrot is too far to the side for LookAheadPursuit.
+        # This makes the two strategies mutually exclusive: exactly one fires for
+        # any given bearing, preventing oscillation.
+        lx, ly, _ = walk_ahead_on_path(path, seg_idx, t, self._cfg.look_ahead_distance)
+        bearing_err = abs(
+            math.remainder(math.atan2(ly - ry, lx - rx) - rtheta, 2 * math.pi)
+        )
+        return bearing_err > self._cfg.max_pursuit_bearing_err
 
     def compute_twist(
         self,
