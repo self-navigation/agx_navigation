@@ -157,6 +157,8 @@ class TrajectoryCorrectorNode(Node):
             K_v=self.cfg.recovery_K_v,
             K_bearing=self.cfg.recovery_K_bearing,
             K_theta=self.cfg.recovery_K_theta,
+            max_pursuit_bearing_err=self.cfg.recovery_max_pursuit_bearing_err,
+            near_endpoint_distance=self.cfg.recovery_near_endpoint_distance,
         )
         self._recovery_strategies = default_strategies(recovery_cfg)
         self._detector = DeviationDetector(self.cfg)

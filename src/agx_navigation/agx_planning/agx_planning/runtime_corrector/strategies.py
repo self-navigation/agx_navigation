@@ -55,6 +55,13 @@ class RecoveryConfig:
     K_v: float  # forward speed gain   [m/s per m]
     K_bearing: float  # yaw-rate gain  [rad/s per rad of bearing error]
     K_theta: float  # yaw-rate gain    [rad/s per rad of heading error]
+    # LookAheadPursuit only fires when the bearing to the carrot is within
+    # this angle.  Beyond it the robot rotates in place instead of arcing,
+    # preventing the spin-in-circles failure when the carrot is to the side.
+    max_pursuit_bearing_err: float = math.pi / 2  # [rad]
+    # Arc-length distance from the path end within which NearEndpointStrategy
+    # takes priority to align heading before LookAheadPursuit drives forward.
+    near_endpoint_distance: float = 0.5  # [m]
 
 
 class RecoveryStrategy(ABC):
@@ -133,11 +140,15 @@ class LookAheadPursuitStrategy(RecoveryStrategy):
     ) -> bool:
         if not path:
             return False
-        rx, ry, _ = current
-        proj_x, proj_y, _, _, _ = nearest_projection_on_path(rx, ry, path)
-        return (
-            math.hypot(rx - proj_x, ry - proj_y) > self._cfg.recovery_corridor_epsilon
+        rx, ry, rtheta = current
+        proj_x, proj_y, _, seg_idx, t = nearest_projection_on_path(rx, ry, path)
+        if math.hypot(rx - proj_x, ry - proj_y) <= self._cfg.recovery_corridor_epsilon:
+            return False
+        lx, ly, _ = walk_ahead_on_path(path, seg_idx, t, self._cfg.look_ahead_distance)
+        bearing_err = abs(
+            math.remainder(math.atan2(ly - ry, lx - rx) - rtheta, 2 * math.pi)
         )
+        return bearing_err <= self._cfg.max_pursuit_bearing_err
 
     def compute_twist(
         self,
@@ -155,13 +166,59 @@ class LookAheadPursuitStrategy(RecoveryStrategy):
         return v, omega
 
 
+class NearEndpointStrategy(RecoveryStrategy):
+    """Rotate in place toward the path tangent when near the path end.
+
+    When the robot arrives laterally offset near the goal, the look-ahead
+    carrot collapses onto the endpoint and may be nearly orthogonal to the
+    robot's heading.  LookAheadPursuit is restricted to bearings within
+    max_pursuit_bearing_err, so it will not fire in that situation.  This
+    strategy bridges the gap: it rotates the robot to align with the path
+    tangent at the nearest projection.  Once aligned, LookAheadPursuit's
+    bearing check will pass and it takes over to close the remaining lateral
+    offset by driving forward.
+    """
+
+    def can_handle(
+        self,
+        current: tuple[float, float, float],
+        path: list[tuple[float, float, float]],
+    ) -> bool:
+        if not path:
+            return False
+        rx, ry, rtheta = current
+        proj_x, proj_y, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
+        if math.hypot(rx - proj_x, ry - proj_y) <= self._cfg.recovery_corridor_epsilon:
+            return False  # RotateInPlaceStrategy handles this
+        fx, fy = path[-1][0], path[-1][1]
+        if math.hypot(proj_x - fx, proj_y - fy) >= self._cfg.near_endpoint_distance:
+            return False  # not near the end
+        angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
+        return angle_err > self._cfg.recovery_angle_tolerance
+
+    def compute_twist(
+        self,
+        current: tuple[float, float, float],
+        path: list[tuple[float, float, float]],
+    ) -> tuple[float, float]:
+        rx, ry, rtheta = current
+        _, _, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
+        signed_err = math.remainder(proj_theta - rtheta, 2 * math.pi)
+        omega = _clamp(self._cfg.K_theta * signed_err, self._cfg.omega_max)
+        return 0.0, omega
+
+
 def default_strategies(cfg: RecoveryConfig) -> list[RecoveryStrategy]:
     """Return the default ordered strategy list.
 
-    RotateInPlace is first (more specific: position already acceptable).
-    LookAheadPursuit handles the general case of spatial deviation.
+    RotateInPlace -- already spatially close, just fix heading.
+    NearEndpoint  -- near path end, laterally offset, heading misaligned;
+                     rotate in place so that LookAheadPursuit can then drive
+                     forward without the carrot being orthogonal.
+    LookAheadPursuit -- general spatial deviation when carrot is ahead.
     """
     return [
         RotateInPlaceStrategy(cfg),
+        NearEndpointStrategy(cfg),
         LookAheadPursuitStrategy(cfg),
     ]

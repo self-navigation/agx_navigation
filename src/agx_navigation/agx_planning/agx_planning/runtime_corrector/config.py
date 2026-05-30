@@ -32,3 +32,9 @@ class CorrectorConfig:
     # Sliding window size [m] for the localised-deviation check.
     # 0.0 disables this check (percentile-only mode).
     path_diff_window_size: float = 0.0
+    # LookAheadPursuit is suppressed when the bearing to the carrot exceeds
+    # this angle, preventing the robot from spiralling around a lateral goal.
+    recovery_max_pursuit_bearing_err: float = 1.5707963267948966  # pi/2 [rad]
+    # Distance from the path end (measured at the nearest projection) within
+    # which NearEndpointStrategy takes over to align heading before driving.
+    recovery_near_endpoint_distance: float = 0.5  # [m]
