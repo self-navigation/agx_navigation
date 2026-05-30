@@ -167,16 +167,15 @@ class LookAheadPursuitStrategy(RecoveryStrategy):
 
 
 class NearEndpointStrategy(RecoveryStrategy):
-    """Rotate in place toward the path tangent when near the path end.
+    """Rotate in place toward the path endpoint when near the path end.
 
     When the robot arrives laterally offset near the goal, the look-ahead
     carrot collapses onto the endpoint and may be nearly orthogonal to the
     robot's heading.  LookAheadPursuit is restricted to bearings within
     max_pursuit_bearing_err, so it will not fire in that situation.  This
-    strategy bridges the gap: it rotates the robot to align with the path
-    tangent at the nearest projection.  Once aligned, LookAheadPursuit's
-    bearing check will pass and it takes over to close the remaining lateral
-    offset by driving forward.
+    strategy bridges the gap: it rotates the robot to face the endpoint
+    position directly.  Once the bearing clears max_pursuit_bearing_err,
+    LookAheadPursuit takes over and drives forward.
     """
 
     def can_handle(
@@ -208,8 +207,14 @@ class NearEndpointStrategy(RecoveryStrategy):
         path: list[tuple[float, float, float]],
     ) -> tuple[float, float]:
         rx, ry, rtheta = current
-        _, _, proj_theta, _, _ = nearest_projection_on_path(rx, ry, path)
-        signed_err = math.remainder(proj_theta - rtheta, 2 * math.pi)
+        fx, fy, _ = path[-1]
+        # Rotate toward the endpoint position, not the path tangent.  The
+        # tangent at an intermediate projection can point opposite to the goal
+        # heading (e.g. approach-south on a south→north terminal segment), which
+        # would turn the robot the wrong way.  Facing the endpoint lets
+        # LookAheadPursuit take over cleanly once the bearing clears π/2.
+        bearing = math.atan2(fy - ry, fx - rx)
+        signed_err = math.remainder(bearing - rtheta, 2 * math.pi)
         omega = _clamp(self._cfg.K_theta * signed_err, self._cfg.omega_max)
         return 0.0, omega
 
