@@ -1,8 +1,12 @@
+import logging
+import time
 from math import hypot, atan2, pi, sin, cos, tanh
 from typing import Optional
 
 import numpy as np
 from scipy.integrate import solve_bvp
+
+_logger = logging.getLogger(__name__)
 
 from agx_planning.pmp_planner.config import PlannerConfig
 from agx_planning.vector_field import VectorFieldGrid
@@ -627,6 +631,8 @@ class PMPShootingSolver:
         else:
             y_init = self._rollout_guess(x0, goal, t_mesh)
 
+        warm_start = self._prev_sol is not None
+        _t_bvp = time.perf_counter()
         try:
             sol = solve_bvp(
                 self._ode,
@@ -639,7 +645,20 @@ class PMPShootingSolver:
             )
         except Exception as e:
             self._last_error = f"solve_bvp raised: {e}"
+            _logger.info("BVP EXCEPTION warm=%s dt=%.0fms: %s", warm_start,
+                         (time.perf_counter() - _t_bvp) * 1e3, e)
             return self._fallback_command()
+
+        _bvp_ms = (time.perf_counter() - _t_bvp) * 1e3
+        _logger.info(
+            "BVP %s  warm=%s  nodes=%d  niter=%d  dt=%.0fms  msg=%s",
+            "ok  " if sol.success else "FAIL",
+            warm_start,
+            sol.x.size,
+            getattr(sol, "niter", -1),
+            _bvp_ms,
+            sol.message if not sol.success else "",
+        )
 
         if not sol.success:
             self._last_error = sol.message
