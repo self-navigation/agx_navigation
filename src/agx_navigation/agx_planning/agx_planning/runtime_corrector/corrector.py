@@ -803,14 +803,31 @@ class TrajectoryCorrectorNode(Node):
         frame = self.node_cfg.planning_frame
 
         if not path:
-            self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], frame, None, None)
+            if self._buf.result_received:
+                # No navigable path data and the planner result is in — the
+                # trajectory is finished from the corrector's perspective.
+                self.get_logger().info(
+                    "Buffer has no path during recovery and result received; "
+                    "finishing trajectory."
+                )
+                self._finish_trajectory()
+            else:
+                # No pose data available yet (sparse/empty chunk or
+                # cur_sample_idx past chunk end). Request a fresh plan so we
+                # do not stay stopped indefinitely.
+                self.get_logger().warn(
+                    "No path available during recovery; triggering replan.",
+                    throttle_duration_sec=2.0,
+                )
+                self._send_action_goal()
+                self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
+                self._publish_debug_markers([], frame, None, None, "waiting -- no path")
             return
 
         pose = self._get_current_pose_2d(frame)
         if pose is None:
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers(path, frame, None, None)
+            self._publish_debug_markers(path, frame, None, None, "tf unavailable")
             return
 
         result = self._controller.step(pose, path, self._buf.result_received)
@@ -828,7 +845,7 @@ class TrajectoryCorrectorNode(Node):
                 )
             self._finish_trajectory()
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers([], frame, None, None, None)
+            self._publish_debug_markers([], frame, None, None, result.correction_strat)
             return
 
         if result.waiting_for_chunks:
@@ -838,7 +855,7 @@ class TrajectoryCorrectorNode(Node):
                 throttle_duration_sec=1.0,
             )
             self._publish_twist(0.0, 0.0, self.get_clock().now().to_msg())
-            self._publish_debug_markers(path, frame, None, None, None)
+            self._publish_debug_markers(path, frame, None, None, result.correction_strat)
             return
 
         self.get_logger().info(
