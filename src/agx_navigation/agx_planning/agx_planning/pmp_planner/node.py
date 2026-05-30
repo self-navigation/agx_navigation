@@ -143,6 +143,7 @@ from math import hypot, pi
 from typing import Optional
 import threading
 import time
+from time import perf_counter
 
 import numpy as np
 
@@ -747,6 +748,7 @@ class PlannerNode(Node):
                 lam_om_0=lam_om_0,
                 alpha_cmd_0=alpha_cmd_0,
             )
+        _t0 = perf_counter()
         self._publish_chunk_feedback(
             goal_handle,
             traj_id,
@@ -755,8 +757,19 @@ class PlannerNode(Node):
             chunk.poses,
             chunk.dt_sample,
         )
+        _fb_ms = (perf_counter() - _t0) * 1e3
+
         all_poses.append(chunk.poses)
+        _t1 = perf_counter()
         self._publish_cumulative_path(all_poses)
+        _path_ms = (perf_counter() - _t1) * 1e3
+
+        self.get_logger().info(
+            f"chunk {chunk.chunk_idx} published:"
+            f"  feedback={_fb_ms:.0f}ms"
+            f"  cum_path={_path_ms:.0f}ms"
+            f"  poses_total={sum(p.shape[0] for p in all_poses)}"
+        )
 
     # ---------------- Publishing ----------------
 

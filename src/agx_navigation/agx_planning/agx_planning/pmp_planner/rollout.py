@@ -15,11 +15,15 @@ Public API
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from math import hypot, pi, tanh
 from typing import Callable, Generator, Optional
 
 import numpy as np
+
+_logger = logging.getLogger(__name__)
 
 
 from agx_planning.vector_field import VectorFieldGrid
@@ -206,6 +210,8 @@ def rollout_generator(
     prev_d_xy = float("inf")
     stagnation_count = 0
 
+    _t_rollout_start = time.perf_counter()
+
     while sim_t < cfg.max_rollout_sim_time:
 
         # Check the stop signal BEFORE the solve so a signal arriving mid-rollout
@@ -218,7 +224,10 @@ def rollout_generator(
         if goal_reached(state, goal, cfg):
             return RolloutResult(status="success", message="Goal reached")
 
+        _t_solve = time.perf_counter()
         result = solver.sample_committed_segment(state, goal, dt_sample, n_samples)
+        _solve_ms = (time.perf_counter() - _t_solve) * 1e3
+
         if result is None:
             return RolloutResult(
                 status="failed",
@@ -254,12 +263,20 @@ def rollout_generator(
             return RolloutResult(status="success", message="Goal reached")
 
         if hit_idx >= 1:
+            _t_yield = time.perf_counter()
             yield RolloutChunk(
                 chunk_idx=chunk_idx,
                 dt_sample=dt_sample,
                 twists=twists[:hit_idx],
                 poses=poses[:hit_idx],
                 costate_t0=costate_t0,
+            )
+            _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
+            _logger.info(
+                "chunk %d (final, %d samples): solve=%.0fms  consumer=%.0fms"
+                "  sim_t=%.2fs  wall=%.1fs",
+                chunk_idx, hit_idx, _solve_ms, _consumer_ms,
+                sim_t, time.perf_counter() - _t_rollout_start,
             )
             return RolloutResult(
                 status="success",
@@ -269,6 +286,7 @@ def rollout_generator(
                 ),
             )
 
+        _t_yield = time.perf_counter()
         yield RolloutChunk(
             chunk_idx=chunk_idx,
             dt_sample=dt_sample,
@@ -276,6 +294,7 @@ def rollout_generator(
             poses=poses,
             costate_t0=costate_t0,
         )
+        _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
 
         state = x_next
         sim_t += n_samples * dt_sample
@@ -283,6 +302,14 @@ def rollout_generator(
 
         # Termination (c): stagnation check (only meaningful when close to goal).
         new_d_xy = hypot(state[0] - goal[0], state[1] - goal[1])
+
+        _logger.info(
+            "chunk %d (%d samples): solve=%.0fms  consumer=%.0fms"
+            "  sim_t=%.2fs  d_xy=%.3fm  stag=%d  wall=%.1fs",
+            chunk_idx - 1, n_samples, _solve_ms, _consumer_ms,
+            sim_t, new_d_xy, stagnation_count,
+            time.perf_counter() - _t_rollout_start,
+        )
         if new_d_xy < near_goal_thresh and (prev_d_xy - new_d_xy) < progress_eps:
             stagnation_count += 1
             if stagnation_count >= stagnation_limit:
