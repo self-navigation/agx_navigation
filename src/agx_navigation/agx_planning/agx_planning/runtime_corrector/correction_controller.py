@@ -120,7 +120,22 @@ class CorrectionController:
                 exit_kind=ExitKind.ENDPOINT,
             )
 
-        overshot = dx * math.cos(ftheta) + dy * math.sin(ftheta) > 0
+        proj_x, proj_y, proj_theta, seg_idx, t = nearest_projection_on_path(
+            rx, ry, path
+        )
+        perp_dist = math.hypot(rx - proj_x, ry - proj_y)
+
+        # Genuine overshoot: nearest point on the path is exactly the endpoint
+        # (last segment, t clamped to 1.0) AND the robot is in front of the
+        # endpoint along the final heading.  Without the projection gate a robot
+        # that starts "in front of" the goal (e.g. U-turn paths where the robot
+        # faces away from the goal) triggers a false overshot before it even
+        # begins the approach.
+        overshot = (
+            seg_idx == len(path) - 2
+            and t > 1.0 - 1e-9
+            and dx * math.cos(ftheta) + dy * math.sin(ftheta) > 0
+        )
         if overshot:
             if result_received:
                 angle_err = math.remainder(ftheta - rtheta, 2 * math.pi)
@@ -166,10 +181,6 @@ class CorrectionController:
                 exit_kind=None,
             )
 
-        proj_x, proj_y, proj_theta, seg_idx, t = nearest_projection_on_path(
-            rx, ry, path
-        )
-        perp_dist = math.hypot(rx - proj_x, ry - proj_y)
         angle_err = abs(math.remainder(rtheta - proj_theta, 2 * math.pi))
 
         lx, ly, _ = walk_ahead_on_path(path, seg_idx, t, self._cfg.recovery_look_ahead)
