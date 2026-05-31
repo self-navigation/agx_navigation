@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz acados-build acados-python
+.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz acados-build acados-python test
 
 SIM ?= true
 HEADLESS ?= false
@@ -52,6 +52,8 @@ DEBUG_INFIX := --debug
 else
 DEBUG_INFIX :=
 endif
+
+PYTHON ?= /usr/bin/python3
 
 ACADOS_ROOT := $(CURDIR)/acados/acados
 ACADOS_LIB  := $(ACADOS_ROOT)/lib
@@ -208,5 +210,8 @@ rviz: build
 		$(GPU_PREFIX) rviz2 \
 		--display-config ./src/agx_navigation/agx_bringup/rviz/main.rviz \
 		--ros-args --param use_sim_time:=$(SIM)
+
+test:
+	PYTHONPATH=src/agx_navigation/agx_planning $(PYTHON) -m pytest src/agx_navigation/agx_planning/test/unit/ -v
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
