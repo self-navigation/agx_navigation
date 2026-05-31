@@ -1,8 +1,19 @@
-from .strategies import RecoveryConfig, default_strategies
+from .strategies import (
+    ExitKind,
+    RecoveryConfig,
+    RecoveryStrategy,
+    StrategyContext,
+    StrategyOutcome,
+    TwistOutcome,
+    ExitOutcome,
+    ResumeOutcome,
+    WaitOutcome,
+    default_strategies,
+)
 from .corrector import TrajectoryCorrectorNode, CorrectorNodeConfig
 from .config import CorrectorConfig
 from .deviation_detector import DeviationDetector
-from .correction_controller import CorrectionController, CorrectionResult, ExitKind
+from .correction_controller import CorrectionController, CorrectionResult
 from .visualization import TrajectoryVisualizer
 from .trajectory_buffer import TrajectoryBuffer, PlaybackSample
 
@@ -11,6 +22,13 @@ __all__ = [
     "CorrectorConfig",
     "CorrectorNodeConfig",
     "RecoveryConfig",
+    "RecoveryStrategy",
+    "StrategyContext",
+    "StrategyOutcome",
+    "TwistOutcome",
+    "ExitOutcome",
+    "ResumeOutcome",
+    "WaitOutcome",
     "default_strategies",
     "DeviationDetector",
     "CorrectionController",
