@@ -53,6 +53,7 @@ graceful fallback.
 import math
 import time
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Optional
 
 import rclpy
@@ -133,6 +134,25 @@ class CorrectorNodeConfig:
     action_name: str = "pmp_planner/plan_to_goal"
     # How long to wait for the server to ACCEPT a sent goal before retrying.
     goal_accept_timeout: float = 2.0
+    # What to do when a new goal arrives while a trajectory is in flight.
+    # "stop"     -- cancel old goal, clear buffer, stop in place, then wait for new plan.
+    # "seamless" -- cancel old goal, keep following old plan until first new chunk arrives.
+    goal_preempt_mode: str = "seamless"
+
+
+class GoalPreemptMode(Enum):
+    STOP = auto()
+    SEAMLESS = auto()
+
+    @classmethod
+    def parse(cls, value: str) -> "GoalPreemptMode":
+        try:
+            return cls[value.upper()]
+        except KeyError:
+            valid = [m.name.lower() for m in cls]
+            raise ValueError(
+                f"goal_preempt_mode must be one of {valid!r}, got {value!r}"
+            )
 
 
 class TrajectoryCorrectorNode(Node):
@@ -160,6 +180,8 @@ class TrajectoryCorrectorNode(Node):
             max_pursuit_bearing_err=self.cfg.recovery_max_pursuit_bearing_err,
             near_endpoint_distance=self.cfg.recovery_near_endpoint_distance,
         )
+        self._preempt_mode = GoalPreemptMode.parse(self.node_cfg.goal_preempt_mode)
+
         self._recovery_strategies = default_strategies(recovery_cfg)
         self._detector = DeviationDetector(self.cfg)
         self._controller = CorrectionController(self.cfg, self._recovery_strategies)
@@ -260,6 +282,7 @@ class TrajectoryCorrectorNode(Node):
         self._tick_timer = None
         self._ensure_tick_timer(self._default_dt)
 
+        self.get_logger().info(f"Goal preempt mode: {self._preempt_mode.name}")
         self.get_logger().info(
             f"Trajectory corrector ready (default tick {self._default_dt:.3f} s; "
             f"corridor_epsilon={self.cfg.corridor_epsilon:.3f} m, "
@@ -306,6 +329,10 @@ class TrajectoryCorrectorNode(Node):
 
     # ----------------------- Goal subscription -----------------------
 
+    def _cancel_active_goal(self) -> None:
+        if self._latest_goal_handle is not None:
+            self._latest_goal_handle.cancel_goal_async()
+
     def _on_goal(self, msg: PoseStamped):
         if msg.header.frame_id == "":
             self._goal_xyth = None
@@ -315,7 +342,11 @@ class TrajectoryCorrectorNode(Node):
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
         self._goal_xyth = np.array([pos.x, pos.y, yaw])
         self.get_logger().info(f"New goal: ({pos.x:.2f}, {pos.y:.2f}), yaw={yaw:.2f}")
-        # Explicit user goal always sends immediately; bypass both guards.
+        self._cancel_active_goal()
+        if self._preempt_mode == GoalPreemptMode.STOP:
+            self._buf.clear()
+            self._state = State.IDLE
+        # Bypass both pending-send guards and fire immediately.
         self._pending_send = False
         self._goal_in_flight = False
         self._send_action_goal()
@@ -642,7 +673,9 @@ class TrajectoryCorrectorNode(Node):
         if self._buf.active_traj_id < 0:
             if expected_gh is self._latest_goal_handle:
                 self._goal_in_flight = False
-            if bool(result.success):
+            # status == 5 means CANCELED: a goal we preempted is resolving;
+            # don't treat it as a successful arrival at the new goal.
+            if bool(result.success) and status != 5:
                 self.get_logger().info(
                     f"Trajectory {traj_id} succeeded with no rollout "
                     "(chassis already at goal)."
