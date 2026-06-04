@@ -60,7 +60,13 @@ def generate_launch_description():
         executable="wheel_odometry",
         name="wheel_odometry",
         output="screen",
-        parameters=[{"use_sim_time": sim}],
+        parameters=[
+            {
+                "wheel_radius": 0.08,
+                "track": 0.416503,
+                "use_sim_time": sim,
+            }
+        ],
     )
 
     robot_spawner = Node(
