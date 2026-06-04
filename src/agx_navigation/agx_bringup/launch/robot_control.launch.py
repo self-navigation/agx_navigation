@@ -31,6 +31,7 @@ def generate_launch_description():
         launch_arguments={
             "namespace": "",
             "sim_reduction": "4",
+            "controller_file": "wheel_velocity_controller.yaml",
             "sim": sim,
             "camera_depth_points_topic": Topics.CAMERA_DEPTH_POINTS,
         }.items(),

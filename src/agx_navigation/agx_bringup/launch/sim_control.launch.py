@@ -29,29 +29,36 @@ def generate_launch_description():
         parameters=[{"use_sim_time": sim}],
     )
 
-    diff_drive_spawner = Node(
+    wheel_velocity_spawner = Node(
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "diff_drive_controller",
+            "wheel_velocity_controller",
             "--param-file",
             PathJoinSubstitution(
                 [
                     FindPackageShare("scout_description"),
                     "config",
-                    "diff_drive_controller.yaml",
+                    "wheel_velocity_controller.yaml",
                 ]
             ),
-            "--controller-ros-args",
-            # Has to be specified with a list to be treated as one argument
-            [
-                "--remap diff_drive_controller/odom:=",
-                Topics.ODOM,
-                " ",
-                "--remap diff_drive_controller/cmd_vel:=",
-                Topics.CMD_VEL,
-            ],
         ],
+        output="screen",
+        parameters=[{"use_sim_time": sim}],
+    )
+
+    twist_to_wheels_node = Node(
+        package="agx_chassis",
+        executable="twist_to_wheels",
+        name="twist_to_wheels",
+        output="screen",
+        parameters=[{"use_sim_time": sim}],
+    )
+
+    wheel_odometry_node = Node(
+        package="agx_chassis",
+        executable="wheel_odometry",
+        name="wheel_odometry",
         output="screen",
         parameters=[{"use_sim_time": sim}],
     )
@@ -147,7 +154,9 @@ def generate_launch_description():
         declared_args
         + [
             joint_state_spawner,
-            diff_drive_spawner,
+            wheel_velocity_spawner,
+            twist_to_wheels_node,
+            wheel_odometry_node,
             robot_spawner,
             camera_depth_pointcloud_transform,
             rgbd_processing_container,

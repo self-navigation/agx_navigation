@@ -49,3 +49,7 @@ class Topics:
     # cmd_vel that is listened by the nav2 behavior server for collision-safe movement
     CMD_VEL_ASSISTED = "/cmd_vel_assisted_teleop"
     CMD_LIGHT = "/light_control"
+    # Raw 4-wheel velocity input to twist_to_wheels (future planner interface)
+    CMD_WHEEL = "/cmd_wheel"
+    # Output of twist_to_wheels → JointGroupVelocityController
+    WHEEL_COMMANDS = "/wheel_velocity_controller/commands"
