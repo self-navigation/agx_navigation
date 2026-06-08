@@ -1,3 +1,5 @@
+import json
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -118,6 +120,35 @@ def generate_launch_description():
         }.items(),
     )
 
+    # Edit the JSON array below to add custom physics surface patches.
+    # Each object requires: x, y, z, width, length, profile.
+    # Optional: yaw (radians), name.
+    # Profiles: "slippery", "icy", "rough", "directional_x", "directional_y"
+    #
+    # The robot spawns at (0, 0) in world frame; the building floor mesh is
+    # offset to (23, 5) so that (0, 0) falls inside it.  Place patches near
+    # (0, 0) to have them close to the robot start position.
+    surface_patches_json = json.dumps([
+        {"x":  0.0, "y":  -2.0, "width": 3.0, "length": 2.0, "profile": "slippery"},
+        {"x":  0.0, "y":  0.0, "width": 2.0, "length": 2.0, "profile": "icy"},
+        {"x": -4.0, "y": -2.0, "width": 4.0, "length": 2.0, "profile": "rough"},
+        {"x":  3.0, "y": -2.0, "width": 3.0, "length": 3.0, "profile": "directional_x"},
+        {"x":  6.0, "y": -2.0, "width": 3.0, "length": 3.0, "profile": "directional_y"},
+    ])
+
+    spawn_surface_patches = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("rudn_ordjo_building"),
+                    "launch",
+                    "spawn_surface_patches.launch.py",
+                ]
+            )
+        ),
+        launch_arguments={"patches": surface_patches_json}.items(),
+    )
+
     gz_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
@@ -171,5 +202,6 @@ def generate_launch_description():
             gz_sim,
             gz_bridge,
             spawn_floor,
+            spawn_surface_patches,
         ]
     )
