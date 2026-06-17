@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz acados-build acados-python test
+.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz test
 
 SIM ?= true
 HEADLESS ?= false
@@ -54,11 +54,6 @@ DEBUG_INFIX :=
 endif
 
 PYTHON ?= /usr/bin/python3
-
-ACADOS_ROOT := $(CURDIR)/acados/acados
-ACADOS_LIB  := $(ACADOS_ROOT)/lib
-ACADOS_BIN  := $(ACADOS_ROOT)/bin
-TERA_RENDERER_ROOT := $(CURDIR)/acados/tera_renderer
 
 SOURCES := $(shell find src -type f | sed 's/ /\\ /g')
 PYTHON_SETUP_FILES := $(shell find src -name "setup.py")
@@ -138,25 +133,7 @@ ros-deps:
 	pip install --break-system-packages $(PYTHON_PACKAGES)
 	touch $@
 
-deps: ros-deps .ros_python_deps.stamp .acados_python.stamp
-
-acados-build: .acados_build.stamp $(ACADOS_BIN)/t_renderer
-acados-python: .acados_python.stamp
-
-.acados_build.stamp: $(ACADOS_ROOT)/CMakeLists.txt
-	mkdir -p $(ACADOS_ROOT)/build
-	cd $(ACADOS_ROOT)/build && \
-		cmake .. \
-			-DACADOS_WITH_QPOASES=ON \
-			-DBUILD_SHARED_LIBS=ON \
-			-DCMAKE_BUILD_TYPE=Release \
-			-DCMAKE_INSTALL_PREFIX=$(ACADOS_ROOT)
-	$(MAKE) -C $(ACADOS_ROOT)/build install
-	touch $@
-
-.acados_python.stamp: .acados_build.stamp $(ACADOS_ROOT)/interfaces/acados_template/setup.py
-	pip install --break-system-packages -e $(ACADOS_ROOT)/interfaces/acados_template
-	touch $@
+deps: ros-deps .ros_python_deps.stamp 
 
 $(ACADOS_BIN)/t_renderer:
 	cd $(TERA_RENDERER_ROOT) && \
