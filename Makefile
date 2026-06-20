@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean update-caches install-ros install-gazebo install-deps can-bus run teleop rviz test
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test
 
 SIM ?= true
 HEADLESS ?= false
@@ -61,20 +61,7 @@ PYTHON_PACKAGES := $(dir $(PYTHON_SETUP_FILES))
 
 all: build
 
-build: update-caches deps .build.stamp
-
-update-caches:
-	if [ "$(shell cat .last_build_user 2>/dev/null)" != "$$USER" ]; then \
-		grep -E -rl '/home/[^/]+' ./build | xargs -I {} sh -c ' \
-			file="$$1"; \
-			mtime=$$(stat -c %Y "$$file" 2>/dev/null || echo ""); \
-			sed -E -i "s|/home/[^/]+|/home/$$USER|g" "$$file"; \
-			if [ -n "$$mtime" ] && [ -f "$$file" ]; then \
-				touch -d "@$$mtime" "$$file" 2>/dev/null || true; \
-			fi \
-		' _ {}; \
-		echo "$$USER" > .last_build_user; \
-	fi
+build: deps .build.stamp
 
 .build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
@@ -82,12 +69,7 @@ update-caches:
 	touch $@
 
 clean:
-	rm -rf \
-		install build log \
-		.*.stamp .last_build_user \
-		skid_steer_vfield.json c_generated_code
-	rm -rf $(ACADOS_ROOT)/build
-	cd $(TERA_RENDERER_ROOT) && cargo clean
+	rm -rf install build log .*.stamp
 
 setup: install-ros install-gazebo system-deps deps
 
