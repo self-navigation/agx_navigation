@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2
 
 SIM ?= true
 HEADLESS ?= false
@@ -140,6 +140,20 @@ run: build can-bus
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
 		$(PARAMS)
+
+# Convenience entry points wrapping `run` with the right nav/planner mode.
+# All accept the usual overrides (e.g. `make online SIM=false`).
+#   online  -- vec-pmp stack, planner runs its own control loop (live BVP).
+#   offline -- vec-pmp stack, planner rolls out a full plan; corrector plays it back.
+#   nav2    -- the nav2 navigation stack instead of vec-pmp.
+online:
+	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=online
+
+offline:
+	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline
+
+nav2:
+	$(MAKE) run NAV_MODE=nav2
 
 server:
 	source /opt/ros/jazzy/setup.bash && \
