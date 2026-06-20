@@ -1,19 +1,23 @@
-"""Vector-field guided PMP planner for a unicycle with bounded accelerations.
+"""Vector-field guided PMP planner for a skid-steer robot in wheel space.
 
 Applies Pontryagin's Maximum Principle and solves the TPBVP with
-scipy.integrate.solve_bvp. State (p_x, p_y, theta, v, omega), control (a,
-alpha). The BVP plans the desired body motion; commands come from inverting a
-first-order chassis lag (PlannerConfig.chassis_gain_* / chassis_tau_*) and are
-clipped to chassis_v_max / chassis_omega_max. The cost combines a travel-time
-potential, field alignment, a gated speed reference, a heading-coupled brake
-and soft v/omega barriers; the terminal cost is a linearised T plus
-pursuit-point, yaw and stop terms.
+scipy.integrate.solve_bvp. State (p_x, p_y, theta, w_l, w_r), where w_l, w_r
+are the left/right wheel-pair speeds; control is the per-wheel acceleration
+(a_l, a_r). Body velocities are derived as v = (w_l + w_r) * r/2 and omega =
+(w_r - w_l) * r/track_eff, with track_eff = track * slip_chi lumping lateral
+skid into the kinematics. The cost combines a travel-time potential, field
+alignment, a gated speed reference, a heading-coupled brake, soft wheel-speed
+barriers and per-wheel effort. The position-costate coupling is gated by
+pos_gate, a heuristic change to the adjoint against understeer.
 
-In "online" mode a control_rate timer solves the local BVP and publishes
-/cmd_vel. In "offline" mode the node serves the `pmp_planner/plan_to_goal`
-action: it rolls out a full start-to-goal trajectory from rest and streams each
-dt_segment chunk as feedback; a new goal pre-empts the running rollout. Both
-modes publish a Path on /pmp_planner/trajectory.
+The published command is the planned wheel-speed state, plus an optional lead
+tau_wheel * a_i, clipped to wheel_cmd_max and laid out as [w_l, w_l, w_r, w_r]
+in the controller's joint order. In "online" mode a timer solves the local BVP
+and publishes on wheel_cmd_topic. In "offline" mode the node serves
+`pmp_planner/plan_to_goal`: it rolls out the whole trajectory from rest and
+streams each dt_segment chunk (poses, wheel-speed setpoints, accelerations and
+costates) as feedback. JointGroupVelocityController latches its last command,
+so every terminal path publishes an explicit zero.
 """
 
 from dataclasses import dataclass
@@ -30,9 +34,9 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float64MultiArray
 from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, TransformException
 
@@ -56,7 +60,12 @@ from agx_planning.pmp_planner import (
 class NodeConfig:
     map_frame: str = "map"
     robot_frame: str = "base_link"
-    enable_stamped_cmd_vel: bool = False
+    # Topic of the velocity_controllers/JointGroupVelocityController
+    # command subscriber. The message is a Float64MultiArray whose data
+    # order must match the controller's `joints` parameter:
+    #   [front_left, rear_left, front_right, rear_right]
+    # The planner publishes [w_l, w_l, w_r, w_r].
+    wheel_cmd_topic: str = "/wheel_velocity_controller/commands"
     # Set to a file path (e.g. /tmp/pmp_diag.csv) to enable the diagnostic
     # logger. Empty string disables it. The logger writes planned heading
     # profiles and actual odom to CSV for post-analysis; see TurnDiagnosticLogger.
@@ -70,15 +79,15 @@ class NodeConfig:
 class PlannerNode(Node):
     """Mode-aware planner.
 
-    Online mode (cfg.mode == "online"): preserved from the original node --
-    a control_rate-Hz timer solves the local BVP each tick using the 5D
-    initial state (pose from TF, twist from /odom) and publishes a Twist
-    on /cmd_vel.
+    Online mode (cfg.mode == "online"): a control_rate-Hz timer solves
+    the local BVP each tick using the 5D initial state (pose from TF,
+    wheel speeds from the /odom twist via body_to_wheels) and publishes
+    a Float64MultiArray wheel command on wheel_cmd_topic.
 
     Offline mode (cfg.mode == "offline"): exposes a ROS2 action server
     `pmp_planner/plan_to_goal`. Each goal carries an explicit
     (start_x, start_y, start_theta) and (target_x, target_y, target_theta);
-    v and omega are zero-initialized (planning from rest). Each committed
+    wheel speeds are zero-initialized (planning from rest). Each committed
     dt_segment-second BVP segment is streamed back as action feedback. A
     new goal arriving mid-rollout preempts the current one: _action_handle_accepted
     fires _exec_stop, the in-flight rollout exits with "preempted", and the
@@ -146,9 +155,10 @@ class PlannerNode(Node):
         self.get_logger().info(f"Planner running in '{self.cfg.mode}' mode.")
 
     def _init_online(self, qos: QoSProfile):
-        """Online-mode wiring: TF, /odom, /goal_pose, /cmd_vel, control timer.
-        Behaviourally identical to the original node -- the planner is its
-        own control loop here."""
+        """Online-mode wiring: TF, /odom, /goal_pose, wheel command
+        publisher, control timer. The planner is its own control loop
+        here -- it publishes wheel-group velocity setpoints directly to
+        the JointGroupVelocityController."""
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -166,10 +176,9 @@ class PlannerNode(Node):
         self.create_subscription(Odometry, "/odom", self._on_odom, qos)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
 
-        if self.node_cfg.enable_stamped_cmd_vel:
-            self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
-        else:
-            self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._cmd_pub = self.create_publisher(
+            Float64MultiArray, self.node_cfg.wheel_cmd_topic, 10
+        )
         # Used to publish the empty-frame_id sentinel on goal completion.
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
 
@@ -177,15 +186,17 @@ class PlannerNode(Node):
         self.get_logger().info(
             f"Indirect-PMP planner running ONLINE at "
             f"{self.cfg.control_rate} Hz, horizon {self.cfg.T_horizon}s "
-            f"/ {self.cfg.N + 1} mesh nodes."
+            f"/ {self.cfg.N + 1} mesh nodes; wheel commands on "
+            f"'{self.node_cfg.wheel_cmd_topic}'."
         )
 
     def _init_offline(self):
         """Offline-mode wiring: action server, exec lock/stop, trajectory_id.
 
-        No TF, no /odom, no /cmd_vel, no /goal_pose -- the action goal
-        carries start and target inline. The interpreter (action client)
-        owns chassis-pose snapshots and goal-source subscriptions.
+        No TF, no /odom, no wheel publisher, no /goal_pose -- the action
+        goal carries start and target inline. The interpreter (action
+        client) owns chassis-pose snapshots and goal-source subscriptions;
+        the executor owns wheel-command publication.
         """
         # _exec_lock serialises rollouts so a preempting goal waits for
         # the previous to release before starting. _exec_stop is the
@@ -210,7 +221,7 @@ class PlannerNode(Node):
         # dt_segment=1.25s = ~24 segments solved in well under a second
         # of wall clock), so the feedback queue fills with many unconsumed
         # chunks during the burst. depth=64 prevents drops that would
-        # manifest as missing twists and incomplete path coverage.
+        # manifest as missing samples and incomplete path coverage.
         feedback_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=64,
@@ -239,6 +250,14 @@ class PlannerNode(Node):
         # Wake any in-flight rollout so it can return promptly.
         if self.cfg.mode == "offline" and hasattr(self, "_exec_stop"):
             self._exec_stop.set()
+        # Online mode: the forward controller latches the last command,
+        # so a node going down mid-motion would leave the wheels spinning
+        # at the last setpoint. Best-effort zero on the way out.
+        if self.cfg.mode == "online" and hasattr(self, "_cmd_pub"):
+            try:
+                self._publish_wheel_cmd(0.0, 0.0)
+            except Exception:
+                pass  # context already shut down -- nothing left to do
         if self._diag_logger is not None:
             self._diag_logger.close()
         super().destroy_node()
@@ -248,11 +267,17 @@ class PlannerNode(Node):
     def _on_odom(self, msg: Odometry):
         # Online-only callback (subscription is created only in _init_online).
         # Odom serves as the control tick AND as the source of the measured
-        # chassis twist (v, omega) -- the planner pins these as initial
+        # chassis twist (v, omega) -- the planner maps these through
+        # body_to_wheels and pins the result as the wheel-speed initial
         # conditions on the 5D BVP, so the trajectory starts from the
         # platform's actual instantaneous velocity rather than assuming it
-        # can be commanded discontinuously. The pose itself is read via TF
-        # (map -> base_link), since /odom may be in a different frame.
+        # can be commanded discontinuously. The twist route (rather than
+        # raw /joint_states wheel velocities) is deliberate: the model's
+        # kinematics use track_effective, so consistency demands the
+        # model's own inverse; raw wheel speeds imply a yaw rate through
+        # the PHYSICAL track and would contradict it. The pose itself is
+        # read via TF (map -> base_link), since /odom may be in a
+        # different frame.
         try:
             t = self._tf_buffer.lookup_transform(
                 self.node_cfg.map_frame,
@@ -354,7 +379,7 @@ class PlannerNode(Node):
             )
             return
         if self._waiting_for_field:
-            self._publish_twist(0.0, 0.0)
+            self._publish_wheel_cmd(0.0, 0.0)
             return
 
         # Warm-start reset on goal-zone boundary crossing.
@@ -372,7 +397,7 @@ class PlannerNode(Node):
         # directly and avoid constructing x0 before we know we need it.
         if goal_reached(self._xi, self._goal, self.cfg):
             d_th = abs(((self._goal[2] - self._xi[2] + pi) % (2.0 * pi)) - pi)
-            self._publish_twist(0.0, 0.0)
+            self._publish_wheel_cmd(0.0, 0.0)
             self._publish_empty_trajectory()
             self.get_logger().info(
                 f"Goal reached (d_xy={d_xy:.3f} m, d_th={d_th:.3f} rad)."
@@ -380,37 +405,42 @@ class PlannerNode(Node):
             self._clear_goal()
             return
 
-        # Build the 5D initial state: pose from TF, twist from /odom.
-        # The two reads are GIL-atomic individually; a torn pair (e.g.
-        # pose from cycle N, twist from cycle N+1) just biases the BVP
-        # initial condition by one odom dt and self-corrects next solve.
+        # Build the 5D initial state: pose from TF, wheel speeds from the
+        # /odom twist via the model's inverse kinematics. The two reads
+        # are GIL-atomic individually; a torn pair (e.g. pose from cycle N,
+        # twist from cycle N+1) just biases the BVP initial condition by
+        # one odom dt and self-corrects next solve.
         xi = self._xi
         twist = self._chassis_twist
-        x0 = np.array([xi[0], xi[1], xi[2], twist[0], twist[1]])
+        wl0, wr0 = self.cfg.body_to_wheels(float(twist[0]), float(twist[1]))
+        x0 = np.array([xi[0], xi[1], xi[2], wl0, wr0])
         result = self._solver.solve(x0, self._goal)
         if result is None:
             self.get_logger().warn(
-                f"BVP solve failed: {self._solver._last_error} -- holding command.",
+                f"BVP solve failed: {self._solver._last_error} -- zeroing command.",
                 throttle_duration_sec=1.0,
             )
-            self._publish_twist(0.0, 0.0)
+            # Zero, not silence: the forward controller would latch and
+            # keep replaying the previous wheel setpoints indefinitely.
+            self._publish_wheel_cmd(0.0, 0.0)
             return
 
-        v_cmd, omega_cmd = result
-        self._publish_twist(v_cmd, omega_cmd)
+        wl_cmd, wr_cmd = result
+        self._publish_wheel_cmd(wl_cmd, wr_cmd)
         self._publish_trajectory()
 
         if self._diag_logger is not None:
-            cs = self._solver._last_costate  # (m, 5): lx, ly, lth, lv, lom
-            st = self._solver._last_state  # (m, 5): px, py, th, v, om
+            cs = self._solver._last_costate  # (m, 5): lx, ly, lth, lwl, lwr
+            st = self._solver._last_state  # (m, 5): px, py, th, wl, wr
             if cs is not None and st is not None:
                 lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(cs[0], self.cfg)
+                v_prof, om_prof = self.cfg.wheels_to_body(st[:, 3], st[:, 4])
                 self._diag_logger.log_plan(
                     traj_id=-1,
                     chunk=-1,
                     thetas_deg=np.degrees(st[:, 2]),
-                    omegas=st[:, 4],
-                    vs=st[:, 3],
+                    omegas=om_prof,
+                    vs=v_prof,
                     lam_th_0=lam_th_0,
                     lam_om_0=lam_om_0,
                     alpha_cmd_0=alpha_cmd_0,
@@ -459,7 +489,7 @@ class PlannerNode(Node):
         attempted" from "the rollout we were watching just ended".
 
         PlanToGoal carries a 3D start pose (x, y, theta). The 5D BVP also
-        needs initial v and omega; these are zero-initialized -- planning
+        needs initial wheel speeds; these are zero-initialized -- planning
         from rest. The first BVP segment will converge to the correct
         velocity profile regardless.
         """
@@ -481,7 +511,7 @@ class PlannerNode(Node):
             result.trajectory_id = 0
             return result
 
-        # 5D initial state: 3D pose from action goal, v/omega zero-init.
+        # 5D initial state: 3D pose from action goal, wheel speeds zero-init.
         x0 = np.array([req.start_x, req.start_y, req.start_theta, 0.0, 0.0])
         goal = np.array([req.target_x, req.target_y, req.target_theta])
         self.get_logger().info(
@@ -612,29 +642,27 @@ class PlannerNode(Node):
         goal_handle,
     ):
         """Process one RolloutChunk: log diagnostics, publish feedback and path."""
-        if self._diag_logger is not None and chunk.costate_t0 is not None:
+        if self._diag_logger is not None and chunk.costates.shape[0] > 0:
             lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(
-                chunk.costate_t0, self.cfg
+                chunk.costates[0], self.cfg
+            )
+            # Diag CSV keeps its body-space schema: omega / v columns are
+            # the body equivalents of the PUBLISHED wheel commands.
+            v_cmd, om_cmd = self.cfg.wheels_to_body(
+                chunk.wheel_cmds[:, 0], chunk.wheel_cmds[:, 1]
             )
             self._diag_logger.log_plan(
                 traj_id=traj_id,
                 chunk=chunk.chunk_idx,
                 thetas_deg=np.degrees(chunk.poses[:, 2]),
-                omegas=chunk.twists[:, 1],
-                vs=chunk.twists[:, 0],
+                omegas=om_cmd,
+                vs=v_cmd,
                 lam_th_0=lam_th_0,
                 lam_om_0=lam_om_0,
                 alpha_cmd_0=alpha_cmd_0,
             )
         _t0 = perf_counter()
-        self._publish_chunk_feedback(
-            goal_handle,
-            traj_id,
-            chunk.chunk_idx,
-            chunk.twists,
-            chunk.poses,
-            chunk.dt_sample,
-        )
+        self._publish_chunk_feedback(goal_handle, traj_id, chunk)
         _fb_ms = (perf_counter() - _t0) * 1e3
 
         all_poses.append(chunk.poses)
@@ -666,17 +694,18 @@ class PlannerNode(Node):
         self._was_in_goal_zone = False
         self._solver.reset_warm_start()
 
-    def _publish_twist(self, v: float, omega: float):
-        if self.node_cfg.enable_stamped_cmd_vel:
-            msg = TwistStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.node_cfg.robot_frame
-            msg.twist.linear.x = v
-            msg.twist.angular.z = omega
-        else:
-            msg = Twist()
-            msg.linear.x = v
-            msg.angular.z = omega
+    def _publish_wheel_cmd(self, wl: float, wr: float):
+        """Publish one wheel-group velocity command.
+
+        Data order matches the controller's `joints` parameter
+        [front_left, rear_left, front_right, rear_right]: each side's
+        pair receives the same setpoint -- the reduction lemma made the
+        front/rear split uncontrollable for the planner, so the nominal
+        is symmetric by construction. A downstream corrector is free to
+        split the pair when terrain breaks the symmetry.
+        """
+        msg = Float64MultiArray()
+        msg.data = [float(wl), float(wl), float(wr), float(wr)]
         self._cmd_pub.publish(msg)
 
     def _publish_trajectory(self):
@@ -731,15 +760,15 @@ class PlannerNode(Node):
         self,
         goal_handle,
         traj_id: int,
-        chunk_idx: int,
-        twists: np.ndarray,
-        poses: np.ndarray,
-        dt: float,
+        chunk: RolloutChunk,
     ):
         """Emit one trajectory chunk as PlanToGoal action feedback.
 
-        twists shape (N, 2): [v, omega] per row.
-        poses  shape (N, 3): [px, py, theta] per row, parallel to twists.
+        All arrays in the chunk are parallel (row i = tick i):
+          wheel_cmds (N, 2) -- published per-side setpoints [w_l, w_r]
+          accels     (N, 2) -- BVP-optimal wheel accelerations [a_l*, a_r*]
+          poses      (N, 3) -- planned pose [px, py, theta]
+          costates   (N, 5) -- PMP costates [lx, ly, lth, lwl, lwr]
 
         Empty chunks are silently skipped: there's no "is_final" flag in
         the action feedback (the action result signals end-of-trajectory),
@@ -747,29 +776,40 @@ class PlannerNode(Node):
         intra-segment-hit case in rollout_generator guards against
         ever yielding an empty truncation.
         """
-        if twists.shape[0] == 0:
+        if chunk.wheel_cmds.shape[0] == 0:
             return
         fb = PlanToGoal.Feedback()
         fb.trajectory_id = int(traj_id)
-        fb.chunk_index = int(chunk_idx)
-        fb.dt = float(dt)
+        fb.chunk_index = int(chunk.chunk_idx)
+        fb.dt = float(chunk.dt_sample)
         # tolist() because rosidl-generated message slots for float32[]
         # expect a Python list (or array.array), not an ndarray.
-        t32 = twists.astype(np.float32)
-        p32 = poses.astype(np.float32)
-        fb.linear_x = t32[:, 0].tolist()
-        fb.angular_z = t32[:, 1].tolist()
+        p32 = chunk.poses.astype(np.float32)
+        w32 = chunk.wheel_cmds.astype(np.float32)
+        a32 = chunk.accels.astype(np.float32)
+        l32 = chunk.costates.astype(np.float32)
         fb.pose_x = p32[:, 0].tolist()
         fb.pose_y = p32[:, 1].tolist()
         fb.pose_theta = p32[:, 2].tolist()
+        fb.wheel_left = w32[:, 0].tolist()
+        fb.wheel_right = w32[:, 1].tolist()
+        fb.accel_left = a32[:, 0].tolist()
+        fb.accel_right = a32[:, 1].tolist()
+        fb.lam_x = l32[:, 0].tolist()
+        fb.lam_y = l32[:, 1].tolist()
+        fb.lam_theta = l32[:, 2].tolist()
+        fb.lam_wheel_left = l32[:, 3].tolist()
+        fb.lam_wheel_right = l32[:, 4].tolist()
         goal_handle.publish_feedback(fb)
 
     # ---------------- PMP introspection (for evaluation) ----------------
 
     def extract_costates(self) -> Optional[np.ndarray]:
-        """Return the last costate trajectory (m, 3): lambda_x, lambda_y, lambda_th."""
+        """Return the last costate trajectory (m, 5):
+        lambda_x, lambda_y, lambda_th, lambda_wl, lambda_wr."""
         return self._solver._last_costate
 
     def extract_predicted_trajectory(self) -> Optional[np.ndarray]:
-        """Return the last optimal state trajectory (m, 3): px, py, theta."""
+        """Return the last optimal state trajectory (m, 5):
+        px, py, theta, w_l, w_r."""
         return self._solver._last_state

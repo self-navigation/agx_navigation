@@ -17,13 +17,19 @@ class TurnDiagnosticLogger:
                            tick=0 is t=0 (anchored to actual state by BVP BC),
                            tick=k is the k-th committed/lookahead sample.
                            theta_deg is the BVP-planned heading (state).
-                           omega, v are the PUBLISHED commands at this tick
-                           (post chassis-model inversion), NOT the BVP state.
-                           To recover the BVP state from omega_cmd, invert:
-                             omega_state ~= gain_omega * omega_cmd - tau_omega * domega_cmd/dt
-                           but in practice it is easier to log states
-                           separately if needed.
-                           lam_th, lam_om, alpha_cmd are only written on tick=0.
+                           The schema predates the wheel-space model, so
+                           omega and v are BODY EQUIVALENTS through
+                           cfg.wheels_to_body: in online mode they are the
+                           planned body-velocity STATES along the horizon;
+                           in offline mode they are the PUBLISHED wheel
+                           commands mapped to body space. Per-wheel
+                           quantities (setpoints, accelerations, costates)
+                           travel in the PlanToGoal action feedback, not here.
+                           lam_th, lam_om, alpha_cmd are only written on
+                           tick=0; lam_om = (lam_wr - lam_wl) / (2 c_w) and
+                           alpha_cmd = c_w * (a_r* - a_l*) are the body
+                           images of the wheel costates / saturated wheel
+                           accelerations (see compute_diag_values).
 
     Quick analysis (requires pandas + matplotlib)::
 
@@ -37,12 +43,14 @@ class TurnDiagnosticLogger:
         axes[0].plot(p0.wall_s,   p0.theta_deg,   '.', label='plan t=0')
         axes[0].set_ylabel('heading (deg)')
         axes[0].legend()
-        # lambda_omega at t=0: must be negative for a CCW turn.
-        # If it hovers near 0 the cold-start costate fix isn't firing.
+        # body-equivalent lambda_omega at t=0: must be negative for a CCW
+        # turn. If it hovers near 0 the cold-start costate fix isn't firing.
         axes[1].plot(p0.wall_s, p0.lam_om)
         axes[1].axhline(0, color='k', ls='--')
         axes[1].set_ylabel('lambda_omega(0)')
-        # alpha command at t=0: should be near +/-alpha_max while turning.
+        # body angular-acceleration command at t=0: bounded by
+        # 2 * c_w * a_wheel_max (both wheels saturated in opposition);
+        # should sit near that bound while aggressively turning in place.
         axes[2].plot(p0.wall_s, p0.alpha_cmd)
         axes[2].set_ylabel('alpha*(0)  [rad/s^2]')
         axes[2].set_xlabel('wall time (s)')
@@ -118,7 +126,9 @@ class TurnDiagnosticLogger:
     ) -> None:
         """Log the full planned heading profile for one BVP solve.
 
-        The lam_th, lam_om, alpha_cmd columns are only populated on tick=0
+        omegas / vs are body-space arrays (the caller maps wheel
+        quantities through cfg.wheels_to_body before logging). The
+        lam_th, lam_om, alpha_cmd columns are only populated on tick=0
         so the CSV stays readable without pivoting.
         """
         t0 = self._now()

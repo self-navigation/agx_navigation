@@ -3,13 +3,28 @@ from dataclasses import dataclass
 
 @dataclass
 class PlannerConfig:
-    """Indirect-method planner parameters."""
+    """Indirect-method planner parameters (wheel-space skid-steer model).
+
+    The planner state is (p_x, p_y, theta, w_l, w_r) where w_l, w_r are
+    the left/right wheel-pair angular speeds [rad/s]; controls are the
+    wheel angular accelerations (a_l, a_r). Body velocities are derived
+    through the lumped-slip kinematics
+
+        v     = (wheel_radius / 2)            * (w_l + w_r)
+        omega = (wheel_radius / track_eff)    * (w_r - w_l)
+
+    with track_eff = track * slip_chi. Behaviour-shaping costs (speed
+    reference, brake, alignment, omega regularizer, v/omega barriers)
+    stay expressed in body space; actuation limits and control effort
+    live in wheel space, where the speed/turn trade-off is physical.
+    """
 
     # --- Operating mode ---
-    # "online":  per-tick BVP solve + Twist publication at control_rate Hz.
+    # "online":  per-tick BVP solve + wheel-command publication at
+    #            control_rate Hz on the JointGroupVelocityController topic.
     # "offline": worker-thread rollout-by-concatenation; chunks streamed
-    #            on /pmp_planner/trajectory_chunks for an interpreter to
-    #            execute. See module docstring for full semantics.
+    #            as PlanToGoal action feedback for an interpreter/executor.
+    #            See the node module docstring for full semantics.
     mode: str = "online"
 
     # --- Horizon ---
@@ -20,49 +35,69 @@ class PlannerConfig:
     #    default; raise to 31-41 if the warm-start repeatedly fails on
     #    sharp fields.
     # T_horizon: prediction window [s]. The BVP optimises over this entire
-    #    window; only the t=0 command is applied (receding horizon). Longer
-    #    horizons see farther ahead but widen the TPBVP and slow solve time.
-    #    Set to roughly the distance-to-goal / v_max at the desired
-    #    lookahead; 2.5 s at v_max = 0.5 m/s gives a 1.25 m lookahead.
-    # control_rate: timer frequency [Hz] for online mode. Warm-start solves
-    #    are typically < 30 ms, so 10 Hz leaves margin. Raise if your
-    #    environment changes rapidly; lower if CPU is constrained.
+    #    window; only the t=0 command is applied (receding horizon).
+    # control_rate: timer frequency [Hz] for online mode and sample rate
+    #    for offline chunks. Warm-start solves are typically < 30 ms.
     N: int = 21
     T_horizon: float = 2.5
     control_rate: float = 10.0
 
-    # --- Speed reference scale and state bounds ---
-    # v_max, omega_max: bounds on the chassis velocity STATES inside the
-    # BVP -- not on the published cmd. Enforced softly via the
-    # w_v_barrier / w_omega_barrier terms in the cost. The published cmd
-    # is the inversion of these states through the chassis model
-    # (chassis_gain_*, chassis_tau_*); during transients the cmd
-    # legitimately exceeds v_max / omega_max by the lead term
-    # |tau * accel_state|.
+    # --- Chassis geometry / skid-steer kinematics ---
+    # wheel_radius, track: physical dimensions from scout_mini.xacro.
+    # slip_chi: effective-track expansion factor (Mandow et al., IROS'07
+    #    ICR model). Lateral skid during rotation makes the chassis turn
+    #    as if the wheels were chi * track apart, chi >= 1. This replaces
+    #    the old chassis_gain_omega feedforward inversion:
+    #        slip_chi = 1 / chassis_gain_omega
+    #    so the slip lives in the planning kinematics instead of a
+    #    publication-side gain (applying both would correct twice).
+    #    1.2987 = 1 / 0.77, the value identified for Scout Mini in sim
+    #    (mu2 = 0.7 lateral friction). Re-identify per surface.
+    wheel_radius: float = 0.08
+    track: float = 0.416503
+    slip_chi: float = 1.2987
+
+    # --- Body-space behaviour bounds ---
+    # v_max, omega_max: soft bounds on the DERIVED body velocities,
+    # enforced via w_v_barrier / w_omega_barrier. These encode desired
+    # behaviour (cruise speed, comfortable yaw rate), not hardware
+    # limits -- the hardware net is w_wheel_max below. v_max also sets
+    # the v_ref scale and the pursuit lookahead distance.
     v_max: float = 0.5
     omega_max: float = 1.5
 
-    # a_max, alpha_max: HARD bounds on the linear/angular acceleration
-    # controls [m/s^2, rad/s^2], tanh-saturated in _ode. Measure from a
-    # chassis step-response: peak observed |dv/dt| when commanding a
-    # v_max step (for a_max), peak |domega/dt| when commanding an
-    # omega_max step (for alpha_max). The states v, omega evolve as
-    # dv/dt = a and domega/dt = alpha. These bounds also set how large
-    # the inversion's lead term (tau * accel) can grow, so an over-
-    # estimated alpha_max paired with a too-large chassis_tau_omega is
-    # what drives published omega_cmd into saturation during ramps.
-    a_max: float = 1.0
-    alpha_max: float = 3.0
+    # --- Wheel-space actuation ---
+    # a_wheel_max: HARD bound on each wheel's angular acceleration
+    #    control [rad/s^2], tanh-saturated in _ode. 12.5 = old
+    #    a_max / wheel_radius, so a pure-linear ramp matches the old
+    #    planner; a pure turn at the old alpha_max = 3.0 needs
+    #    alpha_max * track_eff / (2 r) ~= 10.1, also within bound. The
+    #    old (a_max, alpha_max) CORNER needed ~22.6 and is now
+    #    deliberately infeasible: linear and angular acceleration share
+    #    one per-wheel budget, as they do on the platform.
+    # gamma_wheel: quadratic effort weight on (a_l, a_r). Sets the
+    #    closed-form law a_i* = -lambda_wi / gamma_wheel (tanh-sat by
+    #    a_wheel_max). 0.0016 = old gamma_a * r^2 / 2, which reproduces
+    #    the old LINEAR-channel aggressiveness exactly; the implied
+    #    angular effort weight becomes gamma_wheel * track_eff^2 /
+    #    (2 r^2) ~= 0.037 vs the old 0.2, i.e. turning is ~5x cheaper.
+    #    Raise w_omega_run if turn-in becomes too eager.
+    # w_wheel_max, w_wheel_barrier: soft per-wheel SPEED barrier -- the
+    #    true hardware net. 20.0 matches <limit velocity="20"> on the
+    #    wheel joints; gz_ros2_control clips commands there anyway, so
+    #    the planner should not plan past it. Rarely active at the
+    #    default v_max / omega_max (their corner needs ~11.3 rad/s).
+    a_wheel_max: float = 12.5
+    gamma_wheel: float = 0.0016
+    w_wheel_max: float = 20.0
+    w_wheel_barrier: float = 50.0
 
-    # cmd_deadzone_v, cmd_deadzone_omega: lower threshold for the
-    # published twist (applied AFTER the chassis-model inversion).
-    # The BVP-predicted v, omega can be genuinely near-zero values
-    # during turn-in-place phases (brake cost wants v=0, speed
-    # reference is small). Below the deadzone threshold, the planner
-    # publishes 0 instead -- chassis stays stationary, the BVP's plan
-    # and the chassis's reality agree. Set above the noise floor of
-    # your BVP solve but well below the smallest "intended" movement
-    # command. Defaults give ~3 cm/s linear, ~3 deg/s angular dead band.
+    # --- Command deadzone (body space) ---
+    # Applied to the body velocities reconstructed from the wheel
+    # commands, BEFORE mapping back to wheels: a near-zero v with
+    # active omega (turn-in-place) zeroes only the symmetric part.
+    # Below threshold the planner publishes exact zeros so the BVP's
+    # plan and the chassis's reality agree during stationary phases.
     cmd_deadzone_v: float = 0.03
     cmd_deadzone_omega: float = 0.05
 
@@ -73,46 +108,27 @@ class PlannerConfig:
     #    The gradient is beta * min(T, T_horizon) * grad(T) / T_horizon,
     #    so it fades to zero at the goal sink (T->0) for clean braking,
     #    and is capped to beta * grad(T) during navigation so it doesn't
-    #    swamp the heading terms. Raise to pull harder toward the goal on
-    #    long paths; lower if the chassis shortcuts around obstacles.
+    #    swamp the heading terms.
     # w_h: heading-alignment weight. Controls (1 - F_unit . h) in the
     #    running cost and the terminal-yaw spring. Tuning is non-monotonic:
-    #    both w_h <= 3 (position cost dominates) and w_h >= 12 (rigid
-    #    F-tracking) clear corners well; intermediate values (3-12) can
-    #    find shortcuts. Default 5 is a good starting point.
-    # w_v: speed-reference tracking weight (v - v_ref_eff)^2.
-    #    Set to 0 to disable; useful to isolate brake/alignment behavior.
-    #    Raise if the chassis doesn't reach v_max on straight segments.
+    #    both w_h <= 3 and w_h >= 12 clear corners well; intermediate
+    #    values (3-12) can find shortcuts.
+    # w_v: speed-reference tracking weight (v - v_ref_eff)^2, with v
+    #    derived from the wheel states. Set to 0 to disable.
     # w_brake: heading-coupled brake on v^2:
-    #    (1/2) * w_brake * (1 - F . h)^2 * v^2. With v as a state, the
-    #    brake's effect appears in lambda_v_dot rather than directly in
-    #    the optimal control, but the qualitative behavior is the same:
-    #    gentle near alignment (cornering smooth), strong when anti-
-    #    aligned (drives a* < 0 via large lambda_v).
+    #    (1/2) * w_brake * (1 - F . h)^2 * v^2. Acts through the wheel
+    #    costates via dH/dv; gentle near alignment, strong when
+    #    anti-aligned.
     # L_brake: speed-reference length scale [m]. v_ref = v_max *
     #    tanh(d_to_goal / L_brake). Set near the chassis stopping distance.
-    #    Smaller values brake earlier; larger values maintain speed closer
-    #    to the goal.
+    #    LARGER values brake EARLIER (the tanh leaves v_max sooner).
     # align_gate_power: sharpness of the heading-alignment gate multiplying
     #    v_ref: gate = ((1 + F.h) / 2)^p. p=4 (default) gives gate(perp)
-    #    = 0.06 -- effective braking when perpendicular. p=2 gives
-    #    gate(perp) = 0.25 (racing-line cornering). p=8 is near binary.
-    # w_omega_run: quadratic regularizer on state omega (NOT the control).
-    #    Penalises being in a rotating state without active commanding.
-    #    Small (~0.1) by default; larger values damp residual rotation
-    #    but also blunt sharp turns.
-    # gamma_a, gamma_alpha: quadratic regularizers on the controls.
-    #    Set the closed-form laws
-    #        a*     = -lambda_v     / gamma_a,     sat by a_max
-    #        alpha* = -lambda_omega / gamma_alpha, sat by alpha_max
-    #    Smaller gamma = more aggressive; larger = smoother. Tune so
-    #    unsaturated controls at typical operating points sit in the
-    #    middle of the saturation range.
-    # w_v_barrier, w_omega_barrier: soft state-bound barriers, kept as
-    #    safety nets. The acceleration models on v and omega allow the
-    #    states to drift above v_max / omega_max if the controls are
-    #    saturated and held; the barriers drive the corresponding costate
-    #    large in the right direction to brake.
+    #    = 0.06; p=2 gives 0.25 (racing-line cornering); p=8 near binary.
+    # w_omega_run: quadratic regularizer on the DERIVED yaw-rate state.
+    #    Penalises being in a rotating state without active commanding,
+    #    and is the natural damper if gamma_wheel makes turning too cheap.
+    # w_v_barrier, w_omega_barrier: soft body-state barriers (see above).
     alpha_t: float = 1.0
     beta: float = 5.0
     w_h: float = 5.0
@@ -121,8 +137,6 @@ class PlannerConfig:
     L_brake: float = 0.5
     align_gate_power: float = 4.0
     w_omega_run: float = 0.1
-    gamma_a: float = 0.5
-    gamma_alpha: float = 0.2
     w_v_barrier: float = 50.0
     w_omega_barrier: float = 50.0
 
@@ -131,36 +145,24 @@ class PlannerConfig:
     #    |F_unit| = |F| / sqrt(|F|^2 + eps^2). Makes |F_unit| -> 0 where
     #    the underlying field collapses (goal sink, saddles), fading the
     #    alignment cost instead of letting it fight the terminal target.
-    #    Set comparable to the upstream gradient noise floor (~1e-2).
     field_eps: float = 1e-2
 
     # --- Terminal-cost weights ---
     # w_T_terminal: Lyapunov-in-T-space terminal weight on T_lin^2 where
-    #    T_lin = T_ref - F_ref . (p_T - p_pursuit). Provides LONG-RANGE
-    #    pull along -F_ref (the geometry of the field), complementary to
-    #    the local isotropic w_pp well. The transversality is
-    #    lambda_xy(T) = -w_T_terminal * T_lin * F_ref + w_pp * (p_T - p_pursuit),
-    #    so the two terminal-position terms cooperate when the BVP
-    #    endpoint sits along the streamline and disagree softly when it
-    #    drifts off-axis. Raise to bias the endpoint toward the
-    #    streamline; lower if Newton struggles on sharp T fields.
-    # w_pp: small isotropic pursuit-point pull (1/2)*w_pp*||p_T - p_pursuit||^2.
-    #    Breaks the half-pipe degeneracy of T_lin^2 alone (which is
-    #    degenerate perpendicular to F_ref). Keep small relative to
-    #    w_T_terminal so it doesn't fight the streamline pull.
+    #    T_lin = T_ref - F_ref . (p_T - p_pursuit). Long-range pull along
+    #    -F_ref, complementary to the local isotropic w_pp well.
+    # w_pp: small isotropic pursuit-point pull. Breaks the half-pipe
+    #    degeneracy of T_lin^2 alone (degenerate perpendicular to F_ref).
     # w_th: terminal heading basin: (1/2)*w_th*(theta_T - theta_pursuit)^2.
-    #    Also drives the running heading spring when w_F ~ 0 (at goal).
-    # w_v_terminal, w_omega_terminal: stop-condition weights on v_T^2,
-    #    omega_T^2. Set both > 0 to tell the planner the chassis should
-    #    arrive stationary; lambda_v(T) = w_v_terminal * v_T and
-    #    lambda_omega(T) = w_omega_terminal * omega_T are the
-    #    corresponding transversalities. Setting to 0 leaves terminal
-    #    velocity free (chassis "drives through" the goal).
+    # w_v_terminal, w_omega_terminal: stop-condition weights on the
+    #    DERIVED terminal body velocities v_T^2, omega_T^2. The wheel
+    #    transversalities are the chain-rule images:
+    #      lambda_wl(T) = c_v * w_v_terminal * v_T - c_w * w_omega_terminal * omega_T
+    #      lambda_wr(T) = c_v * w_v_terminal * v_T + c_w * w_omega_terminal * omega_T
+    #    Keeping them in body space preserves independent tuning of
+    #    "stop translating" vs "stop rotating".
     # pursuit_lookahead_mult: target arc length as a multiple of
-    #    v_max * T_horizon. 1.0 places the terminal target where the
-    #    chassis would arrive if it tracked F at full speed. < 1 leaves
-    #    slack (eases Newton on hard fields); > 1 reaches past the natural
-    #    horizon (tighter tracking, harder convergence).
+    #    v_max * T_horizon.
     w_T_terminal: float = 2.0
     w_pp: float = 0.5
     w_th: float = 2.0
@@ -171,44 +173,33 @@ class PlannerConfig:
     # --- Cross-track residual (opt-in, off by default) ---
     # Adds (1/2)*w_xt*r_xt(p)^2 to the running cost, where r_xt is the
     # signed perpendicular drift from the F-streamline at a soft Gaussian-
-    # weighted projection. Penalises lateral drift directly (alignment
-    # only constrains heading). Off by default: empirically the BVP either
-    # ignores a small w_xt or stalls at a large one, because the
-    # frozen-reference gradient doesn't accurately reflect the curvature of
-    # the streamline in the BVP mesh. Useful only when the upstream F field
-    # is unusually straight and the chassis still drifts laterally.
+    # weighted projection. Off by default: empirically the BVP either
+    # ignores a small w_xt or stalls at a large one.
     # xt_horizon_m: streamline arc length to trace [m]; should exceed
     #    v_max * T_horizon.
     # xt_sigma_mult: Gaussian projection bandwidth = mult * grid_resolution.
-    #    ~3 blends 5-7 adjacent samples; too small causes Voronoi-boundary
-    #    oscillation during mesh refinement.
     w_xt: float = 0.0
     xt_horizon_m: float = 2.5
     xt_sigma_mult: float = 3.0
 
     # --- Goal tolerances ---
-    # Both must be satisfied simultaneously to trigger REACHED (zero twist).
-    # The at-goal yaw correction is handled by the BVP itself (gated v_ref
-    # yields v~0 + omega!=0 at the goal) -- no separate supervisor needed.
+    # Both must be satisfied simultaneously to trigger REACHED (zero
+    # wheel command). The at-goal yaw correction is handled by the BVP
+    # itself (gated v_ref yields v~0 + omega!=0 at the goal).
     goal_tolerance_xy: float = 0.05  # [m]
     goal_tolerance_th: float = 0.20  # [rad]
 
     # --- BVP solver knobs ---
     # bvp_tol: solve_bvp residual tolerance. 1e-3 is the practical sweet
     #    spot: tighter (1e-4) roughly doubles solve time with little
-    #    command improvement; looser (1e-2) saves ~20% but may leave visible
-    #    residual on sharp fields.
+    #    command improvement.
     # bvp_max_nodes: adaptive mesh node cap. 2000 is sufficient for most
-    #    smooth fields; raise to 3000-5000 if the field has obstacle
-    #    boundaries that create sharp T gradients and solve_bvp consistently
-    #    hits the cap (logged as a warning via bvp_verbose >= 1).
+    #    smooth fields; raise if sharp obstacle boundaries make solve_bvp
+    #    consistently hit the cap.
     # bvp_verbose: 0 = silent, 1 = per-solve summary, 2 = per-iteration.
-    #    Use 1 to diagnose convergence issues without flooding the log.
     # reuse_previous_solution: warm-start each solve from the previous BVP
-    #    solution. This is the single biggest convergence aid; disable only
-    #    to measure cold-start performance or diagnose warm-start pathology.
-    #    Automatically dropped on new goal, new field, or goal-zone boundary
-    #    crossing.
+    #    solution. The single biggest convergence aid. Automatically
+    #    dropped on new goal, new field, or goal-zone boundary crossing.
     bvp_tol: float = 1e-3
     bvp_max_nodes: int = 2000
     bvp_verbose: int = 0
@@ -218,66 +209,60 @@ class PlannerConfig:
     # dt_segment: committed arc length per BVP solve [s]. Each solve
     #    optimises over the full T_horizon, but only the first dt_segment
     #    seconds are published and the sim state is advanced by that amount.
-    #    Smaller values re-solve more frequently (better quality, more CPU);
-    #    larger values exploit more of each BVP's tail (lower CPU, slightly
-    #    degraded quality at segment ends where the tail is dominated by the
-    #    terminal-cost regulariser). Capped to T_horizon at runtime.
-    #    Default = T_horizon / 2.
     dt_segment: float = 1.25  # [s]
 
     # field_diff_threshold: max |T_new - T_old| along the planned path
-    #    that triggers a replan [s]. Out-of-bounds cells in either grid are
-    #    treated as +inf diff (newly discovered terrain always replans).
-    #    Tune conservatively: too low causes spurious replans on minor field
-    #    updates; too high lets the chassis execute a now-invalid plan
-    #    through a changed obstacle.
+    #    that triggers a replan [s] (consumed by the interpreter).
     field_diff_threshold: float = 0.5  # [s]
 
-    # max_rollout_sim_time: safety cap on total rollout time [s]. If the
-    #    simulated chassis hasn't reached goal tolerance within this many
-    #    seconds of trajectory time, the rollout is aborted and a terminal
-    #    chunk is published. Guards against degenerate fields where the
-    #    chassis orbits the goal indefinitely.
+    # max_rollout_sim_time: safety cap on total rollout time [s].
     max_rollout_sim_time: float = 60.0  # [s]
 
-    # --- Chassis model for feedforward inversion at publication ---
-    # The BVP plans in "desired body behaviour" space; published cmds
-    # are
-    #   v_cmd     = (v_state     + tau_v     * a_star)     / gain_v
-    #   omega_cmd = (omega_state + tau_omega * alpha_star) / gain_omega
-    # where a_star, alpha_star are the BVP-optimal controls.
-    #
-    # These parameters do NOT enter the BVP itself -- they only
-    # transform the BVP-planned (state, control) into a published cmd
-    # which, after the chassis's static gain and first-order tracking
-    # lag, produces the BVP-planned state. Identify gain and tau from
-    # an angular / linear step-response test on the target platform.
-    #
-    # gain < 1 (typical for skid-steer): the chassis rotates / drives
-    #   at a fraction of the cmd's nominal rate, because lateral wheel
-    #   slip during rotation (or longitudinal slip for v) eats some of
-    #   the wheel-speed differential. Setting gain = 0.77 means commanding
-    #   omega = 1.3 to achieve 1.0 rad/s of body rotation.
-    # tau: first-order time constant of the velocity-tracking loop.
-    #   For skid-steer, dominated by lateral-friction dynamics rather
-    #   than the inner wheel-velocity loop; can vary with omega
-    #   magnitude. ERR ON THE LOW SIDE -- under-estimating tau makes
-    #   the chassis lag the BVP plan slightly; over-estimating it
-    #   amplifies cmd transients and causes overshoot. tau = 0 gives
-    #   static-gain-only compensation, which preserves the integral of
-    #   the planned motion exactly but lags in timing.
-    chassis_gain_v: float = 1.0
-    chassis_gain_omega: float = 0.77  # measured for Scout Mini in sim
-    chassis_tau_v: float = 0.10
-    chassis_tau_omega: float = 0.30  # err low; over-estimate causes overshoot
+    # --- Wheel-level publication model ---
+    # The published command is the BVP-planned wheel-speed STATE (a
+    # velocity setpoint that already respects the acceleration bounds),
+    # optionally predistorted for a first-order wheel-speed tracking lag:
+    #     w_cmd_i = w_state_i + tau_wheel * a_i*
+    # tau_wheel: time constant of the wheel-velocity loop. 0.0 (default)
+    #    is correct for gz_ros2_control's velocity interface, which
+    #    tracks within a physics step; identify on real hardware from a
+    #    wheel-speed step response. The old chassis_tau_omega (~0.3 s)
+    #    was dominated by body-level lateral-friction dynamics, which
+    #    have no per-wheel representation -- that transient is now part
+    #    of the residual the downstream corrector handles.
+    # wheel_cmd_max: hard cap on the PUBLISHED wheel command [rad/s].
+    #    Matches the joint <limit velocity="20">; gz_ros2_control would
+    #    clip there regardless, so clipping here keeps the plan honest.
+    tau_wheel: float = 0.0
+    wheel_cmd_max: float = 20.0
 
-    # Hard caps on the PUBLISHED cmd (post-inversion). Should be >= the
-    # chassis controller's max_velocity so the inversion's lead term
-    # isn't clipped. The BVP's v_max / omega_max are SEPARATE bounds in
-    # the planning model and apply to the BVP state, not the cmd.
-    chassis_v_max: float = 5.0
-    chassis_omega_max: float = 5.0
+    # --- Derived quantities (not ROS parameters) ---
 
     @property
     def dt(self) -> float:
         return self.T_horizon / self.N
+
+    @property
+    def track_effective(self) -> float:
+        """Slip-expanded track width [m] used by the kinematic map."""
+        return self.track * self.slip_chi
+
+    @property
+    def c_v(self) -> float:
+        """v = c_v * (w_l + w_r)."""
+        return 0.5 * self.wheel_radius
+
+    @property
+    def c_w(self) -> float:
+        """omega = c_w * (w_r - w_l)."""
+        return self.wheel_radius / self.track_effective
+
+    def wheels_to_body(self, wl, wr):
+        """(w_l, w_r) -> (v, omega). Broadcasts over numpy arrays."""
+        return self.c_v * (wl + wr), self.c_w * (wr - wl)
+
+    def body_to_wheels(self, v, omega):
+        """(v, omega) -> (w_l, w_r). Exact inverse of wheels_to_body."""
+        half_sum = v / (2.0 * self.c_v)
+        half_diff = omega / (2.0 * self.c_w)
+        return half_sum - half_diff, half_sum + half_diff
