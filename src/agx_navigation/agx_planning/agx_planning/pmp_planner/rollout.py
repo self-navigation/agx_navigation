@@ -7,7 +7,7 @@ Public API
 ----------
   parse_field_array   -- build a VectorFieldGrid from a raw float32 buffer
   goal_reached        -- check if a state is inside the goal-tolerance ball
-  compute_diag_values -- extract PMP diagnostic scalars from a costate snapshot
+  compute_diag_values -- body-equivalent PMP diagnostics from a costate snapshot
   RolloutChunk        -- one committed BVP segment yielded by rollout_generator
   RolloutResult       -- terminal event; always the last item from rollout_generator
   rollout_generator   -- open-loop rollout as a Python generator
@@ -32,22 +32,37 @@ from agx_planning.pmp_planner import PMPShootingSolver, PlannerConfig
 
 @dataclass(frozen=True)
 class RolloutChunk:
-    """One committed BVP segment.
+    """One committed BVP segment. All arrays are parallel: row i is the
+    quantity at tick i, and wheel_cmds[i] is applied at poses[i].
 
-    twists     (N, 2) float64 -- chassis commands [v_cmd, omega_cmd] per sample
-    poses      (N, 3) float64 -- planned state [px, py, theta] per sample,
-                                 parallel to twists: twists[i] is applied at poses[i]
-    costate_t0 (5,)  float64  -- costate row 0 [lx, ly, lth, lv, lom] captured
-                                 immediately after the solve; None if unavailable.
-                                 Snapshotted here so the consumer does not need to
-                                 reach back into the solver after the next solve fires.
+    wheel_cmds (N, 2) float64 -- publication-ready wheel-group velocity
+                                 setpoints [w_l, w_r] per sample [rad/s]
+                                 (post lead/deadzone/clip). The executor
+                                 duplicates each per side for the
+                                 four-joint controller message.
+    accels     (N, 2) float64 -- BVP-optimal wheel accelerations
+                                 [a_l*, a_r*] per sample [rad/s^2]; the
+                                 planned controls, pre-publication.
+    poses      (N, 3) float64 -- planned pose [px, py, theta] per sample.
+    costates   (N, 5) float64 -- PMP costates [lx, ly, lth, lwl, lwr]
+                                 along the nominal. lambda(t) is the
+                                 gradient of the segment's cost-to-go:
+                                 it parameterizes neighboring-extremal
+                                 feedback (H_xx depends on lx, ly) and
+                                 gives the first-order plan-degradation
+                                 metric lambda' * dx. It depends on
+                                 per-solve pursuit references and the
+                                 field snapshot, so it cannot be
+                                 reconstructed downstream -- it is
+                                 exported here or never.
     """
 
     chunk_idx: int
     dt_sample: float
-    twists: np.ndarray
+    wheel_cmds: np.ndarray
+    accels: np.ndarray
     poses: np.ndarray
-    costate_t0: Optional[np.ndarray]
+    costates: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -101,7 +116,8 @@ def goal_reached(
     goal  -- (3,): [gx, gy, gtheta]
 
     Accepting N >= 3 lets callers pass either the 3-D pose (online mode uses
-    self._xi directly) or the full 5-D state (offline rollout loop).
+    self._xi directly) or the full 5-D state (offline rollout loop, where
+    elements 3:5 are the wheel speeds).
     """
     d_xy = hypot(state[0] - goal[0], state[1] - goal[1])
     d_th = abs(((goal[2] - state[2] + pi) % (2.0 * pi)) - pi)
@@ -114,21 +130,30 @@ def compute_diag_values(
 ) -> tuple[float, float, float]:
     """Compute (lam_th_0, lam_om_0, alpha_cmd_0) from a costate snapshot at t=0.
 
-    costate_t0 -- (5,): [lx, ly, lth, lv, lom]
+    costate_t0 -- (5,): [lx, ly, lth, lwl, lwr]
 
-    alpha_cmd_0 is the tanh-saturated angular-acceleration command derived from
-    the PMP optimality condition  alpha* = -lam_omega / gamma_alpha (sat alpha_max).
-    Useful for diagnosing heading-rate planning decisions.
+    The diagnostic CSV schema predates the wheel-space model, so the
+    angular quantities are reported as BODY equivalents through the
+    inverse costate transform (lambda_w = A^T lambda_(v,omega), so
+    lambda_omega = (lwr - lwl) / (2 c_w)) and the derived yaw
+    acceleration omega_dot = c_w * (a_r - a_l) with each a_i the
+    tanh-saturated optimal wheel acceleration. lam_om_0 retains its
+    old reading ("must be negative for a CCW turn"); alpha_cmd_0 is
+    the body angular-acceleration command implied by the wheel pair.
 
     The caller is responsible for checking whether a costate is available;
-    this function does not return Optional so the control-flow at the call site
-    stays flat.
+    this function does not return Optional so the control-flow at the call
+    site stays flat.
     """
     lam_th_0 = float(costate_t0[2])
-    lam_om_0 = float(costate_t0[4])
-    alpha_cmd_0 = float(
-        cfg.alpha_max * tanh(-lam_om_0 / (cfg.gamma_alpha * cfg.alpha_max))
-    )
+    lam_wl_0 = float(costate_t0[3])
+    lam_wr_0 = float(costate_t0[4])
+    lam_om_0 = (lam_wr_0 - lam_wl_0) / (2.0 * cfg.c_w)
+
+    sat = cfg.gamma_wheel * cfg.a_wheel_max
+    a_l = cfg.a_wheel_max * tanh(-lam_wl_0 / sat)
+    a_r = cfg.a_wheel_max * tanh(-lam_wr_0 / sat)
+    alpha_cmd_0 = cfg.c_w * (a_r - a_l)
     return lam_th_0, lam_om_0, alpha_cmd_0
 
 
@@ -147,7 +172,7 @@ def rollout_generator(
               The caller is responsible for calling reset_warm_start() before
               passing a solver that was previously used for another trajectory.
     cfg     : PlannerConfig
-    x0      : (5,) initial state [px, py, theta, v, omega]
+    x0      : (5,) initial state [px, py, theta, w_l, w_r]
     goal    : (3,) target        [gx, gy, gtheta]
     stop_fn : called before each BVP solve; return None to continue, or a
               canonical stop-reason string to abort.
@@ -176,7 +201,7 @@ def rollout_generator(
     -----------------------
     >>> gen = GeneratorReturnCatcher(rollout_generator(solver, cfg, x0, goal))
     >>> for chunk in gen:
-    ...     record(chunk.twists, chunk.poses)
+    ...     record(chunk.wheel_cmds, chunk.poses)
     >>> result = gen.value   # RolloutResult
     >>> print(result.status, result.message)
 
@@ -237,18 +262,12 @@ def rollout_generator(
                 ),
             )
 
-        twists, poses, x_next = result
-
-        # Snapshot the costate immediately after the solve. The next call to
-        # sample_committed_segment will overwrite solver._last_costate, so the
-        # consumer cannot safely read it after the next iteration starts.
-        cs = solver._last_costate
-        costate_t0 = cs[0].copy() if cs is not None else None
+        wheel_cmds, accels, poses, costates, x_next = result
 
         # Termination (b): scan for the first sample inside the goal ball.
         # Truncate the chunk so the interpreter applies exactly the commands
-        # needed to arrive; twists[i] is applied at poses[i], so the slice
-        # [:hit_idx] delivers the chassis to poses[hit_idx] = goal.
+        # needed to arrive; wheel_cmds[i] is applied at poses[i], so the
+        # slice [:hit_idx] delivers the chassis to poses[hit_idx] = goal.
         hit_idx = -1
         for i in range(poses.shape[0]):
             d_xy = hypot(poses[i, 0] - goal[0], poses[i, 1] - goal[1])
@@ -267,9 +286,10 @@ def rollout_generator(
             yield RolloutChunk(
                 chunk_idx=chunk_idx,
                 dt_sample=dt_sample,
-                twists=twists[:hit_idx],
+                wheel_cmds=wheel_cmds[:hit_idx],
+                accels=accels[:hit_idx],
                 poses=poses[:hit_idx],
-                costate_t0=costate_t0,
+                costates=costates[:hit_idx],
             )
             _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
             _logger.info(
@@ -290,9 +310,10 @@ def rollout_generator(
         yield RolloutChunk(
             chunk_idx=chunk_idx,
             dt_sample=dt_sample,
-            twists=twists,
+            wheel_cmds=wheel_cmds,
+            accels=accels,
             poses=poses,
-            costate_t0=costate_t0,
+            costates=costates,
         )
         _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
 

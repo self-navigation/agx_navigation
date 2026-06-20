@@ -1,42 +1,7 @@
-from .strategies import (
-    ExitKind,
-    RecoveryConfig,
-    RecoveryStrategy,
-    StrategyContext,
-    StrategyOutcome,
-    TwistOutcome,
-    ExitOutcome,
-    ResumeOutcome,
-    WaitOutcome,
-    default_strategies,
-)
-from .corrector import TrajectoryCorrectorNode, CorrectorNodeConfig
-from .config import CorrectorConfig
-from .deviation_detector import DeviationDetector
-from .correction_controller import CorrectionController, CorrectionResult
-from .visualization import TrajectoryVisualizer
-from .trajectory_buffer import TrajectoryBuffer, PlaybackSample
+from .node import WheelCorrectorNode
 
 __all__ = [
-    "TrajectoryCorrectorNode",
-    "CorrectorConfig",
-    "CorrectorNodeConfig",
-    "RecoveryConfig",
-    "RecoveryStrategy",
-    "StrategyContext",
-    "StrategyOutcome",
-    "TwistOutcome",
-    "ExitOutcome",
-    "ResumeOutcome",
-    "WaitOutcome",
-    "default_strategies",
-    "DeviationDetector",
-    "CorrectionController",
-    "CorrectionResult",
-    "ExitKind",
-    "TrajectoryVisualizer",
-    "TrajectoryBuffer",
-    "PlaybackSample",
+    "WheelCorrectorNode",
 ]
 
 import rclpy
@@ -44,7 +9,7 @@ import rclpy
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TrajectoryCorrectorNode()
+    node = WheelCorrectorNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

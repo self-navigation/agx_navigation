@@ -63,27 +63,35 @@ def generate_launch_description():
         condition=UnlessCondition(use_server),
     )
 
-    pmp_interpreter = Node(
+    # Pass-through corrector between the planner's wheel output and the
+    # JointGroupVelocityController input. No-op for now (see wheel_corrector.py).
+    # Online mode: pmp_planner publishes /pmp_planner/wheel_cmd directly.
+    # Offline mode: once runtime_corrector is rewritten to emit wheel commands,
+    # point it at /pmp_planner/wheel_cmd too; until then this node just idles.
+    wheel_corrector = Node(
         package="agx_planning",
-        executable="runtime_corrector",
+        executable="wheel_corrector",
         output="screen",
-        name="runtime_corrector",
+        name="wheel_corrector",
         parameters=[
             {
-                "goal_accept_timeout": 5.0,
-                "enable_stamped_cmd_vel": True,
-                "enable_recovery": do_corrections,
-                "recovery_look_ahead": 2.0,
-                "recovery_v_max": 0.448,
-                "path_diff_window_size": 0.5,
-                "replan_cooldown": 1.0,
+                "expected_size": 4,
                 "use_sim_time": sim,
+                # Debug-plan markers (mirrors runtime_corrector viz style).
+                "publish_debug": True,
+                "planning_frame": "map",
+                "robot_frame": "base_link",
+                "corridor_epsilon": 0.2,
+                "debug_marker_rate": 5.0,
             }
         ],
         remappings=[
-            ("/vector_field/optimal_path", "/plan"),
+            ("~/wheel_cmd_in", "/pmp_planner/wheel_cmd"),
+            ("~/wheel_cmd_out", "/wheel_velocity_controller/commands"),
+            # Planner Path for the debug centerline/corridor. Matches the
+            # planner's /pmp_planner/trajectory -> /optimal_trajectory remap.
+            ("~/plan", "/optimal_trajectory"),
         ],
-        condition=IfCondition(EqualsSubstitution(pmp_mode, "offline")),
     )
 
     return LaunchDescription(
@@ -91,6 +99,6 @@ def generate_launch_description():
         + [
             vector_field,
             launch_pmp_planner,
-            pmp_interpreter,
+            wheel_corrector,
         ]
     )

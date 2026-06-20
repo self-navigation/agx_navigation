@@ -1,40 +1,53 @@
-"""Vector-field guided indirect-method PMP planner for a unicycle.
+"""Vector-field guided indirect-method PMP planner for a skid-steer
+platform, modeled in wheel space.
 
 Solves the optimal-control problem via Pontryagin's Maximum Principle:
 the Hamiltonian, costate ODEs and the optimal-control law are derived
 analytically; the resulting two-point boundary value problem (TPBVP)
 is integrated with scipy.integrate.solve_bvp.
 
-Model -- 5D kinematic unicycle with bounded acceleration on both channels:
-  state    x = (p_x, p_y, theta, v, omega)
-  control  u = (a, alpha),  |a| <= a_max, |alpha| <= alpha_max
-  dynamics x_dot = v cos(theta), y_dot = v sin(theta), theta_dot = omega,
-           v_dot     = a       (linear acceleration control)
-           omega_dot = alpha   (angular acceleration control)
+Model -- 5D wheel-space skid-steer with bounded per-wheel acceleration:
+  state    x = (p_x, p_y, theta, w_l, w_r)
+  control  u = (a_l, a_r),  |a_i| <= a_wheel_max
+  dynamics p_x_dot = v cos(theta), p_y_dot = v sin(theta),
+           theta_dot = omega,
+           w_l_dot = a_l, w_r_dot = a_r
+  derived  v     = c_v * (w_l + w_r),   c_v = wheel_radius / 2
+           omega = c_w * (w_r - w_l),   c_w = wheel_radius / track_eff
+           track_eff = track * slip_chi
 
-The BVP plans in "desired chassis behaviour" space: the v, omega
-states represent what the body actually does, not what is commanded.
-Folding an explicit first-order chassis-tracking lag into the BVP
-itself produces a stiff costate ODE (eigenvalue +1/tau in the
-self-coupling; over T_horizon the initial costate becomes numerically
-chaotic, which the optimal-control formula then turns into bang-bang
-chatter). Instead we keep the BVP simple and apply a feedforward
-inversion of the chassis dynamics at the PUBLICATION step:
+w_l, w_r are the LEFT/RIGHT WHEEL-PAIR angular speeds. The four
+physical wheels collapse to two controls by construction: same-side
+wheels share the longitudinal contact velocity under the no-slip
+rolling constraint, the symmetric effort cost makes their costates
+(and hence controls) identical, and a same-side front/rear split
+produces no net body wrench at first order on homogeneous terrain.
+The planner therefore lives in the 2D controllable quotient; per-wheel
+freedom only matters when terrain heterogeneity breaks the symmetry,
+which is exactly the residual a downstream corrector exists to absorb.
 
-  cmd(t) = (desired_state(t) + tau * d(desired_state)/dt) / gain
+Lateral skid is lumped into the kinematics: rotation behaves as if
+the wheels were slip_chi * track apart (Mandow-style effective track,
+slip_chi = 1 / chassis_gain_omega of the old feedforward inversion).
+There is no publication-side gain anymore -- applying both would
+correct the slip twice.
 
-This is exact inversion of the first-order tracker
-  tau * d(actual)/dt + actual = gain * cmd
-so a chassis matching that model executes cmd and produces actual(t)
-= desired_state(t). Identify gain and tau from a step-response test
-on the target platform (typical skid-steer: gain < 1 from lateral
-slip, tau ~ 0.3-1.0 s from lateral friction); the parameters live in
-PlannerConfig.chassis_gain_* / chassis_tau_*.
+The published command is the BVP-planned wheel-speed STATE at the
+control tick: a velocity setpoint that already respects the
+acceleration bounds, so velocity_controllers/JointGroupVelocityController
+has nothing to fight. Optionally a first-order lead compensates a
+wheel-velocity tracking lag:
 
-Publication is symmetric across modes (online cmd_vel and offline
-trajectory chunks): both pass the BVP state through the inversion,
-then clip to chassis_v_max / chassis_omega_max (hardware command
-ceiling, NOT the BVP's v_max / omega_max which bound only the state).
+  w_cmd_i(t) = w_state_i(t) + tau_wheel * a_i*(t)
+
+tau_wheel = 0 (default) is correct for gz_ros2_control's velocity
+interface, which tracks within a physics step. The old body-level
+chassis lag (tau_omega ~ 0.3 s, dominated by lateral friction) has no
+per-wheel representation; that transient is part of the corrector's
+residual now. Commands are clipped to wheel_cmd_max (the joint
+<limit velocity>) and pass a body-space deadzone (reconstruct (v,
+omega) from the commands, flush near-zeros, map back) so stationary
+phases publish exact zeros.
 
 Cost:
   L(x, u) = alpha_t + L_pos(T(p))                           # piecewise C^1 pot.
@@ -45,8 +58,12 @@ Cost:
           + (1/2) * w_omega_run * omega^2                   # state-omega regularizer
           + (1/2) * w_v_barrier     * max(0,|v|-v_max)^2     # soft v_max barrier
           + (1/2) * w_omega_barrier * max(0,|w|-w_max)^2     # soft omega_max barrier
-          + (1/2) * gamma_a       * a^2                      # acceleration regularizer
-          + (1/2) * gamma_alpha   * alpha^2                  # angular-accel regularizer
+          + (1/2) * w_wheel_barrier * sum_i max(0,|w_i|-w_wheel_max)^2  # joint limit
+          + (1/2) * gamma_wheel * (a_l^2 + a_r^2)            # per-wheel effort
+
+  with v, omega the DERIVED body velocities above. Linear and angular
+  authority share one per-wheel budget: the old independent (a_max,
+  alpha_max) corner is deliberately infeasible, as it is on the platform.
 
   L_pos(T) = (beta/2) * T^2 / T_horizon              if T <= T_horizon
            = beta * (T - T_horizon/2)                if T >  T_horizon
@@ -70,15 +87,16 @@ with
 
 Hamiltonian (minimum-principle convention):
   H = L + lambda_x * v cos(theta) + lambda_y * v sin(theta) + lambda_th * omega
-        + lambda_v * a
-        + lambda_omega * alpha
+        + lambda_wl * a_l
+        + lambda_wr * a_r
 
 Closed-form optimal control (tanh-saturated to bounds):
-  a*     = -lambda_v     / gamma_a       (sat |a|     <= a_max)
-  alpha* = -lambda_omega / gamma_alpha   (sat |alpha| <= alpha_max)
+  a_l* = -lambda_wl / gamma_wheel   (sat |a_l| <= a_wheel_max)
+  a_r* = -lambda_wr / gamma_wheel   (sat |a_r| <= a_wheel_max)
 
-Costate ODEs (lambda_dot = -dH/dx), frozen-field approximation in the
-position costates (dF_unit/dp and dv_ref/dp dropped):
+Costate ODEs (lambda_dot = -dH/dx). The pose costates are unchanged
+from the unicycle model (they involve only body-space quantities, with
+v and omega now derived states):
   gate'(x)   = (p_gate / 2) * ((1 + x) / 2) ** (p_gate - 1)
   cross_F_h  = F_x sin(theta) - F_y cos(theta)
   lambda_x_dot     = -beta * min(T, T_horizon) * dT/dx / T_horizon
@@ -87,55 +105,83 @@ position costates (dF_unit/dp and dv_ref/dp dropped):
                      - (1 - w_F) * w_h * (theta - theta_pursuit)
                      - w_v * v_ref * (v - v_ref_eff) * gate'(F . h) * cross_F_h
                      - w_brake * (1 - F . h) * v^2 * cross_F_h
-                     + lambda_x * v sin(theta) - lambda_y * v cos(theta)
-  lambda_v_dot     = -w_v * (v - v_ref_eff) - w_brake * (1 - F . h)^2 * v
-                     - lambda_x cos(theta) - lambda_y sin(theta)
-                     - w_v_barrier * sign(v) * max(0, |v| - v_max)
-  lambda_omega_dot = -w_omega_run * omega - lambda_th
-                     - w_omega_barrier * sign(omega) * max(0, |omega| - omega_max)
-                     # No self-coupling on either v or omega: both are integrators
-                     # of bounded controls (no first-order driver lag), so dH/dv
-                     # and dH/domega have no -lambda_v / -lambda_omega terms.
+                     + pos_gate * (lambda_x * v sin(theta) - lambda_y * v cos(theta))
+  (pos_gate = ((1 + F.h)/2) ** align_gate_power gates the position-
+   costate coupling into lambda_th -- the anti-understeer fix; see
+   PMPShootingSolver._ode.)
 
-w_F multiplies only the alignment cost (not speed/brake); the speed
-and brake contributions to lambda_th fade naturally via v_ref -> 0
-and v -> 0 near the goal, so no explicit fade on them is needed.
+The wheel costates are the chain-rule images of the old (lambda_v,
+lambda_omega) through (v, omega) = A (w_l, w_r), lambda_w = A^T
+lambda_(v,omega). With the body-space Hamiltonian partials
+  Hv  = w_v * (v - v_ref_eff) + w_brake * (1 - F . h)^2 * v
+        + lambda_x cos(theta) + lambda_y sin(theta)
+        + w_v_barrier * sign(v) * max(0, |v| - v_max)
+  Hom = w_omega_run * omega + lambda_th
+        + w_omega_barrier * sign(omega) * max(0, |omega| - omega_max)
+the wheel costate ODEs are
+  lambda_wl_dot = -(c_v * Hv - c_w * Hom)
+                  - w_wheel_barrier * sign(w_l) * max(0, |w_l| - w_wheel_max)
+  lambda_wr_dot = -(c_v * Hv + c_w * Hom)
+                  - w_wheel_barrier * sign(w_r) * max(0, |w_r| - w_wheel_max)
+  # No self-coupling on either wheel speed: both are integrators of
+  # bounded controls (no first-order driver lag), so dH/dw_i has no
+  # -lambda_wi term.
 
 Boundary conditions:
-  t = 0 :  x(0) = x_now             (5 components: pose from TF, twist from /odom)
+  t = 0 :  x(0) = x_now     (pose from TF; wheel speeds from the /odom
+                             twist through body_to_wheels -- the model's
+                             OWN inverse kinematics, not raw /joint_states,
+                             whose implied yaw rate goes through the
+                             physical track and contradicts track_eff)
   t = T :  lambda_x(T)     = -w_T_terminal * T_lin * F_ref_x
                              + w_pp * (p_x_T - p_x_pursuit)
            lambda_y(T)     = -w_T_terminal * T_lin * F_ref_y
                              + w_pp * (p_y_T - p_y_pursuit)
            lambda_th(T)    = w_th * (theta_T - theta_pursuit)
-           lambda_v(T)     = w_v_terminal     * v_T
-           lambda_omega(T) = w_omega_terminal * omega_T
+           lambda_wl(T)    = c_v * w_v_terminal * v_T
+                             - c_w * w_omega_terminal * omega_T
+           lambda_wr(T)    = c_v * w_v_terminal * v_T
+                             + c_w * w_omega_terminal * omega_T
 
 Operating modes (selected by the `mode` parameter at launch):
 
   - "online" (default): a control_rate-Hz timer solves the local BVP
-    each tick and publishes a Twist on /cmd_vel.
+    each tick and publishes a Float64MultiArray wheel command on
+    wheel_cmd_topic.
 
   - "offline": exposes a ROS2 action server `pmp_planner/plan_to_goal`
     (PlanToGoal.action). The client (typically the trajectory interpreter)
     supplies start_pose and target_pose inline; the server rolls out a
     complete start-to-goal trajectory by repeated BVP solves, streaming
-    each committed dt_segment-second chunk as action feedback. The goal
-    carries a 3D start pose (x, y, theta); v and omega are zero-initialized
-    (planning from rest). The result signals end-of-trajectory (success /
-    abort / preempt). A new goal arriving mid-rollout preempts the current
-    one server-side: the in-flight rollout is woken via _exec_stop, returns
-    "preempted", and the next goal proceeds once the previous releases
-    _exec_lock. Replan triggering (path-masked field-change detection)
-    lives in the interpreter -- the planner is a pure (start, goal, field)
-    -> trajectory function in this mode.
+    each committed dt_segment-second chunk as action feedback: planned
+    poses, per-side wheel-speed setpoints, optimal wheel accelerations,
+    and the PMP costates along the nominal (the gradient of the
+    segment's cost-to-go -- the quantity a neighboring-extremal or
+    learned corrector needs and cannot reconstruct downstream). The
+    goal carries a 3D start pose (x, y, theta); wheel speeds are
+    zero-initialized (planning from rest). The result signals
+    end-of-trajectory (success / abort / preempt). A new goal arriving
+    mid-rollout preempts the current one server-side: the in-flight
+    rollout is woken via _exec_stop, returns "preempted", and the next
+    goal proceeds once the previous releases _exec_lock. Replan
+    triggering (path-masked field-change detection) lives in the
+    interpreter -- the planner is a pure (start, goal, field) ->
+    trajectory function in this mode.
 
 Node API: ONLINE mode subscribes to /odom, /goal_pose,
-/vector_field/planner_data and publishes Twist (or TwistStamped) on
-/cmd_vel. OFFLINE mode subscribes only to /vector_field/planner_data
-and serves the action `pmp_planner/plan_to_goal`. Both modes publish a
-nav_msgs/Path on /pmp_planner/trajectory (online: latest BVP horizon;
-offline: cumulative rolled-out trajectory).
+/vector_field/planner_data and publishes Float64MultiArray on
+wheel_cmd_topic (default /wheel_velocity_controller/commands), data
+layout [w_fl, w_rl, w_fr, w_rr] = [w_l, w_l, w_r, w_r] matching the
+controller's joint order. OFFLINE mode subscribes only to
+/vector_field/planner_data and serves the action
+`pmp_planner/plan_to_goal`. Both modes publish a nav_msgs/Path on
+/pmp_planner/trajectory (online: latest BVP horizon; offline:
+cumulative rolled-out trajectory).
+
+JointGroupVelocityController is a forward controller: it LATCHES the
+last received command. Every terminal path (goal reached, waiting
+states, BVP failure, node shutdown) therefore publishes an explicit
+zero command -- silence would keep the wheels spinning.
 """
 
 from dataclasses import dataclass
@@ -152,9 +198,9 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float64MultiArray
 from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, TransformException
 
@@ -178,7 +224,12 @@ from agx_planning.pmp_planner import (
 class NodeConfig:
     map_frame: str = "map"
     robot_frame: str = "base_link"
-    enable_stamped_cmd_vel: bool = False
+    # Topic of the velocity_controllers/JointGroupVelocityController
+    # command subscriber. The message is a Float64MultiArray whose data
+    # order must match the controller's `joints` parameter:
+    #   [front_left, rear_left, front_right, rear_right]
+    # The planner publishes [w_l, w_l, w_r, w_r].
+    wheel_cmd_topic: str = "/wheel_velocity_controller/commands"
     # Set to a file path (e.g. /tmp/pmp_diag.csv) to enable the diagnostic
     # logger. Empty string disables it. The logger writes planned heading
     # profiles and actual odom to CSV for post-analysis; see TurnDiagnosticLogger.
@@ -192,15 +243,15 @@ class NodeConfig:
 class PlannerNode(Node):
     """Mode-aware planner.
 
-    Online mode (cfg.mode == "online"): preserved from the original node --
-    a control_rate-Hz timer solves the local BVP each tick using the 5D
-    initial state (pose from TF, twist from /odom) and publishes a Twist
-    on /cmd_vel.
+    Online mode (cfg.mode == "online"): a control_rate-Hz timer solves
+    the local BVP each tick using the 5D initial state (pose from TF,
+    wheel speeds from the /odom twist via body_to_wheels) and publishes
+    a Float64MultiArray wheel command on wheel_cmd_topic.
 
     Offline mode (cfg.mode == "offline"): exposes a ROS2 action server
     `pmp_planner/plan_to_goal`. Each goal carries an explicit
     (start_x, start_y, start_theta) and (target_x, target_y, target_theta);
-    v and omega are zero-initialized (planning from rest). Each committed
+    wheel speeds are zero-initialized (planning from rest). Each committed
     dt_segment-second BVP segment is streamed back as action feedback. A
     new goal arriving mid-rollout preempts the current one: _action_handle_accepted
     fires _exec_stop, the in-flight rollout exits with "preempted", and the
@@ -268,9 +319,10 @@ class PlannerNode(Node):
         self.get_logger().info(f"Planner running in '{self.cfg.mode}' mode.")
 
     def _init_online(self, qos: QoSProfile):
-        """Online-mode wiring: TF, /odom, /goal_pose, /cmd_vel, control timer.
-        Behaviourally identical to the original node -- the planner is its
-        own control loop here."""
+        """Online-mode wiring: TF, /odom, /goal_pose, wheel command
+        publisher, control timer. The planner is its own control loop
+        here -- it publishes wheel-group velocity setpoints directly to
+        the JointGroupVelocityController."""
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -288,10 +340,9 @@ class PlannerNode(Node):
         self.create_subscription(Odometry, "/odom", self._on_odom, qos)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
 
-        if self.node_cfg.enable_stamped_cmd_vel:
-            self._cmd_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
-        else:
-            self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._cmd_pub = self.create_publisher(
+            Float64MultiArray, self.node_cfg.wheel_cmd_topic, 10
+        )
         # Used to publish the empty-frame_id sentinel on goal completion.
         self._goal_pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
 
@@ -299,15 +350,17 @@ class PlannerNode(Node):
         self.get_logger().info(
             f"Indirect-PMP planner running ONLINE at "
             f"{self.cfg.control_rate} Hz, horizon {self.cfg.T_horizon}s "
-            f"/ {self.cfg.N + 1} mesh nodes."
+            f"/ {self.cfg.N + 1} mesh nodes; wheel commands on "
+            f"'{self.node_cfg.wheel_cmd_topic}'."
         )
 
     def _init_offline(self):
         """Offline-mode wiring: action server, exec lock/stop, trajectory_id.
 
-        No TF, no /odom, no /cmd_vel, no /goal_pose -- the action goal
-        carries start and target inline. The interpreter (action client)
-        owns chassis-pose snapshots and goal-source subscriptions.
+        No TF, no /odom, no wheel publisher, no /goal_pose -- the action
+        goal carries start and target inline. The interpreter (action
+        client) owns chassis-pose snapshots and goal-source subscriptions;
+        the executor owns wheel-command publication.
         """
         # _exec_lock serialises rollouts so a preempting goal waits for
         # the previous to release before starting. _exec_stop is the
@@ -332,7 +385,7 @@ class PlannerNode(Node):
         # dt_segment=1.25s = ~24 segments solved in well under a second
         # of wall clock), so the feedback queue fills with many unconsumed
         # chunks during the burst. depth=64 prevents drops that would
-        # manifest as missing twists and incomplete path coverage.
+        # manifest as missing samples and incomplete path coverage.
         feedback_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=64,
@@ -361,6 +414,14 @@ class PlannerNode(Node):
         # Wake any in-flight rollout so it can return promptly.
         if self.cfg.mode == "offline" and hasattr(self, "_exec_stop"):
             self._exec_stop.set()
+        # Online mode: the forward controller latches the last command,
+        # so a node going down mid-motion would leave the wheels spinning
+        # at the last setpoint. Best-effort zero on the way out.
+        if self.cfg.mode == "online" and hasattr(self, "_cmd_pub"):
+            try:
+                self._publish_wheel_cmd(0.0, 0.0)
+            except Exception:
+                pass  # context already shut down -- nothing left to do
         if self._diag_logger is not None:
             self._diag_logger.close()
         super().destroy_node()
@@ -370,11 +431,17 @@ class PlannerNode(Node):
     def _on_odom(self, msg: Odometry):
         # Online-only callback (subscription is created only in _init_online).
         # Odom serves as the control tick AND as the source of the measured
-        # chassis twist (v, omega) -- the planner pins these as initial
+        # chassis twist (v, omega) -- the planner maps these through
+        # body_to_wheels and pins the result as the wheel-speed initial
         # conditions on the 5D BVP, so the trajectory starts from the
         # platform's actual instantaneous velocity rather than assuming it
-        # can be commanded discontinuously. The pose itself is read via TF
-        # (map -> base_link), since /odom may be in a different frame.
+        # can be commanded discontinuously. The twist route (rather than
+        # raw /joint_states wheel velocities) is deliberate: the model's
+        # kinematics use track_effective, so consistency demands the
+        # model's own inverse; raw wheel speeds imply a yaw rate through
+        # the PHYSICAL track and would contradict it. The pose itself is
+        # read via TF (map -> base_link), since /odom may be in a
+        # different frame.
         try:
             t = self._tf_buffer.lookup_transform(
                 self.node_cfg.map_frame,
@@ -476,7 +543,7 @@ class PlannerNode(Node):
             )
             return
         if self._waiting_for_field:
-            self._publish_twist(0.0, 0.0)
+            self._publish_wheel_cmd(0.0, 0.0)
             return
 
         # Warm-start reset on goal-zone boundary crossing.
@@ -494,7 +561,7 @@ class PlannerNode(Node):
         # directly and avoid constructing x0 before we know we need it.
         if goal_reached(self._xi, self._goal, self.cfg):
             d_th = abs(((self._goal[2] - self._xi[2] + pi) % (2.0 * pi)) - pi)
-            self._publish_twist(0.0, 0.0)
+            self._publish_wheel_cmd(0.0, 0.0)
             self._publish_empty_trajectory()
             self.get_logger().info(
                 f"Goal reached (d_xy={d_xy:.3f} m, d_th={d_th:.3f} rad)."
@@ -502,37 +569,42 @@ class PlannerNode(Node):
             self._clear_goal()
             return
 
-        # Build the 5D initial state: pose from TF, twist from /odom.
-        # The two reads are GIL-atomic individually; a torn pair (e.g.
-        # pose from cycle N, twist from cycle N+1) just biases the BVP
-        # initial condition by one odom dt and self-corrects next solve.
+        # Build the 5D initial state: pose from TF, wheel speeds from the
+        # /odom twist via the model's inverse kinematics. The two reads
+        # are GIL-atomic individually; a torn pair (e.g. pose from cycle N,
+        # twist from cycle N+1) just biases the BVP initial condition by
+        # one odom dt and self-corrects next solve.
         xi = self._xi
         twist = self._chassis_twist
-        x0 = np.array([xi[0], xi[1], xi[2], twist[0], twist[1]])
+        wl0, wr0 = self.cfg.body_to_wheels(float(twist[0]), float(twist[1]))
+        x0 = np.array([xi[0], xi[1], xi[2], wl0, wr0])
         result = self._solver.solve(x0, self._goal)
         if result is None:
             self.get_logger().warn(
-                f"BVP solve failed: {self._solver._last_error} -- holding command.",
+                f"BVP solve failed: {self._solver._last_error} -- zeroing command.",
                 throttle_duration_sec=1.0,
             )
-            self._publish_twist(0.0, 0.0)
+            # Zero, not silence: the forward controller would latch and
+            # keep replaying the previous wheel setpoints indefinitely.
+            self._publish_wheel_cmd(0.0, 0.0)
             return
 
-        v_cmd, omega_cmd = result
-        self._publish_twist(v_cmd, omega_cmd)
+        wl_cmd, wr_cmd = result
+        self._publish_wheel_cmd(wl_cmd, wr_cmd)
         self._publish_trajectory()
 
         if self._diag_logger is not None:
-            cs = self._solver._last_costate  # (m, 5): lx, ly, lth, lv, lom
-            st = self._solver._last_state  # (m, 5): px, py, th, v, om
+            cs = self._solver._last_costate  # (m, 5): lx, ly, lth, lwl, lwr
+            st = self._solver._last_state  # (m, 5): px, py, th, wl, wr
             if cs is not None and st is not None:
                 lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(cs[0], self.cfg)
+                v_prof, om_prof = self.cfg.wheels_to_body(st[:, 3], st[:, 4])
                 self._diag_logger.log_plan(
                     traj_id=-1,
                     chunk=-1,
                     thetas_deg=np.degrees(st[:, 2]),
-                    omegas=st[:, 4],
-                    vs=st[:, 3],
+                    omegas=om_prof,
+                    vs=v_prof,
                     lam_th_0=lam_th_0,
                     lam_om_0=lam_om_0,
                     alpha_cmd_0=alpha_cmd_0,
@@ -581,7 +653,7 @@ class PlannerNode(Node):
         attempted" from "the rollout we were watching just ended".
 
         PlanToGoal carries a 3D start pose (x, y, theta). The 5D BVP also
-        needs initial v and omega; these are zero-initialized -- planning
+        needs initial wheel speeds; these are zero-initialized -- planning
         from rest. The first BVP segment will converge to the correct
         velocity profile regardless.
         """
@@ -603,7 +675,7 @@ class PlannerNode(Node):
             result.trajectory_id = 0
             return result
 
-        # 5D initial state: 3D pose from action goal, v/omega zero-init.
+        # 5D initial state: 3D pose from action goal, wheel speeds zero-init.
         x0 = np.array([req.start_x, req.start_y, req.start_theta, 0.0, 0.0])
         goal = np.array([req.target_x, req.target_y, req.target_theta])
         self.get_logger().info(
@@ -734,29 +806,27 @@ class PlannerNode(Node):
         goal_handle,
     ):
         """Process one RolloutChunk: log diagnostics, publish feedback and path."""
-        if self._diag_logger is not None and chunk.costate_t0 is not None:
+        if self._diag_logger is not None and chunk.costates.shape[0] > 0:
             lam_th_0, lam_om_0, alpha_cmd_0 = compute_diag_values(
-                chunk.costate_t0, self.cfg
+                chunk.costates[0], self.cfg
+            )
+            # Diag CSV keeps its body-space schema: omega / v columns are
+            # the body equivalents of the PUBLISHED wheel commands.
+            v_cmd, om_cmd = self.cfg.wheels_to_body(
+                chunk.wheel_cmds[:, 0], chunk.wheel_cmds[:, 1]
             )
             self._diag_logger.log_plan(
                 traj_id=traj_id,
                 chunk=chunk.chunk_idx,
                 thetas_deg=np.degrees(chunk.poses[:, 2]),
-                omegas=chunk.twists[:, 1],
-                vs=chunk.twists[:, 0],
+                omegas=om_cmd,
+                vs=v_cmd,
                 lam_th_0=lam_th_0,
                 lam_om_0=lam_om_0,
                 alpha_cmd_0=alpha_cmd_0,
             )
         _t0 = perf_counter()
-        self._publish_chunk_feedback(
-            goal_handle,
-            traj_id,
-            chunk.chunk_idx,
-            chunk.twists,
-            chunk.poses,
-            chunk.dt_sample,
-        )
+        self._publish_chunk_feedback(goal_handle, traj_id, chunk)
         _fb_ms = (perf_counter() - _t0) * 1e3
 
         all_poses.append(chunk.poses)
@@ -788,17 +858,18 @@ class PlannerNode(Node):
         self._was_in_goal_zone = False
         self._solver.reset_warm_start()
 
-    def _publish_twist(self, v: float, omega: float):
-        if self.node_cfg.enable_stamped_cmd_vel:
-            msg = TwistStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = self.node_cfg.robot_frame
-            msg.twist.linear.x = v
-            msg.twist.angular.z = omega
-        else:
-            msg = Twist()
-            msg.linear.x = v
-            msg.angular.z = omega
+    def _publish_wheel_cmd(self, wl: float, wr: float):
+        """Publish one wheel-group velocity command.
+
+        Data order matches the controller's `joints` parameter
+        [front_left, rear_left, front_right, rear_right]: each side's
+        pair receives the same setpoint -- the reduction lemma made the
+        front/rear split uncontrollable for the planner, so the nominal
+        is symmetric by construction. A downstream corrector is free to
+        split the pair when terrain breaks the symmetry.
+        """
+        msg = Float64MultiArray()
+        msg.data = [float(wl), float(wl), float(wr), float(wr)]
         self._cmd_pub.publish(msg)
 
     def _publish_trajectory(self):
@@ -853,15 +924,15 @@ class PlannerNode(Node):
         self,
         goal_handle,
         traj_id: int,
-        chunk_idx: int,
-        twists: np.ndarray,
-        poses: np.ndarray,
-        dt: float,
+        chunk: RolloutChunk,
     ):
         """Emit one trajectory chunk as PlanToGoal action feedback.
 
-        twists shape (N, 2): [v, omega] per row.
-        poses  shape (N, 3): [px, py, theta] per row, parallel to twists.
+        All arrays in the chunk are parallel (row i = tick i):
+          wheel_cmds (N, 2) -- published per-side setpoints [w_l, w_r]
+          accels     (N, 2) -- BVP-optimal wheel accelerations [a_l*, a_r*]
+          poses      (N, 3) -- planned pose [px, py, theta]
+          costates   (N, 5) -- PMP costates [lx, ly, lth, lwl, lwr]
 
         Empty chunks are silently skipped: there's no "is_final" flag in
         the action feedback (the action result signals end-of-trajectory),
@@ -869,29 +940,40 @@ class PlannerNode(Node):
         intra-segment-hit case in rollout_generator guards against
         ever yielding an empty truncation.
         """
-        if twists.shape[0] == 0:
+        if chunk.wheel_cmds.shape[0] == 0:
             return
         fb = PlanToGoal.Feedback()
         fb.trajectory_id = int(traj_id)
-        fb.chunk_index = int(chunk_idx)
-        fb.dt = float(dt)
+        fb.chunk_index = int(chunk.chunk_idx)
+        fb.dt = float(chunk.dt_sample)
         # tolist() because rosidl-generated message slots for float32[]
         # expect a Python list (or array.array), not an ndarray.
-        t32 = twists.astype(np.float32)
-        p32 = poses.astype(np.float32)
-        fb.linear_x = t32[:, 0].tolist()
-        fb.angular_z = t32[:, 1].tolist()
+        p32 = chunk.poses.astype(np.float32)
+        w32 = chunk.wheel_cmds.astype(np.float32)
+        a32 = chunk.accels.astype(np.float32)
+        l32 = chunk.costates.astype(np.float32)
         fb.pose_x = p32[:, 0].tolist()
         fb.pose_y = p32[:, 1].tolist()
         fb.pose_theta = p32[:, 2].tolist()
+        fb.wheel_left = w32[:, 0].tolist()
+        fb.wheel_right = w32[:, 1].tolist()
+        fb.accel_left = a32[:, 0].tolist()
+        fb.accel_right = a32[:, 1].tolist()
+        fb.lam_x = l32[:, 0].tolist()
+        fb.lam_y = l32[:, 1].tolist()
+        fb.lam_theta = l32[:, 2].tolist()
+        fb.lam_wheel_left = l32[:, 3].tolist()
+        fb.lam_wheel_right = l32[:, 4].tolist()
         goal_handle.publish_feedback(fb)
 
     # ---------------- PMP introspection (for evaluation) ----------------
 
     def extract_costates(self) -> Optional[np.ndarray]:
-        """Return the last costate trajectory (m, 3): lambda_x, lambda_y, lambda_th."""
+        """Return the last costate trajectory (m, 5):
+        lambda_x, lambda_y, lambda_th, lambda_wl, lambda_wr."""
         return self._solver._last_costate
 
     def extract_predicted_trajectory(self) -> Optional[np.ndarray]:
-        """Return the last optimal state trajectory (m, 3): px, py, theta."""
+        """Return the last optimal state trajectory (m, 5):
+        px, py, theta, w_l, w_r."""
         return self._solver._last_state
