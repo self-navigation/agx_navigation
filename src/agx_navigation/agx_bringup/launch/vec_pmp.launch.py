@@ -63,20 +63,28 @@ def generate_launch_description():
         condition=UnlessCondition(use_server),
     )
 
-    # Pass-through corrector between the planner's wheel output and the
-    # JointGroupVelocityController input. No-op for now (see wheel_corrector.py).
-    # Online mode: pmp_planner publishes /pmp_planner/wheel_cmd directly.
-    # Offline mode: once runtime_corrector is rewritten to emit wheel commands,
-    # point it at /pmp_planner/wheel_cmd too; until then this node just idles.
+    # Interpreter / corrector between the planner's output and the
+    # JointGroupVelocityController input. Mode follows the planner's pmp_mode:
+    #   online  -- pmp_planner publishes wheel commands on /pmp_planner/wheel_cmd;
+    #              this node relays them (~/wheel_cmd_in -> ~/wheel_cmd_out).
+    #   offline -- pmp_planner is a PlanToGoal action server; this node is the
+    #              action client, sourcing the goal from /goal_pose + TF and
+    #              playing the streamed trajectory back at the planned rate.
+    # _correct() is identity for both today (the runtime-correction seam).
     wheel_corrector = Node(
         package="agx_planning",
-        executable="wheel_corrector",
+        executable="runtime_corrector",
         output="screen",
         name="wheel_corrector",
         parameters=[
             {
+                "mode": pmp_mode,
                 "expected_size": 4,
                 "use_sim_time": sim,
+                # Offline playback: action + fallback sample rate (overridden
+                # per-trajectory by the planner's committed chunk dt).
+                "action_name": "pmp_planner/plan_to_goal",
+                "control_rate": 10.0,
                 # Debug-plan markers (mirrors runtime_corrector viz style).
                 "publish_debug": True,
                 "planning_frame": "map",
