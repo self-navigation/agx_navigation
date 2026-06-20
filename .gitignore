@@ -1,3 +1,4 @@
+*.pyc
 .fuse_hidden*
 *.stamp
 .last_build_user
