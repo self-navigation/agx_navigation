@@ -91,15 +91,31 @@ variables:
 - `TIMESTEPS` — total environment steps (default `200000`).
 - `TERRAIN` — `false` for a flat-ground bootstrap run (default `true`).
 - `POLICY_OUT` — save path; `.zip` is appended (default `~/rl_corrector_policy`).
+- `LOAD` — continue training from an existing policy `.zip` (see curriculum below).
 - `TRAIN_ARGS` — passthrough to the trainer, e.g.
   `TRAIN_ARGS="--device cuda --tensorboard /tmp/tb"`.
 
-A flat-ground warmup followed by a terrain run, for example:
+### Curriculum training
+
+Learning slip correction is more stable if the policy first masters plain
+tracking on flat ground, then continues on slippery terrain. `LOAD` chains the
+phases: the second run restores the first run's weights and keeps training (so it
+is a genuine continuation, not a fresh policy).
 
 ```bash
+# phase 1: warm up on flat ground (fresh policy)
 make rl-train TERRAIN=false TIMESTEPS=50000 POLICY_OUT=~/policy_flat
-make rl-train TIMESTEPS=300000 POLICY_OUT=~/policy_terrain
+
+# phase 2: continue on terrain from the flat-ground policy
+make rl-train TIMESTEPS=300000 POLICY_OUT=~/policy_terrain LOAD=~/policy_flat.zip
 ```
+
+A loaded run **reuses the saved hyperparameters** (per-phase `--learning-rate`
+etc. do not apply) and keeps counting timesteps from the loaded total, so the two
+phases read as one curriculum in checkpoints/tensorboard. The replay buffer is
+**not** restored — the terrain phase collects fresh experience, since the flat
+phase's transitions came from different dynamics. Keep the observation/action
+layout (`--action-dim`, `--costates`) identical across phases or the load fails.
 
 ### Deploying the policy
 

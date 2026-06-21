@@ -170,8 +170,10 @@ nav2:
 TIMESTEPS  ?= 200000
 TERRAIN    ?= true
 POLICY_OUT ?= $(HOME)/rl_corrector_policy
+LOAD       ?=
 TRAIN_ARGS ?=
 TERRAIN_FLAG := $(if $(filter false,$(call lc,$(TERRAIN))),--no-terrain,--terrain)
+LOAD_FLAG := $(if $(LOAD),--load $(LOAD),)
 
 rl-sim: build
 	source /opt/ros/jazzy/setup.bash && \
@@ -187,6 +189,7 @@ rl-train: build
 		--timesteps $(TIMESTEPS) \
 		$(TERRAIN_FLAG) \
 		--out $(POLICY_OUT) \
+		$(LOAD_FLAG) \
 		$(TRAIN_ARGS)
 
 server:
