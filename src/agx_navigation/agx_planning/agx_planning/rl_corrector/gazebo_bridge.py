@@ -258,9 +258,18 @@ class GazeboBridge:
         req.orientation.w = math.cos(yaw / 2.0)
         for _ in range(tries):
             self._gz.request(self._svc_set_pose, req, Pose, Boolean, self._ack_ms)
-            # Let the pose/info callback report the post-teleport pose.
+            # Confirm via pose/info. CRITICAL in deterministic mode: the sim is
+            # paused, and pose/info only republishes when the world ADVANCES, so a
+            # bare poll would keep reading the stale pre-teleport pose forever (and
+            # fail once the robot has driven away from spawn). Step one physics
+            # tick per poll so the post-teleport pose actually reaches the
+            # callback; the tick also brakes residual velocity (wheels latched at
+            # zero), and re-requesting set_pose each try yanks the body back to
+            # target so it converges within tol.
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:
+                if self.deterministic:
+                    self._world_control(multi_step=1)
                 self._exec.spin_once(timeout_sec=0.02)
                 p = self._pose_xyth
                 if p is not None and math.hypot(p[0] - x, p[1] - y) < tol:
