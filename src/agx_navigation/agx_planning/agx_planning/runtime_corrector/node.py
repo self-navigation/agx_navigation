@@ -40,6 +40,7 @@ draw. Recovery markers will return with the recovery logic.
 import math
 from typing import List, Optional, Tuple
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -47,7 +48,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 
 from builtin_interfaces.msg import Duration as BuiltinDuration
 from geometry_msgs.msg import Point, PoseStamped
-from nav_msgs.msg import Path
+from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Float64MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import (
@@ -61,6 +62,12 @@ from tf2_ros import (
 from tf_transformations import euler_from_quaternion
 
 from agx_planning_msgs.action import PlanToGoal
+
+from agx_planning.rl_corrector.coeff import apply_coefficients, coefficients_from_action
+from agx_planning.rl_corrector.config import RLCorrectorConfig
+from agx_planning.rl_corrector.obs import build_observation
+from agx_planning.rl_corrector.policy import load_policy
+from agx_planning.utils import declare_and_load_dataclass
 
 from .trajectory_buffer import TrajectoryBuffer
 
@@ -131,6 +138,8 @@ class WheelCorrectorNode(Node):
         else:
             self._init_offline()
 
+        self._init_corrector()
+
         if self._publish_debug:
             self._init_debug()
 
@@ -180,6 +189,54 @@ class WheelCorrectorNode(Node):
         self._tick_timer = None
         self._ensure_tick_timer(self._default_dt)
 
+    def _init_corrector(self) -> None:
+        """Load the RL policy that turns the identity seam into a real corrector.
+
+        Config is loaded as ROS params under the `rl_corrector.` prefix (same
+        dataclass that trained the policy, so obs/action math matches). With no
+        `rl_corrector.policy_path` set, load_policy() returns None and _correct()
+        stays byte-identical to the old identity pass-through -- removing the
+        policy file cleanly reverts behavior. torch is imported only inside
+        load_policy, so a policy-less deployment never pulls it in.
+        """
+        self._rl_cfg = declare_and_load_dataclass(
+            self, RLCorrectorConfig(), prefix="rl_corrector."
+        )
+        self._policy = load_policy(self._rl_cfg.policy_path)
+
+        # Per-trajectory obs state: previous tracking error (for error rates) and
+        # previous coefficients (smoothness feature). Reset on each new traj.
+        self._prev_err = None
+        self._prev_coeff = np.ones(self._rl_cfg.action_dim)
+        # Latest body twist from /odom (a rate, so localization-frame agnostic).
+        self._odom_twist: Tuple[float, float] = (0.0, 0.0)
+
+        if self._policy is not None:
+            # Only the policy path needs the measured twist; skip the sub otherwise.
+            self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+            self.get_logger().info(
+                "RL corrector ACTIVE (policy=%s, action_dim=%d, costates=%s)"
+                % (self._rl_cfg.policy_path, self._rl_cfg.action_dim,
+                   self._rl_cfg.use_costates)
+            )
+        else:
+            self.get_logger().info(
+                "RL corrector inactive (no rl_corrector.policy_path); "
+                "_correct() is identity pass-through."
+            )
+
+    def _on_odom(self, msg: Odometry) -> None:
+        self._odom_twist = (
+            float(msg.twist.twist.linear.x),
+            float(msg.twist.twist.angular.z),
+        )
+
+    def _reset_corrector_state(self) -> None:
+        """Clear per-trajectory obs history so a new plan starts with zero error
+        rates and identity previous-coefficients (no carryover across plans)."""
+        self._prev_err = None
+        self._prev_coeff = np.ones(self._rl_cfg.action_dim)
+
     def _init_debug(self) -> None:
         marker_rate = float(self.get_parameter("debug_marker_rate").value)
         self._plan_xy: List[Tuple[float, float]] = []
@@ -197,10 +254,11 @@ class WheelCorrectorNode(Node):
         right: float,
         planned_pose: Optional[Tuple[float, float, float]] = None,
         actual_pose: Optional[Tuple[float, float, float]] = None,
+        costates: Optional[Tuple[float, ...]] = None,
     ) -> None:
         """Run one (left, right) wheel-pair command through _correct() and
         publish the resulting four-wheel setpoint."""
-        wheels = self._correct(left, right, planned_pose, actual_pose)
+        wheels = self._correct(left, right, planned_pose, actual_pose, costates)
         msg = Float64MultiArray()
         msg.data = [float(w) for w in wheels]
         self._pub.publish(msg)
@@ -212,20 +270,50 @@ class WheelCorrectorNode(Node):
         right: float,
         planned_pose: Optional[Tuple[float, float, float]],
         actual_pose: Optional[Tuple[float, float, float]],
+        costates: Optional[Tuple[float, ...]] = None,
     ) -> List[float]:
         """Map a planned wheel-pair command to a four-wheel setpoint.
 
-        Identity for now: each side's planned setpoint is duplicated across
-        that side's two physical wheels ->
+        With no policy loaded -- or whenever the inputs to build a valid
+        observation are missing (online relay has no planned/actual pose) -- this
+        is the identity: each side's planned setpoint is duplicated across that
+        side's two physical wheels ->
           [front_left, rear_left, front_right, rear_right] = [l, l, r, r].
 
-        This is the seam for the runtime corrector. When the measured pose
-        (`actual_pose`) drifts off the planned pose (`planned_pose`) on bad
-        terrain, the learned per-wheel policy will return four independently
-        adjusted setpoints here to drive the error back to zero. The signature
-        already carries everything that policy needs.
+        With a policy loaded, it builds the SAME observation the env trained on
+        (path-relative tracking error of `actual_pose` vs `planned_pose`, plus the
+        measured /odom twist, previous coefficients, and optional costates),
+        predicts per-wheel coefficients, and applies them. It FAILS SAFE to the
+        identity on any error or non-finite action, so a bad policy can never
+        inject motion beyond clamped multiples of the planned command.
         """
-        return [left, left, right, right]
+        if (self._policy is None or planned_pose is None or actual_pose is None):
+            return [left, left, right, right]
+
+        cfg = self._rl_cfg
+        try:
+            cs = costates if cfg.use_costates else None
+            obs, err = build_observation(
+                cfg, planned_pose, actual_pose, self._prev_err,
+                cmd_left=left, cmd_right=right,
+                v_meas=self._odom_twist[0], omega_meas=self._odom_twist[1],
+                prev_coeff=self._prev_coeff, wheel_speeds=None, costates=cs,
+            )
+            action = self._policy.predict(obs)
+            if not np.all(np.isfinite(action)):
+                raise ValueError("policy returned a non-finite action")
+            wheels = apply_coefficients(action, left, right, cfg)
+            # Commit obs history only on success, so a failed tick can't poison
+            # the next step's error rate / smoothness features.
+            self._prev_err = err
+            self._prev_coeff = coefficients_from_action(action, cfg)
+            return wheels
+        except Exception as exc:  # noqa: BLE001 - fail safe to identity, never crash
+            self.get_logger().warn(
+                "RL corrector errored (%s); falling back to identity." % exc,
+                throttle_duration_sec=2.0,
+            )
+            return [left, left, right, right]
 
     def _publish_zero(self) -> None:
         """Explicit stop. Bypasses _correct() so a correction can never add
@@ -327,6 +415,7 @@ class WheelCorrectorNode(Node):
             dt = float(chunk.dt) if chunk.dt > 0.0 else self._default_dt
             self._buf.reset(traj_id, dt)
             self._ensure_tick_timer(dt)
+            self._reset_corrector_state()
             self.get_logger().info("Playing trajectory %d (dt=%.3fs)." % (traj_id, dt))
         elif traj_id < self._buf.active_traj_id:
             # A straggler chunk from a superseded trajectory; drop it.
@@ -371,7 +460,8 @@ class WheelCorrectorNode(Node):
                 )
             return
 
-        self._emit(sample.left, sample.right, sample.pose, self._robot_pose())
+        self._emit(sample.left, sample.right, sample.pose,
+                   self._robot_pose(), sample.costates)
 
         # Last sample of the last chunk just went out and the result is in.
         if self._buf.is_done():

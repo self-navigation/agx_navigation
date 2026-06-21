@@ -27,6 +27,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+# PMP costates carried per tick, in the order the RL corrector's obs expects:
+#   [lam_x, lam_y, lam_theta, lam_wheel_left, lam_wheel_right].
+_COSTATE_FIELDS = ("lam_x", "lam_y", "lam_theta", "lam_wheel_left", "lam_wheel_right")
+
 
 @dataclass
 class PlaybackSample:
@@ -36,12 +40,15 @@ class PlaybackSample:
     setpoints; the node duplicates each across that side's two physical wheels
     (or splits them, once per-wheel corrections land). `pose` is the planned
     chassis pose at this tick -- the reference the corrector compares the
-    measured pose against.
+    measured pose against. `costates` is the per-tick PMP costate vector
+    [lam_x, lam_y, lam_theta, lam_wheel_left, lam_wheel_right] when the planner
+    feedback carries it (the RL corrector feeds it to the policy), else None.
     """
 
     left: float
     right: float
     pose: Tuple[float, float, float]  # planned (x, y, theta)
+    costates: Optional[Tuple[float, ...]] = None  # PMP costates at this tick
 
 
 class TrajectoryBuffer:
@@ -157,7 +164,21 @@ class TrajectoryBuffer:
                 float(chunk.pose_y[i]),
                 float(chunk.pose_theta[i]),
             ),
+            costates=self._costates_at(chunk, i),
         )
+
+    @staticmethod
+    def _costates_at(chunk: Any, i: int) -> Optional[Tuple[float, ...]]:
+        """Pull the per-tick costate vector from a chunk, or None if the feedback
+        carries no (or short) costate arrays -- so a plain stand-in chunk in the
+        tests, or a planner build without costates, degrades to None cleanly."""
+        out = []
+        for field in _COSTATE_FIELDS:
+            arr = getattr(chunk, field, None)
+            if arr is None or i >= len(arr):
+                return None
+            out.append(float(arr[i]))
+        return tuple(out)
 
     # ------------------------------------------------------------------
     # Path geometry (debug visualization)
