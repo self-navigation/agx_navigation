@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train
 
 SIM ?= true
 HEADLESS ?= false
@@ -115,7 +115,13 @@ ros-deps:
 	pip install --break-system-packages $(PYTHON_PACKAGES)
 	touch $@
 
-deps: ros-deps .ros_python_deps.stamp 
+deps: ros-deps .ros_python_deps.stamp
+
+# RL runtime-corrector training stack (SAC). torch is also needed on-robot for
+# policy inference; stable-baselines3[extra] pulls tensorboard + the progress bar
+# train.py uses. Kept out of `deps` so the normal build doesn't drag in torch.
+rl-deps:
+	pip install --break-system-packages 'stable-baselines3[extra]' torch gymnasium
 
 $(ACADOS_BIN)/t_renderer:
 	cd $(TERA_RENDERER_ROOT) && \
@@ -154,6 +160,34 @@ offline:
 
 nav2:
 	$(MAKE) run NAV_MODE=nav2
+
+# ---- RL runtime corrector: training ----------------------------------------
+# Two terminals. First bring up the MINIMAL sim (physics + wheel controller +
+# odom only -- no nav/planner/corrector, since the trainer IS the command
+# source); then run the trainer against it. Override the usual way, e.g.
+#   make rl-sim HEADLESS=true
+#   make rl-train TIMESTEPS=500000 TERRAIN=false POLICY_OUT=~/my_policy
+TIMESTEPS  ?= 200000
+TERRAIN    ?= true
+POLICY_OUT ?= $(HOME)/rl_corrector_policy
+TRAIN_ARGS ?=
+TERRAIN_FLAG := $(if $(filter false,$(call lc,$(TERRAIN))),--no-terrain,--terrain)
+
+rl-sim: build
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
+		$(GPU_PREFIX) \
+		ros2 launch agx_bringup rl_corrector_sim.launch.py \
+		headless:=$(call lc,$(HEADLESS))
+
+rl-train: build
+	source /opt/ros/jazzy/setup.bash && \
+		source install/setup.bash && \
+		ros2 run agx_planning rl_corrector_train \
+		--timesteps $(TIMESTEPS) \
+		$(TERRAIN_FLAG) \
+		--out $(POLICY_OUT) \
+		$(TRAIN_ARGS)
 
 server:
 	source /opt/ros/jazzy/setup.bash && \
