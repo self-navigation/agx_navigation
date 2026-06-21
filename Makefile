@@ -171,9 +171,11 @@ TIMESTEPS  ?= 200000
 TERRAIN    ?= true
 POLICY_OUT ?= $(HOME)/rl_corrector_policy
 LOAD       ?=
+TB         ?=
 TRAIN_ARGS ?=
 TERRAIN_FLAG := $(if $(filter false,$(call lc,$(TERRAIN))),--no-terrain,--terrain)
 LOAD_FLAG := $(if $(LOAD),--load $(LOAD),)
+TB_FLAG := $(if $(TB),--tensorboard $(TB),)
 
 rl-sim: build
 	source /opt/ros/jazzy/setup.bash && \
@@ -190,6 +192,7 @@ rl-train: build
 		$(TERRAIN_FLAG) \
 		--out $(POLICY_OUT) \
 		$(LOAD_FLAG) \
+		$(TB_FLAG) \
 		$(TRAIN_ARGS)
 
 server:

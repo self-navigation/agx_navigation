@@ -92,8 +92,29 @@ variables:
 - `TERRAIN` — `false` for a flat-ground bootstrap run (default `true`).
 - `POLICY_OUT` — save path; `.zip` is appended (default `~/rl_corrector_policy`).
 - `LOAD` — continue training from an existing policy `.zip` (see curriculum below).
-- `TRAIN_ARGS` — passthrough to the trainer, e.g.
-  `TRAIN_ARGS="--device cuda --tensorboard /tmp/tb"`.
+- `TB` — TensorBoard log dir; sets `--tensorboard` (see monitoring below).
+- `TRAIN_ARGS` — passthrough to the trainer, e.g. `TRAIN_ARGS="--device cuda"`.
+
+> Only run **one** sim at a time. Two `rl-sim`/`rl_corrector_sim` instances share
+> Gazebo's default transport partition and both advertise
+> `/world/ordjo_world/set_pose` + `pose/info`, so a teleport can hit one server
+> while the bridge confirms against the other — resets then fail. `pkill -f
+> rl_corrector_sim` between runs if unsure.
+
+### Monitoring a run
+
+The trainer prints a live progress bar (step count + ETA), and with `verbose=1`
+SB3 logs a rollout table (`ep_rew_mean`, `ep_len_mean`, losses) to stdout every
+few episodes — the quickest health check is whether `ep_rew_mean` trends up.
+
+For TensorBoard, point the run at a log dir and open it alongside:
+
+```bash
+make rl-train TIMESTEPS=200000 TB=~/rl_tb
+tensorboard --logdir ~/rl_tb        # then browse http://localhost:6006
+```
+
+TensorBoard ships with the `stable-baselines3[extra]` install from `make rl-deps`.
 
 ### Curriculum training
 
