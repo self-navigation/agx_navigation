@@ -17,11 +17,15 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>scout_msgs</exec_depend>
   <exec_depend>scout_base</exec_depend>
   <exec_depend>tf_transformations</exec_depend>
   <exec_depend>pmp_planner_msgs</exec_depend>
+  <!-- RL corrector GazeboBridge: ground-truth pose / teleport / terrain spawn -->
+  <exec_depend>rudn_ordjo_building</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
