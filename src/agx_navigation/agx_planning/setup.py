@@ -19,6 +19,11 @@ setup(
         f"scikit-fmm @ file://{_skfmm_fork}",
         "numpy",
         "scipy",
+        # RL runtime corrector. gymnasium builds the training env; torch is
+        # required on-robot for policy inference; stable-baselines3 for training.
+        "gymnasium",
+        "stable-baselines3",
+        "torch",
     ],
     zip_safe=True,
     maintainer="agilex",
@@ -40,6 +45,10 @@ setup(
                 "runtime_corrector",
                 "calibrator",
             ]
+        ]
+        # Submodule entrypoints that don't follow the {package}.{name}:main shape.
+        + [
+            f"rl_corrector_train = {package_name}.rl_corrector.train:main",
         ],
     },
 )
