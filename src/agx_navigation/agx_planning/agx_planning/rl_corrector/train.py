@@ -35,6 +35,11 @@ def _parse_args() -> argparse.Namespace:
                     help="total environment steps to train for")
     ap.add_argument("--out", default=os.path.expanduser("~/rl_corrector_policy"),
                     help="output path for the saved policy (.zip appended by SB3)")
+    ap.add_argument("--load", default=None,
+                    help="continue training from an existing policy .zip (curriculum: "
+                         "e.g. warm up on flat ground, then continue on terrain). The "
+                         "obs/action layout must match -- keep --action-dim/--costates "
+                         "the same across phases.")
     # Sim / bridge.
     ap.add_argument("--world", default="ordjo_world")
     ap.add_argument("--model", default="scout_mini")
@@ -113,22 +118,38 @@ def main() -> None:
             name_prefix=os.path.basename(args.out),
         ))
 
-    model = SAC(
-        "MlpPolicy",
-        env,
-        learning_rate=args.learning_rate,
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        learning_starts=args.learning_starts,
-        seed=args.seed,
-        device=args.device,
-        tensorboard_log=args.tensorboard,
-        verbose=1,
-    )
+    if args.load:
+        # Curriculum continuation: restore the policy/critic weights and attach
+        # the new env. SB3 reloads the saved hyperparameters, so the per-phase
+        # CLI hyperparams (--learning-rate, --buffer-size, ...) do NOT apply to a
+        # loaded run. The replay buffer is intentionally NOT restored -- the
+        # previous phase's transitions came from different dynamics (e.g. flat
+        # ground), so the terrain phase starts collecting fresh experience.
+        model = SAC.load(
+            args.load, env=env, device=args.device,
+            tensorboard_log=args.tensorboard,
+        )
+        print(f"[train] continuing from {args.load}")
+    else:
+        model = SAC(
+            "MlpPolicy",
+            env,
+            learning_rate=args.learning_rate,
+            buffer_size=args.buffer_size,
+            batch_size=args.batch_size,
+            learning_starts=args.learning_starts,
+            seed=args.seed,
+            device=args.device,
+            tensorboard_log=args.tensorboard,
+            verbose=1,
+        )
 
     try:
+        # Continued runs keep counting timesteps from the loaded total (so the
+        # checkpoints/tensorboard read as one curriculum); fresh runs start at 0.
         model.learn(total_timesteps=args.timesteps,
                     callback=callbacks or None,
+                    reset_num_timesteps=args.load is None,
                     progress_bar=True)
         model.save(args.out)
         print(f"[train] saved policy to {args.out}.zip")
