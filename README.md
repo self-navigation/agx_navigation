@@ -58,6 +58,25 @@ planner's frozen trajectory when terrain (ice/mud/oil) induces slip. Reward and
 the tracking error are computed on Gazebo **ground-truth** pose, never `/odom`
 (wheel odometry can't observe slip — that's the whole phenomenon being corrected).
 
+### What the policy observes
+
+The observation (built identically at train time and on-robot, so the policy sees
+the same features both places) is the path-relative tracking error and its rates,
+the nominal feed-forward wheel commands, the measured body twist, the previous
+step's coefficients, and the **IMU** (yaw rate + body-frame acceleration). The IMU
+is the key slip-observing input: unlike the `/odom` twist, which is wheel-derived
+and so blind to slip, the gyro/accelerometer measure the body's *actual* motion, so
+the policy can see the gap between commanded and real motion — the thing it corrects.
+
+The obs layout is **fixed at training time and baked into the policy** (it's the
+network's input width). It is a build-time choice, not a runtime switch: a policy
+must be deployed with the exact `use_*` toggles it trained with, and they must be
+held constant across curriculum phases, or the observation won't line up and the
+corrector falls back to identity. `RLCorrectorConfig` (`rl_corrector/config.py`) is
+the single source of truth for those toggles. PMP **costates** are off by default —
+they only exist for recorded planner nominals (not the parametric training path),
+so enabling them now would feed zeros at train but real costates at deploy.
+
 ### Training dependencies
 
 The SAC training stack (stable-baselines3 + torch) is **not** part of `make deps`,
@@ -94,12 +113,23 @@ variables:
 - `LOAD` — continue training from an existing policy `.zip` (see curriculum below).
 - `TB` — TensorBoard log dir; sets `--tensorboard` (see monitoring below).
 - `TRAIN_ARGS` — passthrough to the trainer, e.g. `TRAIN_ARGS="--device cuda"`.
+- `SIM_SENSORS` — `true` to spawn the rendering sensors in the training sim
+  (default `false`; see throughput note below).
+
+**Throughput.** Training is tuned to run many× real-time, two ways. The training
+sim drops the GPU lidar + RGB/depth cameras (`SIM_SENSORS=false`, the default) —
+nothing in the loop consumes them and their per-tick rendering is the dominant
+cost; the IMU/magnetometer stay on (no rendering). And the trainer lifts the
+world's real-time cap (raises rtf, unlimits the update rate) so deterministic
+stepping isn't pinned near 1×; it restores the cap on exit. To watch a run at
+real-time instead, pass `TRAIN_ARGS="--realtime"`. (The IMU is on by default;
+`TRAIN_ARGS="--no-imu"` drops it from the obs, but then deployment must match.)
 
 > Only run **one** sim at a time. Two `rl-sim`/`rl_corrector_sim` instances share
 > Gazebo's default transport partition and both advertise
 > `/world/ordjo_world/set_pose` + `pose/info`, so a teleport can hit one server
-> while the bridge confirms against the other — resets then fail. `pkill -f
-> rl_corrector_sim` between runs if unsure.
+> while the bridge confirms against the other — resets then fail. Run `make
+> rl-kill` between runs if a previous sim/trainer was Ctrl-C'd or orphaned.
 
 ### Monitoring a run
 
@@ -136,7 +166,8 @@ etc. do not apply) and keeps counting timesteps from the loaded total, so the tw
 phases read as one curriculum in checkpoints/tensorboard. The replay buffer is
 **not** restored — the terrain phase collects fresh experience, since the flat
 phase's transitions came from different dynamics. Keep the observation/action
-layout (`--action-dim`, `--costates`) identical across phases or the load fails.
+layout (`--action-dim`, `--imu`, `--costates`) identical across phases or the load
+fails (the network's input width is fixed at the first phase).
 
 ### Deploying the policy
 

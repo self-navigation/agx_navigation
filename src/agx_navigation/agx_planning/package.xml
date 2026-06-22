@@ -19,6 +19,8 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <!-- RL corrector GazeboBridge: sim clock (/clock) for the deterministic step gate -->
+  <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>scout_msgs</exec_depend>
   <exec_depend>scout_base</exec_depend>
