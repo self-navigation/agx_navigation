@@ -14,6 +14,7 @@ It does NOT need torch or stable-baselines3 (identity action only).
 """
 
 import argparse
+import time
 
 import numpy as np
 
@@ -61,14 +62,26 @@ def main() -> None:
         max_cross = 0.0
         steps = 0
         done = False
+        t0 = time.monotonic()
         while not done:
             _o, _r, terminated, truncated, info = env.step(np.zeros(cfg.action_dim,
                                                                     dtype=np.float32))
             max_cross = max(max_cross, abs(info["e_cross"]))
             steps += 1
             done = terminated or truncated
+        wall = time.monotonic() - t0
         print(f"[validate_gazebo] steps={steps} max|e_cross|={max_cross:.4f} m "
               f"succeeded={info['succeeded']} failed={info['failed']}")
+        # Throughput proof: each step advances control_dt of sim time, so
+        # real-time is exactly 1/control_dt steps/s. Deterministic headless
+        # stepping should beat that (real-time factor > 1); ~0.1x means the
+        # per-step world-control ack is still stalling the loop.
+        if wall > 0.0:
+            sps = steps / wall
+            rtf = (steps * cfg.control_dt) / wall
+            print(f"  timing: {sps:.1f} env-steps/s, {rtf:.2f}x real-time "
+                  f"({steps * cfg.control_dt:.1f}s sim in {wall:.1f}s wall; "
+                  f"real-time = {1.0 / cfg.control_dt:.0f} steps/s)")
         if args.terrain:
             print("  (terrain on: a large drift here is EXPECTED for identity.)")
         else:

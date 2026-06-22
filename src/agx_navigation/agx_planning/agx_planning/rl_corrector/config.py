@@ -29,15 +29,29 @@ class RLCorrectorConfig:
     max_steps: int = 600             # truncation horizon
 
     # --- Observation feature toggles -----------------------------------
+    # IMPORTANT: these define the obs LAYOUT, which is baked into the policy's
+    # input width. They are NOT runtime switches -- a policy must be deployed with
+    # the exact toggles it trained with (and held fixed across curriculum phases),
+    # or the obs won't match and the corrector fails safe to identity. This
+    # dataclass is the single source of truth: train.py and the deployed node both
+    # load it, so the defaults here are what keeps train and deploy in lockstep.
     use_prev_coeff: bool = True      # previous step's coefficients (smoothness)
+    use_imu: bool = True             # IMU gyro_z + body accel (slip-observing, on-robot)
     use_wheel_speeds: bool = False   # measured per-wheel speeds from /joint_states
-    use_costates: bool = True        # PMP costates (recorded-nominal training only)
+    # PMP costates only exist for recorded planner nominals (Tier-B). The working
+    # training path is parametric and has none, so enabling this would feed zeros
+    # at train but real costates at deploy -- a silent mismatch. Keep OFF until the
+    # recorded-nominal loader exists and training actually supplies them; flip here
+    # (one place) when it does.
+    use_costates: bool = False
 
     # --- Observation normalization scales ------------------------------
     pos_err_norm: float = 1.0        # [m]
     rate_norm: float = 2.0           # [m/s] / [rad/s]
     twist_v_norm: float = 0.5        # ~v_max
     twist_w_norm: float = 1.5        # ~omega_max
+    imu_gyro_norm: float = 1.5       # [rad/s] yaw rate (~omega_max)
+    imu_accel_norm: float = 5.0      # [m/s^2] body linear accel
     costate_norm: float = 1.0
 
     # --- Reward weights -------------------------------------------------

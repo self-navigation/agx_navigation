@@ -12,8 +12,15 @@ Observation layout (fixed order):
     cmd_left, cmd_right,                          # nominal commands (normalized)
     v_meas, omega_meas,                           # measured body twist (normalized)
    (prev_coeff - 1) * action_dim   if use_prev_coeff,
+    imu_gyro_z, imu_ax, imu_ay     if use_imu,
     wheel_speeds * 4               if use_wheel_speeds,
     costates * 5                   if use_costates ]
+
+The IMU block (true yaw rate + body-frame longitudinal/lateral acceleration) is a
+SLIP-OBSERVING signal available on the real robot: unlike v_meas/omega_meas (which
+are wheel-derived and blind to slip), the gyro/accelerometer measure the body's
+actual motion, so the policy can see the gap between commanded/kinematic motion and
+what really happened -- the very thing it corrects.
 """
 
 from typing import Optional, Tuple
@@ -44,6 +51,8 @@ def observation_dim(cfg) -> int:
     n = 3 + 3 + 2 + 2
     if cfg.use_prev_coeff:
         n += cfg.action_dim
+    if cfg.use_imu:
+        n += 3
     if cfg.use_wheel_speeds:
         n += 4
     if cfg.use_costates:
@@ -61,6 +70,7 @@ def build_observation(
     v_meas: float,
     omega_meas: float,
     prev_coeff=None,
+    imu=None,
     wheel_speeds=None,
     costates=None,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -96,6 +106,16 @@ def build_observation(
             else np.asarray(prev_coeff, dtype=float).ravel()
         )
         parts.extend((pc - 1.0).tolist())  # centered at identity
+
+    if cfg.use_imu:
+        # (gyro_z, ax, ay): yaw rate normalized like omega, body accel by its own
+        # scale. Missing reading -> zeros (same fail-safe convention as the rest).
+        im = np.zeros(3) if imu is None else np.asarray(imu, dtype=float).ravel()
+        parts.extend([
+            im[0] / cfg.imu_gyro_norm,
+            im[1] / cfg.imu_accel_norm,
+            im[2] / cfg.imu_accel_norm,
+        ])
 
     if cfg.use_wheel_speeds:
         ws = (

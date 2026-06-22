@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train rl-kill
 
 SIM ?= true
 HEADLESS ?= false
@@ -167,12 +167,17 @@ nav2:
 # source); then run the trainer against it. Override the usual way, e.g.
 #   make rl-sim HEADLESS=true
 #   make rl-train TIMESTEPS=500000 TERRAIN=false POLICY_OUT=~/my_policy
-TIMESTEPS  ?= 200000
-TERRAIN    ?= true
-POLICY_OUT ?= $(HOME)/rl_corrector_policy
-LOAD       ?=
-TB         ?=
-TRAIN_ARGS ?=
+TIMESTEPS   ?= 200000
+TERRAIN     ?= true
+POLICY_OUT  ?= $(HOME)/rl_corrector_policy
+LOAD        ?=
+TB          ?=
+TRAIN_ARGS  ?=
+# Rendering sensors (GPU lidar + RGB/depth cameras) off by default: the trainer
+# consumes only ground-truth pose + the /odom twist + the IMU, so the rendering is
+# pure per-tick overhead. Set SIM_SENSORS=true to inspect them. (The IMU and
+# magnetometer stay on regardless -- they have no rendering cost.)
+SIM_SENSORS ?= false
 TERRAIN_FLAG := $(if $(filter false,$(call lc,$(TERRAIN))),--no-terrain,--terrain)
 LOAD_FLAG := $(if $(LOAD),--load $(LOAD),)
 TB_FLAG := $(if $(TB),--tensorboard $(TB),)
@@ -182,7 +187,8 @@ rl-sim: build
 		source install/setup.bash && \
 		$(GPU_PREFIX) \
 		ros2 launch agx_bringup rl_corrector_sim.launch.py \
-		headless:=$(call lc,$(HEADLESS))
+		headless:=$(call lc,$(HEADLESS)) \
+		sim_sensors:=$(call lc,$(SIM_SENSORS))
 
 rl-train: build
 	source /opt/ros/jazzy/setup.bash && \
@@ -194,6 +200,22 @@ rl-train: build
 		$(LOAD_FLAG) \
 		$(TB_FLAG) \
 		$(TRAIN_ARGS)
+
+# Kill any leftover sim/training processes. Run BEFORE a fresh rl-sim if a
+# previous run was Ctrl-C'd or orphaned -- two sims share gz's default transport
+# partition and break set_pose. Each pkill is prefixed with `-` so a "no process
+# matched" (exit 1) doesn't fail the target. Order: trainer, then the launch and
+# its gz server + ros_gz bridges (the launch can respawn children if killed last).
+rl-kill:
+	-pkill -f "rl_corrector_train"
+	-pkill -f "rl_corrector_sim"
+	-pkill -f "ros_gz_bridge/parameter_bridge"
+	-pkill -f "ros_gz_sim"
+	-pkill -f "gz sim"
+	@sleep 1
+	@echo "rl-kill: remaining gz/sim procs:"; \
+		pgrep -af "gz sim|rl_corrector_sim|rl_corrector_train|parameter_bridge" \
+		| grep -v pgrep || echo "  (none)"
 
 server:
 	source /opt/ros/jazzy/setup.bash && \

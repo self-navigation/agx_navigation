@@ -50,14 +50,16 @@ from gz.msgs10.world_control_pb2 import WorldControl
 from gz.msgs10.boolean_pb2 import Boolean
 from gz.msgs10.entity_factory_pb2 import EntityFactory
 from gz.msgs10.entity_pb2 import Entity
+from gz.msgs10.physics_pb2 import Physics
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Imu
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float64MultiArray
+from rosgraph_msgs.msg import Clock
 
 # Controller joint order (wheel_velocity_controller.yaml) == StateReading wheel
 # order == [front_left, rear_left, front_right, rear_right] == [fl, rl, fr, rr].
@@ -68,6 +70,8 @@ _WHEEL_NAMES = ("front_left_wheel", "rear_left_wheel",
 _WHEEL_COMMANDS_TOPIC = "/wheel_velocity_controller/commands"
 _ODOM_TOPIC = "/odom"
 _JOINT_STATES_TOPIC = "/joint_states"
+_CLOCK_TOPIC = "/clock"
+_IMU_TOPIC = "/imu/data"
 
 
 def _yaw_from_quat(x: float, y: float, z: float, w: float) -> float:
@@ -79,9 +83,10 @@ class _BridgeNode(Node):
     """rclpy side: publishes wheel commands, caches the latest /odom twist and
     (optionally) per-wheel speeds. Pose is NOT taken from here -- see module doc."""
 
-    def __init__(self, use_wheel_speeds: bool) -> None:
+    def __init__(self, use_wheel_speeds: bool, use_imu: bool) -> None:
         super().__init__("rl_corrector_gz_bridge")
         self._use_wheel_speeds = use_wheel_speeds
+        self._use_imu = use_imu
 
         # Match the forward command controller's QoS (reliable/volatile/keep-last)
         # so no setpoint is dropped, mirroring the deployed corrector node.
@@ -99,11 +104,24 @@ class _BridgeNode(Node):
             self.create_subscription(
                 JointState, _JOINT_STATES_TOPIC, self._on_joints, 10
             )
+        if use_imu:
+            # The on-robot IMU (bridged from gz). Read the same way deployment does
+            # (ROS sensor_msgs/Imu), so the obs the policy sees matches train->deploy.
+            # We keep the gz/odom split for pose/twist but take the IMU over ROS
+            # because it is a *deployable* sensor, not privileged ground truth.
+            self.create_subscription(Imu, _IMU_TOPIC, self._on_imu, 10)
+        # Sim clock (bridged from gz by rl_clock_bridge). Deterministic stepping
+        # gates each env step on this advancing by control_dt, so every step is a
+        # true dt of SIM time -- the authoritative throttle, independent of how many
+        # pose/info messages the paused-then-multi_stepped world happens to emit.
+        self.create_subscription(Clock, _CLOCK_TOPIC, self._on_clock, 10)
 
         self.v: float = 0.0
         self.omega: float = 0.0
         self.wheel_speeds: Optional[List[float]] = [0.0] * 4 if use_wheel_speeds else None
+        self.imu: Optional[Tuple[float, float, float]] = None
         self._odom_seen = False
+        self.sim_time: Optional[float] = None
 
     def publish_wheels(self, wheels) -> None:
         msg = Float64MultiArray()
@@ -121,6 +139,18 @@ class _BridgeNode(Node):
         if all(n in idx for n in _WHEEL_NAMES):
             self.wheel_speeds = [float(msg.velocity[idx[n]]) for n in _WHEEL_NAMES]
 
+    def _on_clock(self, msg: Clock) -> None:
+        self.sim_time = msg.clock.sec + msg.clock.nanosec * 1e-9
+
+    def _on_imu(self, msg: Imu) -> None:
+        # Body-frame yaw rate + linear acceleration (x fwd, y left). Matches the
+        # (gyro_z, ax, ay) order obs.build_observation expects.
+        self.imu = (
+            float(msg.angular_velocity.z),
+            float(msg.linear_acceleration.x),
+            float(msg.linear_acceleration.y),
+        )
+
     @property
     def odom_seen(self) -> bool:
         return self._odom_seen
@@ -129,6 +159,13 @@ class _BridgeNode(Node):
 class GazeboBridge:
     """Drives one Gazebo instance for the RL corrector env."""
 
+    # rtf to request when unthrottling. "As fast as the CPU allows" -- paired with
+    # real_time_update_rate=0 (unlimited) it removes the cap entirely.
+    _FAST_RTF = 1000.0
+    # World SDF defaults (worlds/ordjo_world.world), restored on close.
+    _DEFAULT_RTF = 1.0
+    _DEFAULT_UPDATE_RATE = 1000.0
+
     def __init__(
         self,
         cfg,
@@ -136,9 +173,12 @@ class GazeboBridge:
         model_name: str = "scout_mini",
         physics_step: float = 0.01,
         deterministic: bool = False,
+        unthrottle: bool = False,
         reset_z: float = 0.20,
         settle_steps: int = 5,
+        reset_tol: float = 0.15,
         service_timeout_ms: int = 3000,
+        step_ack_ms: int = 10,
         spin_warmup_s: float = 10.0,
     ) -> None:
         self.cfg = cfg
@@ -146,19 +186,32 @@ class GazeboBridge:
         self.model = model_name
         self.physics_step = float(physics_step)
         self.deterministic = bool(deterministic)
+        self.unthrottle = bool(unthrottle)
         self.reset_z = float(reset_z)
         self.settle_steps = int(settle_steps)
+        # Lenient margin for "did the teleport land?" checked against the settled
+        # pose (vs the strict in-flight confirm tol in _set_pose).
+        self.reset_tol = float(reset_tol)
         self.timeout_ms = int(service_timeout_ms)
         # Short timeout for the flaky-ack world services (set_pose/control): the
         # command executes fast; we cap the wait so a false-negative ack can't
         # stall a step/reset for the full service timeout. See _set_pose.
         self._ack_ms = min(800, int(service_timeout_ms))
+        # Even shorter timeout for the HOT-PATH world-control step. That ack is
+        # the flaky one (see the ack-quirk note), and deterministic mode advances
+        # the world every env step, so blocking the full _ack_ms per step is what
+        # pins throughput to ~1 step/s. We don't wait for the reply at all here:
+        # the step is SENT synchronously, then _advance detects completion via a
+        # fresh ground-truth pose. Used for the per-step multi_step and the
+        # set_pose confirm-loop step (whose 0.5s deadline a full ack would blow).
+        self._step_ack_ms = int(step_ack_ms)
 
         # gz-sim service endpoints (convention: /world/<world>/<verb>).
         self._svc_set_pose = f"/world/{world_name}/set_pose"
         self._svc_control = f"/world/{world_name}/control"
         self._svc_create = f"/world/{world_name}/create"
         self._svc_remove = f"/world/{world_name}/remove"
+        self._svc_set_physics = f"/world/{world_name}/set_physics"
         # pose/info (NOT dynamic_pose/info): it is published for ALL entities at
         # a steady rate, so the robot pose stays fresh even when it is momentarily
         # at rest (dynamic_pose only carries *moving* entities), and it preserves
@@ -173,14 +226,42 @@ class GazeboBridge:
         # --- rclpy: command out + twist in ---
         if not rclpy.ok():
             rclpy.init()
-        self._node = _BridgeNode(use_wheel_speeds=cfg.use_wheel_speeds)
+        self._node = _BridgeNode(use_wheel_speeds=cfg.use_wheel_speeds,
+                                 use_imu=cfg.use_imu)
         self._exec = SingleThreadedExecutor()
         self._exec.add_node(self._node)
 
         # Names of terrain patches we spawned, so we can remove them next reset.
         self._terrain_models: List[str] = []
 
-        # Wait for the first ground-truth pose + odom so step 0 is valid.
+        # Teleport-confirm failures in a row. A single failure is usually just the
+        # flaky pose read-back (the teleport itself executes), so we proceed; a
+        # long run of them means a real problem (wrong model/world, dead sim), so
+        # we raise rather than train forever on a robot that never moves.
+        self._consec_reset_fail = 0
+        self._max_consec_reset_fail = 10
+
+        # Ensure the world is RUNNING before we wait. The sim can come up paused
+        # (the gz GUI may start paused) or be left paused by a prior deterministic
+        # run that was hard-killed before close() un-paused it. While paused,
+        # pose/info still republishes (so ground-truth pose arrives), but /odom --
+        # wheel_odometry integrating /joint_states -- only updates when the world
+        # steps, so _wait_ready would block on the twist forever. Best-effort like
+        # every world-control call (the ack is flaky; the unpause still executes).
+        self._world_control(pause=False)
+
+        # Lift the real-time cap so stepping runs as fast as the CPU allows. The
+        # world SDF ships real_time_factor=1.0 + real_time_update_rate=1000, which
+        # throttles BOTH wall-clock running and (via the update-rate target) the
+        # paused-world multi_step, pinning training near 1x. We raise rtf and set
+        # update_rate=0 (unlimited); restored in close(). Opt-in (training sets it)
+        # so validation/visualization can keep real-time. Best-effort like every
+        # world service -- the flaky ack doesn't stop the change taking effect.
+        if self.unthrottle:
+            self._set_physics(real_time_factor=self._FAST_RTF, real_time_update_rate=0.0)
+
+        # Wait for the first ground-truth pose + odom (+ clock, used by the
+        # deterministic step gate) so step 0 is valid.
         self._wait_ready(spin_warmup_s)
         if self.deterministic:
             self._world_control(pause=True)
@@ -211,16 +292,27 @@ class GazeboBridge:
             self._exec.spin_once(timeout_sec=max(0.0, end - time.monotonic()))
 
     def _wait_ready(self, timeout_s: float) -> None:
+        # The sim clock is only needed by the deterministic step gate; don't make
+        # wall-clock setups (which may run without the /clock bridge) block on it.
+        need_clock = self.deterministic
         end = time.monotonic() + timeout_s
+        need_imu = self.cfg.use_imu
         while time.monotonic() < end:
             self._exec.spin_once(timeout_sec=0.05)
-            if self._pose_xyth is not None and self._node.odom_seen:
+            if (self._pose_xyth is not None and self._node.odom_seen
+                    and (not need_clock or self._node.sim_time is not None)
+                    and (not need_imu or self._node.imu is not None)):
                 return
         missing = []
         if self._pose_xyth is None:
             missing.append(f"ground-truth pose on {self._topic_pose}")
         if not self._node.odom_seen:
             missing.append(f"twist on {_ODOM_TOPIC}")
+        if need_clock and self._node.sim_time is None:
+            missing.append(f"sim clock on {_CLOCK_TOPIC}")
+        if need_imu and self._node.imu is None:
+            missing.append(f"IMU on {_IMU_TOPIC} (is it bridged to ROS? "
+                           "use_imu=True needs sensor_msgs/Imu there)")
         raise RuntimeError(
             "GazeboBridge timed out waiting for: " + ", ".join(missing)
             + ". Is the sim up (gz_sim + sim_control) and the model named "
@@ -234,14 +326,30 @@ class GazeboBridge:
     # short ack timeout (don't block the full default on a false negative) and
     # verify side effects by reading ground-truth state, never by trusting `ok`.
 
-    def _world_control(self, pause: Optional[bool] = None, multi_step: int = 0) -> None:
+    def _world_control(self, pause: Optional[bool] = None, multi_step: int = 0,
+                       ack_ms: Optional[int] = None) -> None:
         req = WorldControl()
         if pause is not None:
             req.pause = pause
         if multi_step > 0:
             req.multi_step = multi_step
         # Best-effort: the step/pause executes regardless of the (flaky) ack.
-        self._gz.request(self._svc_control, req, WorldControl, Boolean, self._ack_ms)
+        # Callers on the hot path pass a tiny ack_ms so a lost reply can't stall
+        # them; correctness is re-established by reading ground-truth state.
+        self._gz.request(self._svc_control, req, WorldControl, Boolean,
+                         self._ack_ms if ack_ms is None else ack_ms)
+
+    def _set_physics(self, real_time_factor: float,
+                     real_time_update_rate: float) -> None:
+        """Set the world's physics rates (rtf + update-rate cap). Keeps the SDF
+        max_step_size so the deterministic n-ticks-per-step math is unchanged.
+        Best-effort: like the other world services the ack is flaky, but the
+        change takes effect and stepping speed is observable downstream."""
+        req = Physics()
+        req.max_step_size = self.physics_step
+        req.real_time_factor = float(real_time_factor)
+        req.real_time_update_rate = float(real_time_update_rate)
+        self._gz.request(self._svc_set_physics, req, Physics, Boolean, self._ack_ms)
 
     def _set_pose(self, x: float, y: float, z: float, yaw: float,
                   tol: float = 0.05, tries: int = 4) -> bool:
@@ -269,7 +377,7 @@ class GazeboBridge:
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:
                 if self.deterministic:
-                    self._world_control(multi_step=1)
+                    self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
                 self._exec.spin_once(timeout_sec=0.02)
                 p = self._pose_xyth
                 if p is not None and math.hypot(p[0] - x, p[1] - y) < tol:
@@ -281,11 +389,43 @@ class GazeboBridge:
         rclpy-side state. The gz pose callback runs on its own thread."""
         if self.deterministic:
             n = max(1, int(round(dt / self.physics_step)))
-            self._world_control(multi_step=n)
-            # Let the pose callback and /odom catch up post-step.
-            self._spin(0.0 if n == 0 else min(0.05, dt))
+            t0 = self._node.sim_time
+            # Fire the step without waiting on its (flaky/lost) ack -- that wait
+            # is what throttled training to ~1 step/s.
+            self._world_control(multi_step=n, ack_ms=self._step_ack_ms)
+            # Gate on the SIM CLOCK advancing by the requested n ticks. pose/info
+            # republishes per physics tick while the world advances, so the old
+            # "first fresh pose" gate returned after ~1 of the n ticks -- letting
+            # the env loop outrun physics (under-simulated steps, fake throughput,
+            # e_cross collapsing to ~0). The clock is the authoritative measure of
+            # how much sim time actually elapsed; wait for the full dt. Spinning
+            # rclpy meanwhile keeps the /odom twist fresh. Bounded so a genuinely
+            # dropped step can't hang the loop.
+            self._wait_clock_advance(t0, n * self.physics_step,
+                                     deadline_s=max(0.2, 10.0 * dt))
         else:
             self._spin(dt)
+
+    def _wait_clock_advance(self, t0: Optional[float], sim_dt: float,
+                            deadline_s: float) -> None:
+        """Spin rclpy until the sim clock has advanced by `sim_dt` past `t0`, or
+        `deadline_s` of wall time elapses (then proceed with the latest state)."""
+        # Half a tick of slack so float jitter / a clock sample landing mid-step
+        # doesn't force an extra wait.
+        target = None if t0 is None else t0 + sim_dt - 0.5 * self.physics_step
+        end = time.monotonic() + deadline_s
+        while time.monotonic() < end:
+            self._exec.spin_once(timeout_sec=0.005)
+            t = self._node.sim_time
+            if target is None:
+                # No clock baseline (shouldn't happen post-_wait_ready); fall back
+                # to a one-shot drain so we don't busy-wait the whole deadline.
+                if t is not None:
+                    self._exec.spin_once(timeout_sec=0.0)
+                    return
+            elif t is not None and t >= target:
+                self._exec.spin_once(timeout_sec=0.0)  # one more drain for twist
+                return
 
     # ------------------------------------------------------------------
     # Bridge contract
@@ -302,8 +442,11 @@ class GazeboBridge:
         self._apply_terrain(terrain, near=(x, y))
 
         # 3. Teleport to the episode start (slightly raised, then settle down).
-        if not self._set_pose(x, y, self.reset_z, th):
-            raise RuntimeError(f"set_pose failed on {self._svc_set_pose}")
+        #    The gz set_pose service EXECUTES reliably even when its ack/read-back
+        #    is flaky (see the ack-quirk note), so an unconfirmed teleport almost
+        #    always still landed -- we settle and re-check rather than crash. Only
+        #    a long streak of failures (sim dead / wrong model) is fatal.
+        confirmed = self._set_pose(x, y, self.reset_z, th)
 
         # 4. Settle: zero command for a few steps so residual twist damps out
         #    (set_pose moves the body but does not zero its velocity).
@@ -311,7 +454,30 @@ class GazeboBridge:
             self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
             self._advance(self.cfg.control_dt)
 
-        return self._read_state()
+        st = self._read_state()
+
+        # Re-check against the settled ground-truth pose: this both rescues a
+        # teleport whose mid-flight confirm raced the residual velocity, and
+        # detects a genuinely-stuck robot.
+        landed = confirmed or math.hypot(st.pose[0] - x, st.pose[1] - y) < self.reset_tol
+        if landed:
+            self._consec_reset_fail = 0
+        else:
+            self._consec_reset_fail += 1
+            self._node.get_logger().warn(
+                "reset teleport unconfirmed (%.2f m from target, %d in a row); "
+                "proceeding." % (math.hypot(st.pose[0] - x, st.pose[1] - y),
+                                 self._consec_reset_fail)
+            )
+            if self._consec_reset_fail >= self._max_consec_reset_fail:
+                raise RuntimeError(
+                    "set_pose failed %d resets in a row on %s -- is the sim alive "
+                    "and is the model named %r in world %r? (a single failure is "
+                    "tolerated; this many means a real problem)"
+                    % (self._consec_reset_fail, self._svc_set_pose,
+                       self.model, self.world)
+                )
+        return st
 
     def step(self, wheels, dt: float) -> StateReading:
         self._node.publish_wheels(wheels)
@@ -324,6 +490,11 @@ class GazeboBridge:
             self._spin(0.02)
             if self.deterministic:
                 self._world_control(pause=False)  # leave the sim runnable
+            if self.unthrottle:
+                # Restore the SDF real-time cap so a sim reused after training
+                # (e.g. the validate script) is not left running flat-out.
+                self._set_physics(real_time_factor=self._DEFAULT_RTF,
+                                  real_time_update_rate=self._DEFAULT_UPDATE_RATE)
         finally:
             self._remove_terrain()
             self._exec.remove_node(self._node)
@@ -344,6 +515,7 @@ class GazeboBridge:
             omega=self._node.omega,
             wheel_speeds=self._node.wheel_speeds,
             contact=False,  # Phase: contact sensor wired later (optional hardening).
+            imu=self._node.imu if self.cfg.use_imu else None,
         )
 
     def _apply_terrain(self, terrain, near) -> None:

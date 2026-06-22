@@ -18,7 +18,8 @@ def _raw_cfg(**kw):
     # Norms = 1 so assertions read raw quantities.
     base = dict(
         pos_err_norm=1.0, rate_norm=1.0, twist_v_norm=1.0, twist_w_norm=1.0,
-        costate_norm=1.0, wheel_cmd_max=1.0, control_dt=0.1,
+        costate_norm=1.0, imu_gyro_norm=1.0, imu_accel_norm=1.0,
+        wheel_cmd_max=1.0, control_dt=0.1,
     )
     base.update(kw)
     return RLCorrectorConfig(**base)
@@ -57,10 +58,10 @@ def test_tracking_error_heading_wraps():
 
 
 def test_observation_dim_toggles():
-    cfg = RLCorrectorConfig(action_dim=4, use_prev_coeff=True,
+    cfg = RLCorrectorConfig(action_dim=4, use_prev_coeff=True, use_imu=True,
                             use_wheel_speeds=True, use_costates=True)
-    assert observation_dim(cfg) == 10 + 4 + 4 + 5
-    cfg2 = RLCorrectorConfig(action_dim=2, use_prev_coeff=True,
+    assert observation_dim(cfg) == 10 + 4 + 3 + 4 + 5
+    cfg2 = RLCorrectorConfig(action_dim=2, use_prev_coeff=True, use_imu=False,
                              use_wheel_speeds=False, use_costates=False)
     assert observation_dim(cfg2) == 10 + 2
 
@@ -106,7 +107,8 @@ def test_build_observation_rates_from_prev_err():
 
 
 def test_prev_coeff_centered_at_identity():
-    cfg = _raw_cfg(action_dim=4, use_prev_coeff=True, use_costates=False)
+    cfg = _raw_cfg(action_dim=4, use_prev_coeff=True, use_imu=False,
+                   use_costates=False)
     obs, _ = build_observation(
         cfg, (0, 0, 0), (0, 0, 0), prev_err=None,
         cmd_left=0.0, cmd_right=0.0, v_meas=0.0, omega_meas=0.0,
@@ -114,3 +116,23 @@ def test_prev_coeff_centered_at_identity():
     )
     # last 4 entries are prev_coeff - 1
     assert obs[-4:] == pytest.approx([0.5, -0.5, 0.0, 0.0])
+
+
+def test_imu_in_observation():
+    """IMU (gyro_z, ax, ay) appears right after prev_coeff, normalized by its
+    scales; absent -> zeros (the fail-safe convention)."""
+    cfg = _raw_cfg(action_dim=2, use_prev_coeff=False, use_imu=True,
+                   use_costates=False)
+    obs, _ = build_observation(
+        cfg, (0, 0, 0), (0, 0, 0), prev_err=None,
+        cmd_left=0.0, cmd_right=0.0, v_meas=0.0, omega_meas=0.0,
+        imu=(0.7, -1.2, 0.3),
+    )
+    assert observation_dim(cfg) == 10 + 3
+    assert obs[-3:] == pytest.approx([0.7, -1.2, 0.3])  # norms = 1 in _raw_cfg
+
+    obs_missing, _ = build_observation(
+        cfg, (0, 0, 0), (0, 0, 0), prev_err=None,
+        cmd_left=0.0, cmd_right=0.0, v_meas=0.0, omega_meas=0.0, imu=None,
+    )
+    assert obs_missing[-3:] == pytest.approx([0.0, 0.0, 0.0])

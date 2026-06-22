@@ -4,8 +4,10 @@ Deliberately trimmed vs the full stack: physics + wheel controller + joint state
 + wheel odometry only. NO slam, nav, planner, corrector (the GazeboBridge IS the
 command source, so a corrector node would fight it for the command topic), and NO
 surface patches (the bridge spawns terrain itself per-episode; a clean flat-ground
-baseline must start patch-free). Sensors (camera/lidar/imu) are left to whatever
-the model defines but nothing downstream consumes them here.
+baseline must start patch-free). The rendering sensors (GPU lidar + RGB/depth
+cameras) are dropped by default (sim_sensors:=false) since nothing here consumes
+them and their per-tick rendering is the dominant sim cost; the IMU/magnetometer
+stay on (cheap, no rendering).
 
 Run:
     ros2 launch agx_bringup rl_corrector_sim.launch.py headless:=true
@@ -81,13 +83,20 @@ def generate_launch_description():
                       on_exit=[EmitEvent(event=Shutdown())])
     )
 
-    # /clock so use_sim_time clients have a sim clock.
+    # /clock so use_sim_time clients have a sim clock; the GazeboBridge also gates
+    # each deterministic step on it. /imu/data so the corrector obs can include the
+    # IMU (a slip-observing, deployable signal) -- the GazeboBridge reads it over
+    # ROS, exactly as the deployed corrector does, so train and deploy match. The
+    # IMU sensor stays on even with sim_sensors:=false (it has no rendering cost).
     clock_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="rl_clock_bridge",
         output="screen",
-        arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
+        arguments=[
+            "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+            "/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU",
+        ],
         parameters=[{"use_sim_time": True}],
     )
 
@@ -102,6 +111,11 @@ def generate_launch_description():
             "sim_reduction": "4",
             "controller_file": "wheel_velocity_controller.yaml",
             "sim": "true",
+            # Drop the GPU lidar + RGB/depth cameras: the GazeboBridge consumes only
+            # ground-truth pose + the /odom twist, so the rendering sensors are pure
+            # per-tick overhead during training. IMU/magnetometer stay on (cheap, and
+            # the IMU is a slip-observing signal the policy may use). Overridable.
+            "sim_sensors": LaunchConfiguration("sim_sensors"),
         }.items(),
     )
 
@@ -150,6 +164,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("headless", default_value="true"),
+        # Off by default here: this launch exists for training/validation, where the
+        # rendering sensors are unused overhead. Set sim_sensors:=true to inspect them.
+        DeclareLaunchArgument("sim_sensors", default_value="false"),
         set_gz_resource_path,
         set_gz_plugin_path,
         gz_server_headed,

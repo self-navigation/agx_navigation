@@ -22,6 +22,21 @@ wheel-odometry progress over slip patches.
 
 import argparse
 import os
+import sys
+from collections import deque
+
+# Keep TensorFlow out of this process. stable-baselines3's logger does
+# `from torch.utils.tensorboard import SummaryWriter` at import time, which pulls
+# in tensorboard and (if installed) tensorflow -- even when --tensorboard is not
+# used. TF's bundled protobuf/abseil C++ runtime clashes with gz-transport's
+# protobuf runtime (gazebo_bridge imports gz.transport/gz.msgs), and loading both
+# into one process segfaults the trainer right after SAC setup. Poisoning the
+# module makes `import tensorflow` raise cleanly; tensorboard and SB3 both fall
+# back gracefully, so .tfevents logging via torch's writer still works. Done
+# before any SB3/gz import so TF never gets a chance to load.
+sys.modules.setdefault("tensorflow", None)
+
+import numpy as np  # safe: numpy does not pull in TF, unlike the SB3/torch stack
 
 from .config import RLCorrectorConfig
 from .env import WheelCorrectorEnv
@@ -46,10 +61,18 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--wall-clock", action="store_true",
                     help="step the sim in real time instead of deterministic "
                          "multi-stepping (slower; default is deterministic)")
+    ap.add_argument("--realtime", action="store_true",
+                    help="keep the world's real-time cap (rtf=1) instead of lifting "
+                         "it for max throughput. Use to watch training at 1x; default "
+                         "unthrottles (rtf high, update-rate unlimited).")
     ap.add_argument("--terrain", action=argparse.BooleanOptionalAction, default=True,
                     help="randomize slip patches on the nominal path each episode")
     # MDP / observation.
     ap.add_argument("--action-dim", type=int, choices=(2, 4), default=4)
+    ap.add_argument("--imu", action=argparse.BooleanOptionalAction, default=True,
+                    help="include the IMU (gyro_z + body accel) in the obs: a "
+                         "slip-observing, on-robot signal. On by default; must match "
+                         "deployment (the deployed corrector reads /imu/data too).")
     ap.add_argument("--costates", action=argparse.BooleanOptionalAction, default=False,
                     help="include PMP costates in the obs (Tier-B recorded "
                          "nominals only; parametric training has none -> default off)")
@@ -60,8 +83,10 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--buffer-size", type=int, default=300_000)
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--learning-starts", type=int, default=1_000)
-    ap.add_argument("--checkpoint-freq", type=int, default=20_000,
-                    help="env steps between checkpoint saves (0 disables)")
+    ap.add_argument("--checkpoint-freq", type=int, default=5_000,
+                    help="env steps between checkpoint saves (0 disables). Each "
+                         "checkpoint is a resumable policy .zip under "
+                         "checkpoints/; pass it to --load to continue from there.")
     ap.add_argument("--tensorboard", default=None,
                     help="tensorboard log dir (default: none)")
     return ap.parse_args()
@@ -69,10 +94,12 @@ def _parse_args() -> argparse.Namespace:
 
 def build_env(args) -> WheelCorrectorEnv:
     """Construct the training env from CLI args (no SB3 import needed)."""
-    cfg = RLCorrectorConfig(action_dim=args.action_dim, use_costates=args.costates)
+    cfg = RLCorrectorConfig(action_dim=args.action_dim, use_imu=args.imu,
+                            use_costates=args.costates)
     bridge = GazeboBridge(
         cfg, world_name=args.world, model_name=args.model,
         deterministic=not args.wall_clock,
+        unthrottle=not args.realtime,
     )
     env = WheelCorrectorEnv(cfg, bridge, seed=args.seed)
 
@@ -97,7 +124,7 @@ def main() -> None:
     # missing (the package install_requires it, but a bare checkout may not).
     try:
         from stable_baselines3 import SAC
-        from stable_baselines3.common.callbacks import CheckpointCallback
+        from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
         from stable_baselines3.common.monitor import Monitor
     except ImportError as e:  # pragma: no cover - environment guard
         raise SystemExit(
@@ -106,9 +133,39 @@ def main() -> None:
             f"(import failed: {e})"
         )
 
+    # SB3's Monitor only surfaces ep_rew_mean/ep_len_mean, which can't tell a
+    # goal-reaching episode from a corridor breach from a run that just truncated
+    # at the nominal's end -- they all just move the mean reward around. The env
+    # already returns succeeded/failed/e_cross in the step info (see env.py), so
+    # log rolling means of those on each episode end. Note success_rate +
+    # failure_rate < 1 means the remainder truncated short of the goal tolerance.
+    # BaseCallback is defined here (not at module scope) to keep the SB3/torch
+    # import lazy, preserving the TF-poisoning order enforced above.
+    class EpisodeOutcomeCallback(BaseCallback):
+        def __init__(self, window: int = 100):
+            super().__init__()
+            self._success = deque(maxlen=window)
+            self._failure = deque(maxlen=window)
+            self._term_cross = deque(maxlen=window)
+
+        def _on_step(self) -> bool:
+            for done, info in zip(self.locals["dones"], self.locals["infos"]):
+                if not done:
+                    continue
+                self._success.append(1.0 if info.get("succeeded") else 0.0)
+                self._failure.append(1.0 if info.get("failed") else 0.0)
+                if "e_cross" in info:
+                    self._term_cross.append(abs(float(info["e_cross"])))
+            if self._success:
+                self.logger.record("rollout/success_rate", float(np.mean(self._success)))
+                self.logger.record("rollout/failure_rate", float(np.mean(self._failure)))
+                self.logger.record("rollout/terminal_abs_e_cross",
+                                   float(np.mean(self._term_cross)))
+            return True
+
     env = Monitor(build_env(args))
 
-    callbacks = []
+    callbacks = [EpisodeOutcomeCallback()]
     out_dir = os.path.dirname(os.path.abspath(args.out)) or "."
     os.makedirs(out_dir, exist_ok=True)
     if args.checkpoint_freq > 0:

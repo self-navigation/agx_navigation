@@ -49,6 +49,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 from builtin_interfaces.msg import Duration as BuiltinDuration
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Odometry, Path
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Float64MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import (
@@ -210,14 +211,20 @@ class WheelCorrectorNode(Node):
         self._prev_coeff = np.ones(self._rl_cfg.action_dim)
         # Latest body twist from /odom (a rate, so localization-frame agnostic).
         self._odom_twist: Tuple[float, float] = (0.0, 0.0)
+        # Latest IMU reading (gyro_z, ax, ay); None until the first message. The
+        # policy trained on this exact signal when cfg.use_imu, so it must be fed
+        # here too -- the obs layout (hence the policy) is fixed at train time.
+        self._imu: Optional[Tuple[float, float, float]] = None
 
         if self._policy is not None:
             # Only the policy path needs the measured twist; skip the sub otherwise.
             self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+            if self._rl_cfg.use_imu:
+                self.create_subscription(Imu, "/imu/data", self._on_imu, 10)
             self.get_logger().info(
-                "RL corrector ACTIVE (policy=%s, action_dim=%d, costates=%s)"
+                "RL corrector ACTIVE (policy=%s, action_dim=%d, imu=%s, costates=%s)"
                 % (self._rl_cfg.policy_path, self._rl_cfg.action_dim,
-                   self._rl_cfg.use_costates)
+                   self._rl_cfg.use_imu, self._rl_cfg.use_costates)
             )
         else:
             self.get_logger().info(
@@ -229,6 +236,13 @@ class WheelCorrectorNode(Node):
         self._odom_twist = (
             float(msg.twist.twist.linear.x),
             float(msg.twist.twist.angular.z),
+        )
+
+    def _on_imu(self, msg: Imu) -> None:
+        self._imu = (
+            float(msg.angular_velocity.z),
+            float(msg.linear_acceleration.x),
+            float(msg.linear_acceleration.y),
         )
 
     def _reset_corrector_state(self) -> None:
@@ -297,7 +311,9 @@ class WheelCorrectorNode(Node):
                 cfg, planned_pose, actual_pose, self._prev_err,
                 cmd_left=left, cmd_right=right,
                 v_meas=self._odom_twist[0], omega_meas=self._odom_twist[1],
-                prev_coeff=self._prev_coeff, wheel_speeds=None, costates=cs,
+                prev_coeff=self._prev_coeff,
+                imu=self._imu if cfg.use_imu else None,
+                wheel_speeds=None, costates=cs,
             )
             action = self._policy.predict(obs)
             if not np.all(np.isfinite(action)):

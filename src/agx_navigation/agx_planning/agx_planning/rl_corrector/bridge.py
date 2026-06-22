@@ -25,3 +25,6 @@ class StateReading:
     omega: float                          # measured body yaw rate [rad/s]
     wheel_speeds: Optional[List[float]]   # measured [fl, rl, fr, rr] or None
     contact: bool                         # physical contact (collision) flag
+    # IMU reading (gyro_z, accel_x, accel_y) in the body frame, or None if unused.
+    # Defaulted so bridges that don't surface it (KinematicBridge) stay unchanged.
+    imu: Optional[Tuple[float, float, float]] = None

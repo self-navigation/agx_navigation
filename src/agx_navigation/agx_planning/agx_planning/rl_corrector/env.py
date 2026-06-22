@@ -107,6 +107,7 @@ class WheelCorrectorEnv(gym.Env):
             v_meas=st.v,
             omega_meas=st.omega,
             prev_coeff=prev_coeff,
+            imu=st.imu if self.cfg.use_imu else None,
             wheel_speeds=st.wheel_speeds if self.cfg.use_wheel_speeds else None,
             costates=costates,
         )
