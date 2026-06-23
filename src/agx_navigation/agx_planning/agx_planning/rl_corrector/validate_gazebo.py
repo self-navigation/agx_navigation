@@ -8,7 +8,7 @@ the signal the trained policy must remove.
 
 Run (needs gz_sim + sim_control up, e.g. the project's main launch):
     python3 -m agx_planning.rl_corrector.validate_gazebo \
-        --world ordjo_world --model scout_mini [--deterministic] [--terrain]
+        --world rl_corrector --model scout_mini [--deterministic] [--terrain]
 
 It does NOT need torch or stable-baselines3 (identity action only).
 """
@@ -26,7 +26,7 @@ from .nominal import generate_primitive
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--world", default="ordjo_world")
+    ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--deterministic", action="store_true",
                     help="pause + multi_step the world (reproducible) vs wall-clock")

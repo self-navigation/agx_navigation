@@ -1,9 +1,10 @@
 """Reward and termination/success predicates. Pure (numpy only).
 
 Reward (per step):
+  + w_ontrack * max(0, 1-(d_target/corridor)^2)  dense closeness-to-target bonus
   - w_cross   * e_cross^2          cross-track tracking (dominant)
   - w_heading * e_heading^2        heading tracking
-  + w_progress * progress_delta    along-track advance (anti-stall)
+  + w_progress * progress_delta    along-track advance (anti-stall, capped by env)
   - w_effort  * sum((c_i - 1)^2)   deviation from the identity feedforward
   - w_smooth  * sum((c_i - c_prev_i)^2)   coefficient smoothness
   (- term_penalty on failure;  + success_bonus on success)
@@ -52,10 +53,19 @@ def compute_reward(
         np.ones_like(coeff) if prev_coeff is None else np.asarray(prev_coeff, dtype=float)
     )
 
+    e_along = err[0]
     e_cross = err[1]
     e_heading = err[2]
 
     r = 0.0
+    # Dense POSITIVE on-track reward: 1.0 when sitting on the current target point,
+    # decaying quadratically to 0 at the corridor edge (and clamped there). Uses the
+    # full distance to the target (along + cross) so keeping PACE with the moving
+    # target is rewarded too, not just lateral centring. A corridor breach ends the
+    # episode, so this is "reward for every step we stay near the target".
+    d_to_target = float(np.hypot(e_along, e_cross))
+    on_track = max(0.0, 1.0 - (d_to_target / cfg.corridor_epsilon) ** 2)
+    r += cfg.w_ontrack * on_track
     r -= cfg.w_cross * e_cross ** 2
     r -= cfg.w_heading * e_heading ** 2
     r += cfg.w_progress * progress_delta

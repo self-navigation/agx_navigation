@@ -18,7 +18,7 @@ WHY TWO TRANSPORTS
 
 RUNTIME-CONFIRMATION ITEMS (the plan flags these; verify on a live sim with
 `gz service -l` / `gz topic -l`):
-  * world name (default "ordjo_world", from worlds/ordjo_world.world)
+  * world name (default "rl_corrector", from worlds/rl_corrector.world)
   * model name (spawned "scout_mini"; -allow_renaming may suffix it -> pass
     model_name= explicitly if so)
   * service names below follow the gz-sim convention /world/<world>/<verb>.
@@ -162,14 +162,21 @@ class GazeboBridge:
     # rtf to request when unthrottling. "As fast as the CPU allows" -- paired with
     # real_time_update_rate=0 (unlimited) it removes the cap entirely.
     _FAST_RTF = 1000.0
-    # World SDF defaults (worlds/ordjo_world.world), restored on close.
+    # World SDF defaults (worlds/rl_corrector.world), restored on close.
     _DEFAULT_RTF = 1.0
     _DEFAULT_UPDATE_RATE = 1000.0
+    # Gravity to (re)assert on every set_physics. The gz Physics proto carries a
+    # gravity field that defaults to (0,0,0), and /world/<world>/set_physics
+    # applies EVERY field of the request, so a request that omits gravity zeroes
+    # it -- the robot floats. We can only set physics, not read it back, but
+    # gravity is a static world constant, so we just rewrite the known value.
+    # Matches <gravity> in worlds/rl_corrector.world.
+    _GRAVITY_Z = -9.8
 
     def __init__(
         self,
         cfg,
-        world_name: str = "ordjo_world",
+        world_name: str = "rl_corrector",
         model_name: str = "scout_mini",
         physics_step: float = 0.01,
         deterministic: bool = False,
@@ -349,6 +356,9 @@ class GazeboBridge:
         req.max_step_size = self.physics_step
         req.real_time_factor = float(real_time_factor)
         req.real_time_update_rate = float(real_time_update_rate)
+        # set_physics overwrites every field from the request and the proto
+        # defaults gravity to (0,0,0); re-assert it or the world loses gravity.
+        req.gravity.z = self._GRAVITY_Z
         self._gz.request(self._svc_set_physics, req, Physics, Boolean, self._ack_ms)
 
     def _set_pose(self, x: float, y: float, z: float, yaw: float,

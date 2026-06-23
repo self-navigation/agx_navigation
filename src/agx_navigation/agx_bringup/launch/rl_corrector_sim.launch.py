@@ -43,7 +43,7 @@ def generate_launch_description():
     headless = LaunchConfiguration("headless")
 
     world_path = PathJoinSubstitution(
-        [FindPackageShare("rudn_ordjo_building"), "worlds", "ordjo_world.world"]
+        [FindPackageShare("rudn_ordjo_building"), "worlds", "rl_corrector.world"]
     )
 
     set_gz_resource_path = SetEnvironmentVariable(

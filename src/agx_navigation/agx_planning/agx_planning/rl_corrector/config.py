@@ -18,9 +18,16 @@ class RLCorrectorConfig:
     # --- Action ---------------------------------------------------------
     # 4 = per-wheel coefficients [fl, rl, fr, rr]; 2 = per-side [left, right].
     action_dim: int = 4
-    # coeff_i = 1 + coeff_k * a_i, with a_i in [-1, 1]. k=0.5 -> coeff in [0.5, 1.5].
-    # a_i = 0 -> coeff 1 -> exact identity (the fail-safe contract).
-    coeff_k: float = 0.5
+    # coeff_i = 1 + coeff_k * a_i, with a_i in [-1, 1]. a_i = 0 -> coeff 1 -> exact
+    # identity (the fail-safe contract; also where SAC's zero-centred tanh policy
+    # naturally sits). coeff_k is the ACTION AUTHORITY dial: k=0.2 -> coeff in
+    # [0.8, 1.2]. Dropped from 0.5 ([0.5,1.5]) because that let the policy command
+    # such asymmetric wheels that it over-rotated and breached the pi/2 heading
+    # corridor on turns (SAC_6/8: heading breaches at |e_heading|~1.6-2.0 rad). A
+    # residual corrector should nudge the feedforward, not overpower it. SINGLE
+    # SOURCE OF TRUTH for train+deploy -- the deployed node reads this same value,
+    # so a policy must be deployed with the coeff_k it trained on.
+    coeff_k: float = 0.2
     # Per-wheel command clamp [rad/s]; matches the joint <limit velocity>.
     wheel_cmd_max: float = 20.0
 
@@ -55,12 +62,32 @@ class RLCorrectorConfig:
     costate_norm: float = 1.0
 
     # --- Reward weights -------------------------------------------------
-    w_cross: float = 10.0            # cross-track error (dominant)
+    # NOTE (SAC_4 post-mortem): the original weights made every trajectory net
+    # negative -- progress (w=5 * ~0.03 m/step ~= 0.15/step) was swamped by the
+    # quadratic tracking penalties and the -50 terminal, so the policy had no
+    # signal pulling it toward the goal and the high-variance terminal spike
+    # diverged the critic. w_progress is now the dominant DENSE term (staying on
+    # the path keeps earning it; a corridor breach ends the episode and forfeits
+    # the rest), and term_penalty is small enough not to dominate the return.
+    # Dense POSITIVE on-track reward: each step the robot is near the current
+    # target point earns up to w_ontrack, decaying to 0 at the corridor edge (see
+    # reward.py). This is the continuous "stay close to the moving target" signal
+    # that was missing -- previously every trajectory was net-negative and the only
+    # positive term was the rarely-collected success bonus, so SAC had nothing to
+    # climb toward (SAC_5/8 reward slid negative). Per-step, so over a ~30-step
+    # episode perfect tracking is worth ~+30, comparable to success_bonus.
+    w_ontrack: float = 1.0           # dense positive closeness-to-target reward
+    w_cross: float = 10.0            # cross-track error (penalty, bites near the edge)
     w_heading: float = 2.0           # heading error
-    w_progress: float = 5.0          # along-track progress (anti-stall)
+    # Progress is now CAPPED at the nominal's per-step advance in env.step (see
+    # the comment there), so it rewards keeping pace with the nominal but cannot
+    # be farmed by racing/drifting. Weight kept co-equal with w_cross so tracking
+    # accuracy and forward pace matter equally -- w=25 (SAC_5) made progress
+    # dominate and the policy drifted off-centre to chase arc-length.
+    w_progress: float = 10.0         # along-track progress (anti-stall, capped)
     w_effort: float = 0.1            # deviation from identity coefficient
     w_smooth: float = 0.1            # coefficient change between steps
-    term_penalty: float = 50.0       # failure terminal penalty
+    term_penalty: float = 15.0       # failure terminal penalty
     success_bonus: float = 50.0      # success terminal bonus
 
     # --- Termination (failure) bounds ----------------------------------

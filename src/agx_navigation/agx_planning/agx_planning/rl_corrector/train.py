@@ -39,8 +39,30 @@ sys.modules.setdefault("tensorflow", None)
 import numpy as np  # safe: numpy does not pull in TF, unlike the SB3/torch stack
 
 from .config import RLCorrectorConfig
-from .env import WheelCorrectorEnv
+from .env import WheelCorrectorEnv, make_nominal_sampler
 from .gazebo_bridge import GazeboBridge
+
+
+class _Tee:
+    """Fan stdout out to several streams at once, so the full console (per-episode
+    lines + SB3's rollout tables) can be mirrored to a log file while still showing
+    live. The tqdm progress bar writes to stderr, so it is NOT duplicated into the
+    file (no carriage-return spam)."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+        return len(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+    def isatty(self):  # tqdm/SB3 probe this; defer to the real terminal
+        return getattr(self._streams[0], "isatty", lambda: False)()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -56,7 +78,7 @@ def _parse_args() -> argparse.Namespace:
                          "obs/action layout must match -- keep --action-dim/--costates "
                          "the same across phases.")
     # Sim / bridge.
-    ap.add_argument("--world", default="ordjo_world")
+    ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--wall-clock", action="store_true",
                     help="step the sim in real time instead of deterministic "
@@ -67,6 +89,23 @@ def _parse_args() -> argparse.Namespace:
                          "unthrottles (rtf high, update-rate unlimited).")
     ap.add_argument("--terrain", action=argparse.BooleanOptionalAction, default=True,
                     help="randomize slip patches on the nominal path each episode")
+    # Nominal sampler range -- exposed so you can drive a CURRICULUM (start easy,
+    # then widen) by launching successive runs, chaining with --load.
+    ap.add_argument("--nominal-kinds", nargs="+",
+                    choices=("straight", "arc", "scurve"), default=None,
+                    metavar="KIND",
+                    help="primitive types sampled each episode (default: the full "
+                         "mix, arcs 2x). Repeat to weight, e.g. "
+                         "--nominal-kinds straight straight arc. Easy phase: "
+                         "--nominal-kinds straight arc")
+    ap.add_argument("--v-min", type=float, default=0.15, help="min body speed [m/s]")
+    ap.add_argument("--v-max", type=float, default=0.45, help="max body speed [m/s]")
+    ap.add_argument("--omega-max", type=float, default=1.0,
+                    help="max |omega| [rad/s] for arcs/scurves (sampled [0.2, "
+                         "omega_max], random sign). Lower => gentler turns; the "
+                         "high-|omega| turns are where the heading corridor breaches.")
+    ap.add_argument("--duration-min", type=float, default=2.0, help="min primitive [s]")
+    ap.add_argument("--duration-max", type=float, default=5.0, help="max primitive [s]")
     # MDP / observation.
     ap.add_argument("--action-dim", type=int, choices=(2, 4), default=4)
     ap.add_argument("--imu", action=argparse.BooleanOptionalAction, default=True,
@@ -83,12 +122,22 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--buffer-size", type=int, default=300_000)
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--learning-starts", type=int, default=1_000)
+    ap.add_argument("--ent-coef", default="auto_0.1",
+                    help="SAC entropy temperature. 'auto_0.1' auto-tunes but starts "
+                         "the temperature at 0.1 instead of SB3's default 1.0 -- the "
+                         "default's wide-open early exploration randomly scaled the "
+                         "wheels by +-50%% and breached the corridor before the critic "
+                         "could learn (SAC_4 diverged this way). Pass a float to pin it.")
     ap.add_argument("--checkpoint-freq", type=int, default=5_000,
                     help="env steps between checkpoint saves (0 disables). Each "
                          "checkpoint is a resumable policy .zip under "
                          "checkpoints/; pass it to --load to continue from there.")
     ap.add_argument("--tensorboard", default=None,
                     help="tensorboard log dir (default: none)")
+    ap.add_argument("--log-file", default=None,
+                    help="mirror all console output (per-episode lines + SB3 "
+                         "tables) to this file too. Default: train_<timestamp>.log "
+                         "next to --out. Pass an empty string to disable.")
     return ap.parse_args()
 
 
@@ -101,7 +150,14 @@ def build_env(args) -> WheelCorrectorEnv:
         deterministic=not args.wall_clock,
         unthrottle=not args.realtime,
     )
-    env = WheelCorrectorEnv(cfg, bridge, seed=args.seed)
+    sampler = make_nominal_sampler(
+        cfg,
+        kinds=args.nominal_kinds,
+        v_range=(args.v_min, args.v_max),
+        omega_max=args.omega_max,
+        duration_range=(args.duration_min, args.duration_max),
+    )
+    env = WheelCorrectorEnv(cfg, bridge, nominal_sampler=sampler, seed=args.seed)
 
     if args.terrain:
         # Patches must land on the CURRENT episode's (randomized) nominal, so the
@@ -136,29 +192,86 @@ def main() -> None:
     # SB3's Monitor only surfaces ep_rew_mean/ep_len_mean, which can't tell a
     # goal-reaching episode from a corridor breach from a run that just truncated
     # at the nominal's end -- they all just move the mean reward around. The env
-    # already returns succeeded/failed/e_cross in the step info (see env.py), so
-    # log rolling means of those on each episode end. Note success_rate +
-    # failure_rate < 1 means the remainder truncated short of the goal tolerance.
+    # already returns succeeded/failed/e_cross/outcome in the step info (see
+    # env.py), so this callback both prints a one-line summary of every finished
+    # episode (what nominal it tracked + how it ended) and logs outcome metrics.
+    #
+    # Two flavours of metric, deliberately:
+    #   * Cumulative counters (rollout/episodes, success_total, failure_total) are
+    #     monotonic and logged from the first episode -- never sample-size
+    #     misleading.
+    #   * Windowed rates (rollout/success_rate, failure_rate over the last
+    #     `window` episodes) are NOT emitted until that many episodes have
+    #     actually completed. Emitting a rate over a handful of episodes is what
+    #     made SAC_4's success_rate read as a spurious 0.06 "peak" from a single
+    #     early fluke before decaying to 0 (a small-window artifact, not a
+    #     regression). Gating removes that illusion. success_rate + failure_rate
+    #     < 1 means the remainder truncated short of the goal tolerance.
+    #
     # BaseCallback is defined here (not at module scope) to keep the SB3/torch
     # import lazy, preserving the TF-poisoning order enforced above.
+    # Every distinct outcome_kind the env can emit (see env._classify_outcome).
+    # Listed explicitly so each gets a TB series from step 0 -- a kind that never
+    # happens reads as a flat 0 rather than silently missing.
+    OUTCOME_KINDS = ("goal", "corridor", "heading", "collision",
+                     "ran_out", "timeout", "nonfinite")
+    FAILURE_KINDS = ("corridor", "heading", "collision", "nonfinite")
+
     class EpisodeOutcomeCallback(BaseCallback):
-        def __init__(self, window: int = 100):
+        def __init__(self, window: int = 100, print_episodes: bool = True):
             super().__init__()
-            self._success = deque(maxlen=window)
-            self._failure = deque(maxlen=window)
+            self._window = window
+            self._print_episodes = print_episodes
             self._term_cross = deque(maxlen=window)
+            self._kinds = deque(maxlen=window)          # recent outcome_kind strings
+            self._episodes = 0
+            self._kind_total = {k: 0 for k in OUTCOME_KINDS}
+
+        def _emit(self, line: str) -> None:
+            # tqdm.write keeps the line from clobbering the progress bar.
+            try:
+                from tqdm import tqdm
+                tqdm.write(line)
+            except Exception:  # pragma: no cover - tqdm always present with SB3
+                print(line, flush=True)
 
         def _on_step(self) -> bool:
             for done, info in zip(self.locals["dones"], self.locals["infos"]):
                 if not done:
                     continue
-                self._success.append(1.0 if info.get("succeeded") else 0.0)
-                self._failure.append(1.0 if info.get("failed") else 0.0)
+                self._episodes += 1
+                kind = info.get("outcome_kind") or "timeout"
+                self._kind_total[kind] = self._kind_total.get(kind, 0) + 1
+                self._kinds.append(kind)
                 if "e_cross" in info:
                     self._term_cross.append(abs(float(info["e_cross"])))
-            if self._success:
-                self.logger.record("rollout/success_rate", float(np.mean(self._success)))
-                self.logger.record("rollout/failure_rate", float(np.mean(self._failure)))
+                if self._print_episodes:
+                    label = info.get("nominal_label") or "?"
+                    outcome = info.get("outcome") or "ended"
+                    self._emit(f"[ep {self._episodes:5d} | {self.num_timesteps:7d} steps] "
+                               f"{label}  ->  {outcome}")
+
+            # Cumulative counters: unambiguous from episode #1.
+            self.logger.record("rollout/episodes", self._episodes)
+            self.logger.record("rollout/success_total", self._kind_total["goal"])
+            self.logger.record("rollout/failure_total",
+                               sum(self._kind_total[k] for k in FAILURE_KINDS))
+            # Per-outcome-kind cumulative counts: shows WHICH failure dominates
+            # (corridor breach vs heading breach vs ...) instead of one lumped flag.
+            for k in OUTCOME_KINDS:
+                self.logger.record(f"outcomes/{k}_total", self._kind_total[k])
+            # Windowed fractions: only once the window is actually full, so a
+            # handful of early episodes can't read as a spurious rate (SAC_4).
+            if len(self._kinds) >= self._window:
+                self.logger.record("rollout/success_rate",
+                                   self._kinds.count("goal") / len(self._kinds))
+                self.logger.record("rollout/failure_rate",
+                                   sum(self._kinds.count(k) for k in FAILURE_KINDS)
+                                   / len(self._kinds))
+                for k in OUTCOME_KINDS:
+                    self.logger.record(f"outcomes/{k}_rate",
+                                       self._kinds.count(k) / len(self._kinds))
+            if self._term_cross:
                 self.logger.record("rollout/terminal_abs_e_cross",
                                    float(np.mean(self._term_cross)))
             return True
@@ -195,11 +308,23 @@ def main() -> None:
             buffer_size=args.buffer_size,
             batch_size=args.batch_size,
             learning_starts=args.learning_starts,
+            ent_coef=args.ent_coef,
             seed=args.seed,
             device=args.device,
             tensorboard_log=args.tensorboard,
             verbose=1,
         )
+
+    # Mirror the console to a log file. Set before learn() so SB3's logger (which
+    # grabs sys.stdout when it configures inside learn()) writes through the tee.
+    log_path = args.log_file
+    if log_path is None:
+        from datetime import datetime
+        log_path = os.path.join(out_dir, f"train_{datetime.now():%Y%m%d_%H%M%S}.log")
+    logf = open(log_path, "w", buffering=1) if log_path else None
+    if logf is not None:
+        sys.stdout = _Tee(sys.__stdout__, logf)
+        print(f"[train] mirroring console output to {log_path}")
 
     try:
         # Continued runs keep counting timesteps from the loaded total (so the
@@ -214,6 +339,9 @@ def main() -> None:
         # Tear the bridge down (gz subscriptions + rclpy node) even on Ctrl-C, so
         # the sim is left clean for the next run.
         env.close()
+        sys.stdout = sys.__stdout__
+        if logf is not None:
+            logf.close()
 
 
 if __name__ == "__main__":

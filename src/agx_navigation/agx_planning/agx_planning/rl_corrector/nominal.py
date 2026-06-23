@@ -23,6 +23,7 @@ class Nominal:
     wheels: np.ndarray  # (N, 2) w_left, w_right -- command applied during each step
     dt: float
     costates: Optional[np.ndarray] = None  # (N, 5) or None (Tier-A has none)
+    label: str = ""     # human-readable description, e.g. "S-bend (v=0.30, w=+-0.70)"
 
     def __len__(self) -> int:
         # Number of commands / steps. poses has one extra entry (the goal).
@@ -73,7 +74,16 @@ def generate_primitive(
         th += w_body * dt
 
     poses[n] = (x, y, th)  # final/goal pose after the last command
-    return Nominal(poses=poses, wheels=wheels, dt=dt)
+
+    if kind == "straight":
+        label = f"straight (v={v:.2f}, {duration:.1f}s)"
+    elif kind == "arc":
+        side = "left" if omega >= 0 else "right"
+        label = f"{side} arc (v={v:.2f}, w={omega:+.2f}, {duration:.1f}s)"
+    else:  # scurve (the only remaining valid kind; others raised above)
+        label = f"S-bend (v={v:.2f}, w=+-{abs(omega):.2f}, {duration:.1f}s)"
+
+    return Nominal(poses=poses, wheels=wheels, dt=dt, label=label)
 
 
 def load_recorded(path: str) -> Nominal:  # pragma: no cover - Tier-B stub
