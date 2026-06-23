@@ -4,7 +4,7 @@ Drives a straight nominal through the env with zero actions and reports the
 max cross-track error, which should be small on flat ground and drift with
 --terrain. Does not need torch.
 
-    python3 -m agx_planning.rl_corrector.validate_gazebo --world ordjo_world --model scout_mini [--terrain]
+    python3 -m agx_planning.rl_corrector.validate_gazebo --world rl_corrector --model scout_mini [--terrain]
 """
 
 import argparse
@@ -20,7 +20,7 @@ from .nominal import generate_primitive
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--world", default="ordjo_world")
+    ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--deterministic", action="store_true",
                     help="pause + multi_step the world (reproducible) vs wall-clock")

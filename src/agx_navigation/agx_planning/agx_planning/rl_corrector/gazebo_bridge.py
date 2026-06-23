@@ -4,7 +4,7 @@ Uses gz.transport for ground-truth pose, teleport, stepping and terrain
 spawn/remove, and rclpy to publish the 4-wheel command to the ros2_control
 velocity controller and read the body twist from /odom. The reward uses the
 ground-truth pose, never the /odom pose, because wheel odometry cannot see
-slip. The world name defaults to "ordjo_world" and the model to "scout_mini".
+slip. The world name defaults to "rl_corrector" and the model to "scout_mini".
 
 With deterministic=False the sim runs in real time and step() spins rclpy for
 control_dt. With deterministic=True the world is paused and step() advances it
@@ -139,14 +139,21 @@ class GazeboBridge:
     # rtf to request when unthrottling. "As fast as the CPU allows" -- paired with
     # real_time_update_rate=0 (unlimited) it removes the cap entirely.
     _FAST_RTF = 1000.0
-    # World SDF defaults (worlds/ordjo_world.world), restored on close.
+    # World SDF defaults (worlds/rl_corrector.world), restored on close.
     _DEFAULT_RTF = 1.0
     _DEFAULT_UPDATE_RATE = 1000.0
+    # Gravity to (re)assert on every set_physics. The gz Physics proto carries a
+    # gravity field that defaults to (0,0,0), and /world/<world>/set_physics
+    # applies EVERY field of the request, so a request that omits gravity zeroes
+    # it -- the robot floats. We can only set physics, not read it back, but
+    # gravity is a static world constant, so we just rewrite the known value.
+    # Matches <gravity> in worlds/rl_corrector.world.
+    _GRAVITY_Z = -9.8
 
     def __init__(
         self,
         cfg,
-        world_name: str = "ordjo_world",
+        world_name: str = "rl_corrector",
         model_name: str = "scout_mini",
         physics_step: float = 0.01,
         deterministic: bool = False,
@@ -326,6 +333,9 @@ class GazeboBridge:
         req.max_step_size = self.physics_step
         req.real_time_factor = float(real_time_factor)
         req.real_time_update_rate = float(real_time_update_rate)
+        # set_physics overwrites every field from the request and the proto
+        # defaults gravity to (0,0,0); re-assert it or the world loses gravity.
+        req.gravity.z = self._GRAVITY_Z
         self._gz.request(self._svc_set_physics, req, Physics, Boolean, self._ack_ms)
 
     def _set_pose(self, x: float, y: float, z: float, yaw: float,
