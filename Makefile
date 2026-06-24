@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train rl-kill
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
 
 SIM ?= true
 HEADLESS ?= false
@@ -173,6 +173,13 @@ POLICY_OUT  ?= $(HOME)/rl_corrector_policy
 LOAD        ?=
 TB          ?=
 TRAIN_ARGS  ?=
+# Training backend: gazebo (real physics, needs rl-sim up) or kinematic (fast,
+# Gazebo-free analytic bridge for pretraining a baseline). See `p0`.
+BRIDGE      ?= gazebo
+# CPU thread cap for torch. The SAC nets are tiny MLPs, so 1 thread is fastest
+# and steadiest on a contended desktop; raise only on an idle many-core box.
+TORCH_THREADS ?= 1
+BRIDGE_FLAG := --bridge $(call lc,$(BRIDGE))
 # Rendering sensors (GPU lidar + RGB/depth cameras) off by default: the trainer
 # consumes only ground-truth pose + the /odom twist + the IMU, so the rendering is
 # pure per-tick overhead. Set SIM_SENSORS=true to inspect them. (The IMU and
@@ -196,6 +203,8 @@ rl-train: build
 		ros2 run agx_planning rl_corrector_train \
 		--timesteps $(TIMESTEPS) \
 		$(TERRAIN_FLAG) \
+		$(BRIDGE_FLAG) \
+		--torch-threads $(TORCH_THREADS) \
 		--out $(POLICY_OUT) \
 		$(LOAD_FLAG) \
 		$(TB_FLAG) \
@@ -216,6 +225,58 @@ rl-kill:
 	@echo "rl-kill: remaining gz/sim procs:"; \
 		pgrep -af "gz sim|rl_corrector_sim|rl_corrector_train|parameter_bridge" \
 		| grep -v pgrep || echo "  (none)"
+
+# ---- RL runtime corrector: 3-phase curriculum -----------------------------
+# Each phase is a thin wrapper over `rl-train` (so it inherits the build/source,
+# sensors-off, GPU prefix, etc.), chained with --load: easy straights+gentle
+# arcs (flat) -> widen to S-bends + harder turns (flat) -> full mix + terrain.
+# Bring the sim up first (`make rl-sim` in another terminal; GUI is fine -- the
+# bottleneck is per-step gz round-trips, not rendering) then run a phase. The
+# obs/action layout is held fixed across phases (config defaults), so --load
+# restores cleanly. Override per-phase steps/outputs the usual way, and pass
+# TB=~/rl_tb to log all three phases under one TensorBoard tree:
+#   make p1 TB=~/rl_tb && make p2 TB=~/rl_tb && make p3 TB=~/rl_tb
+# or just `make curriculum TB=~/rl_tb` to run them back-to-back.
+P0_OUT   ?= $(HOME)/rl_corrector_p0
+P1_OUT   ?= $(HOME)/rl_corrector_p1
+P2_OUT   ?= $(HOME)/rl_corrector_p2
+P3_OUT   ?= $(HOME)/rl_corrector_p3
+P0_STEPS ?= 30000
+P1_STEPS ?= 40000
+P2_STEPS ?= 60000
+P3_STEPS ?= 100000
+
+# Phase 0 -- fast Gazebo-FREE kinematic pretrain (no rl-sim needed). Single
+# entrypoint for the throttling-debug baseline: straights + gentle arcs, slow,
+# flat, slip-randomized analytic bridge. Logs to TensorBoard if TB is set, e.g.
+#   make p0 TB=$(HOME)/rl_tb
+# Free the CPU first (stop any sim/heavy desktop apps) -- throughput is CPU-gated.
+p0:
+	$(MAKE) rl-train BRIDGE=kinematic TERRAIN=false TIMESTEPS=$(P0_STEPS) \
+		POLICY_OUT=$(P0_OUT) TB=$(TB) \
+		TRAIN_ARGS="--nominal-kinds straight arc --omega-max 0.4 --v-max 0.30 $(TRAIN_ARGS)"
+
+# Phase 1 -- easy: straights + gentle arcs, low speed, flat ground.
+p1:
+	$(MAKE) rl-train TERRAIN=false TIMESTEPS=$(P1_STEPS) POLICY_OUT=$(P1_OUT) TB=$(TB) \
+		TRAIN_ARGS="--nominal-kinds straight arc --omega-max 0.4 --v-max 0.35 $(TRAIN_ARGS)"
+
+# Phase 2 -- widen: add S-bends and harder turns, full speed, still flat.
+# Continues from phase 1's policy.
+p2:
+	$(MAKE) rl-train TERRAIN=false TIMESTEPS=$(P2_STEPS) POLICY_OUT=$(P2_OUT) TB=$(TB) \
+		LOAD=$(P1_OUT).zip \
+		TRAIN_ARGS="--nominal-kinds straight arc scurve --omega-max 0.8 $(TRAIN_ARGS)"
+
+# Phase 3 -- full difficulty + slip terrain. Continues from phase 2's policy.
+p3:
+	$(MAKE) rl-train TERRAIN=true TIMESTEPS=$(P3_STEPS) POLICY_OUT=$(P3_OUT) TB=$(TB) \
+		LOAD=$(P2_OUT).zip \
+		TRAIN_ARGS="--omega-max 1.0 $(TRAIN_ARGS)"
+
+# Run all three phases back-to-back (each loads the previous). Needs the sim up.
+curriculum:
+	$(MAKE) p1 && $(MAKE) p2 && $(MAKE) p3
 
 server:
 	source /opt/ros/jazzy/setup.bash && \
