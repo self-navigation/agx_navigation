@@ -94,6 +94,7 @@ class WheelCorrectorEnv(gym.Env):
         start_offset=(0.08, 0.08, 0.08),
         terrain_sampler: Optional[Callable] = None,
         seed: Optional[int] = None,
+        debug_steps: int = 0,
     ) -> None:
         super().__init__()
         self.cfg = cfg
@@ -101,6 +102,14 @@ class WheelCorrectorEnv(gym.Env):
         self.sampler = nominal_sampler or default_nominal_sampler(cfg)
         self.terrain_sampler = terrain_sampler  # None until Phase 3
         self.start_offset = start_offset
+        # >0 -> print the first `debug_steps` steps of every episode (measured
+        # twist, tracking error, error-RATE, reward). Aimed at the GazeboBridge
+        # reset-transition suspect: a set_pose teleport that leaves stale twist or
+        # a pose jump makes the first-step error rate (divided by control_dt) spike,
+        # which is the kind of outlier a bootstrapping critic amplifies into the
+        # divergence. The KinematicBridge (which trains cleanly) is the control --
+        # run both with --debug-steps and compare the first post-reset rows.
+        self.debug_steps = int(debug_steps)
 
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(cfg.action_dim,), dtype=np.float32
@@ -175,7 +184,13 @@ class WheelCorrectorEnv(gym.Env):
     def step(self, action):
         cfg = self.cfg
         k = self.k
-        cmd_l, cmd_r = self.nominal.wheels[k]
+        n = len(self.nominal)
+        # Once the nominal is exhausted (k >= n) we are in the grace window: hold
+        # the LAST nominal command (wheels[n-1]) so the corrector still has a
+        # feedforward to scale and can nudge the robot the last few cm into goal
+        # tolerance. min() also keeps the normal in-path steps unchanged.
+        cmd_idx = min(k, n - 1)
+        cmd_l, cmd_r = self.nominal.wheels[cmd_idx]
         coeff = coefficients_from_action(action, cfg)
         wheels = apply_coefficients(action, float(cmd_l), float(cmd_r), cfg)
 
@@ -183,13 +198,13 @@ class WheelCorrectorEnv(gym.Env):
         self.k = k + 1
         self._steps += 1
 
-        n = len(self.nominal)
-        planned_next = self.nominal.poses[self.k]            # poses has n+1 entries
+        # poses has n+1 entries (index n is the goal); clamp into the grace window.
+        planned_next = self.nominal.poses[min(self.k, n)]
         cmd_next = self.nominal.wheels[min(self.k, n - 1)]
 
         obs, err = self._make_obs(
             planned_next, st, cmd_next,
-            prev_coeff=coeff, costates=self._costate_at(self.k),
+            prev_coeff=coeff, costates=self._costate_at(min(self.k, n)),
         )
 
         proj, _ = project_arclength(st.pose[:2], self.nominal.poses[:, :2], self._cum)
@@ -201,8 +216,9 @@ class WheelCorrectorEnv(gym.Env):
         # drifting so its path-projection jumps forward on curves -- both trade
         # tracking accuracy for arc-length and walk it into the corridor wall (the
         # SAC_5 drift). Falling behind / going backward is still penalized via the
-        # lower side (min keeps negative deltas intact).
-        nominal_advance = float(self._cum[self.k] - self._cum[k])
+        # lower side (min keeps negative deltas intact). In the grace window the
+        # advance is 0 (both indices clamp to n), so grace can't farm progress.
+        nominal_advance = float(self._cum[min(self.k, n)] - self._cum[min(k, n)])
         progress = min(raw_progress, nominal_advance)
 
         reached_end = self.k >= n
@@ -216,14 +232,32 @@ class WheelCorrectorEnv(gym.Env):
         failed = bool(is_failure(cfg, err) or st.contact)
         reward = compute_reward(cfg, err, coeff, self.prev_coeff, progress, failed, succeeded)
 
+        # Error rate this step (same quantity the obs feeds the policy, divided by
+        # control_dt): a teleport/stale-twist spike at reset shows up here first.
+        prev = self._prev_err if self._prev_err is not None else err
+        err_rate = float(np.linalg.norm((err - prev) / cfg.control_dt))
+        if self.debug_steps and self._steps <= self.debug_steps:
+            print(f"  [dbg step {self._steps:2d}] v={st.v:+.3f} w={st.omega:+.3f} "
+                  f"e_along={err[0]:+.3f} e_cross={err[1]:+.3f} e_head={err[2]:+.3f} "
+                  f"rate={err_rate:7.2f} r={reward:+.2f}", flush=True)
+
         self.prev_coeff = coeff
         self._prev_err = err
 
+        # Steps spent past the nominal's end. We only declare "ran out of path"
+        # (truncate without success) once the grace window is used up, giving the
+        # corrector goal_grace_steps tries to reach tolerance first.
+        grace_used = self.k - n
+        grace_expired = reached_end and grace_used >= cfg.goal_grace_steps
+
         terminated = bool(failed or succeeded)
-        truncated = bool((reached_end and not succeeded) or self._steps >= cfg.max_steps)
+        truncated = bool((grace_expired and not succeeded) or self._steps >= cfg.max_steps)
         info = {
             "e_cross": float(err[1]),
             "e_heading": float(err[2]),
+            "err_rate": err_rate,
+            "v": float(st.v),
+            "omega": float(st.omega),
             "progress": float(progress),
             "succeeded": succeeded,
             "failed": failed,

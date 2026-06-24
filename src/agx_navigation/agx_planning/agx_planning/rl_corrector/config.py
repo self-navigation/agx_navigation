@@ -97,6 +97,18 @@ class RLCorrectorConfig:
     # --- Success tolerances (mirror PlannerConfig.goal_tolerance_*) ----
     goal_tolerance_xy: float = 0.10  # [m]
     goal_tolerance_th: float = 0.30  # [rad]
+    # Extra steps the episode keeps running once the nominal is EXHAUSTED, holding
+    # the final feedforward command, so the corrector can drive the last few cm
+    # into goal tolerance before the episode truncates. The nominal is open-loop
+    # and progress is capped at its own per-step advance (env.step), so the robot
+    # typically ends up a hair short of the goal and the +success_bonus was almost
+    # never collected (SAC_6/8: success starved). These grace steps give the
+    # corrector -- which still has authority over the held command -- a chance to
+    # close that gap and let success actually fire. Success is checked every grace
+    # step and fires the instant tolerance is met (so an already-on-goal straight
+    # succeeds immediately, no overshoot). 0 -> truncate the moment the path ends
+    # (the old behaviour).
+    goal_grace_steps: int = 5
 
     # --- Kinematics (mirror PlannerConfig; keep in sync) ---------------
     wheel_radius: float = 0.08

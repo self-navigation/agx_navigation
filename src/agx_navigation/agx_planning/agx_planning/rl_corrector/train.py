@@ -21,6 +21,7 @@ wheel-odometry progress over slip patches.
 """
 
 import argparse
+import copy
 import os
 import sys
 from collections import deque
@@ -40,7 +41,21 @@ import numpy as np  # safe: numpy does not pull in TF, unlike the SB3/torch stac
 
 from .config import RLCorrectorConfig
 from .env import WheelCorrectorEnv, make_nominal_sampler
-from .gazebo_bridge import GazeboBridge
+# NOTE: GazeboBridge is imported lazily inside build_env (it pulls gz.transport),
+# so a --bridge kinematic run is fully Gazebo-free and needs no sim process.
+
+
+def make_kinematic_slip_sampler(slip_max: float = 0.3):
+    """Randomized per-wheel multiplicative slip for the KinematicBridge.
+
+    Each wheel keeps a fraction (1 - u) of its commanded speed, u ~ U[0, slip_max],
+    drawn independently per wheel each episode. Asymmetric draws make the robot
+    veer, so the corrector must learn to counter slip -- a fast, Gazebo-free proxy
+    for terrain. Returns the {"slip": [...]} dict KinematicBridge.reset() consumes."""
+    def sample(rng):
+        slip = 1.0 - rng.uniform(0.0, slip_max, size=4)
+        return {"slip": slip.tolist()}
+    return sample
 
 
 class _Tee:
@@ -78,6 +93,18 @@ def _parse_args() -> argparse.Namespace:
                          "obs/action layout must match -- keep --action-dim/--costates "
                          "the same across phases.")
     # Sim / bridge.
+    ap.add_argument("--bridge", choices=("gazebo", "kinematic"), default="gazebo",
+                    help="training backend. 'gazebo' = the real physics sim (needs "
+                         "the sim up). 'kinematic' = the fast Gazebo-free analytic "
+                         "bridge (thousands of steps/s): use it to PRETRAIN a baseline "
+                         "policy, then --load it into a 'gazebo' run to fine-tune on "
+                         "real physics. Same obs/action contract, so the transfer is "
+                         "byte-compatible.")
+    ap.add_argument("--kin-slip-max", type=float, default=0.3,
+                    help="(kinematic + --terrain) max per-wheel slip fraction: each "
+                         "wheel keeps 1-U[0,this] of its command each episode. "
+                         "Asymmetric draws veer the robot so the policy learns to "
+                         "counter slip. Ignored for --bridge gazebo.")
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--wall-clock", action="store_true",
@@ -117,7 +144,24 @@ def _parse_args() -> argparse.Namespace:
                          "nominals only; parametric training has none -> default off)")
     # SAC.
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--device", default="auto", help="torch device (cpu/cuda/auto)")
+    ap.add_argument("--device", default="auto",
+                    help="torch device (cpu/cuda/auto). NB throughput is gated by CPU "
+                         "contention, not the bridge: with a Gazebo sim (esp. the GUI) "
+                         "or other heavy desktop apps running, the machine is "
+                         "oversubscribed and cuda (~12 fps) beats cpu (<1 fps) by "
+                         "offloading the matmuls. For a true-speed offline kinematic "
+                         "run, FREE THE CPU FIRST (stop the sim -- kinematic needs none).")
+    ap.add_argument("--torch-threads", type=int, default=1,
+                    help="cap torch/OpenMP intra-op threads (default 1). The SAC "
+                         "policy/critic are tiny [256,256] MLPs: on CPU, torch's "
+                         "default of one thread per core OVERSUBSCRIBES and thrashes "
+                         "(esp. under desktop contention), so single-threaded is both "
+                         "faster and far steadier here. Set 0 to leave torch's default "
+                         "(only worth it on an otherwise-idle many-core box).")
+    ap.add_argument("--debug-steps", type=int, default=0,
+                    help="print the first N steps of every episode (measured twist, "
+                         "tracking error, error-rate, reward). For hunting the Gazebo "
+                         "reset-transition spike; 0 disables.")
     ap.add_argument("--learning-rate", type=float, default=3e-4)
     ap.add_argument("--buffer-size", type=int, default=300_000)
     ap.add_argument("--batch-size", type=int, default=256)
@@ -132,6 +176,17 @@ def _parse_args() -> argparse.Namespace:
                     help="env steps between checkpoint saves (0 disables). Each "
                          "checkpoint is a resumable policy .zip under "
                          "checkpoints/; pass it to --load to continue from there.")
+    ap.add_argument("--eval-freq", type=int, default=2_500,
+                    help="(kinematic only) env steps between deterministic evals on a "
+                         "separate held-out KinematicBridge. Saves the BEST-so-far "
+                         "policy to <out>_best/best_model.zip, so the run keeps the "
+                         "peak even when SAC's later updates wobble (the SAC_2/3 limit "
+                         "cycle that degrades goal-rate after ~step 7k). Also logs a "
+                         "clean eval/mean_reward curve to TensorBoard. 0 disables. "
+                         "Skipped for --bridge gazebo: one live sim can't host a second "
+                         "eval env without fighting the training episode.")
+    ap.add_argument("--eval-episodes", type=int, default=20,
+                    help="episodes averaged per --eval-freq evaluation.")
     ap.add_argument("--tensorboard", default=None,
                     help="tensorboard log dir (default: none)")
     ap.add_argument("--log-file", default=None,
@@ -145,11 +200,16 @@ def build_env(args) -> WheelCorrectorEnv:
     """Construct the training env from CLI args (no SB3 import needed)."""
     cfg = RLCorrectorConfig(action_dim=args.action_dim, use_imu=args.imu,
                             use_costates=args.costates)
-    bridge = GazeboBridge(
-        cfg, world_name=args.world, model_name=args.model,
-        deterministic=not args.wall_clock,
-        unthrottle=not args.realtime,
-    )
+    if args.bridge == "kinematic":
+        from .kinematic_bridge import KinematicBridge
+        bridge = KinematicBridge(cfg)
+    else:
+        from .gazebo_bridge import GazeboBridge
+        bridge = GazeboBridge(
+            cfg, world_name=args.world, model_name=args.model,
+            deterministic=not args.wall_clock,
+            unthrottle=not args.realtime,
+        )
     sampler = make_nominal_sampler(
         cfg,
         kinds=args.nominal_kinds,
@@ -157,18 +217,24 @@ def build_env(args) -> WheelCorrectorEnv:
         omega_max=args.omega_max,
         duration_range=(args.duration_min, args.duration_max),
     )
-    env = WheelCorrectorEnv(cfg, bridge, nominal_sampler=sampler, seed=args.seed)
+    env = WheelCorrectorEnv(cfg, bridge, nominal_sampler=sampler, seed=args.seed,
+                            debug_steps=args.debug_steps)
 
     if args.terrain:
-        # Patches must land on the CURRENT episode's (randomized) nominal, so the
-        # sampler reads env.nominal -- which reset() populates before it calls the
-        # terrain sampler. Bind lazily here rather than to a fixed path.
-        from .terrain import along_path_terrain_sampler
+        if args.bridge == "kinematic":
+            # Fast analytic slip: a per-wheel multiplier sampled per episode (no
+            # geometry needed -- the bridge applies it directly to the commands).
+            env.terrain_sampler = make_kinematic_slip_sampler(args.kin_slip_max)
+        else:
+            # Patches must land on the CURRENT episode's (randomized) nominal, so the
+            # sampler reads env.nominal -- which reset() populates before it calls the
+            # terrain sampler. Bind lazily here rather than to a fixed path.
+            from .terrain import along_path_terrain_sampler
 
-        def terrain_sampler(rng):
-            return along_path_terrain_sampler(env.nominal.poses)(rng)
+            def terrain_sampler(rng):
+                return along_path_terrain_sampler(env.nominal.poses)(rng)
 
-        env.terrain_sampler = terrain_sampler
+            env.terrain_sampler = terrain_sampler
 
     return env
 
@@ -176,18 +242,34 @@ def build_env(args) -> WheelCorrectorEnv:
 def main() -> None:
     args = _parse_args()
 
+    # Cap CPU thread fan-out BEFORE torch is imported (SB3 pulls it in below).
+    # torch reads OMP_NUM_THREADS at import; setting it here keeps the matmul
+    # backend from spawning one thread per core for our tiny MLPs. See
+    # --torch-threads: single-threaded is faster + steadier on a contended box.
+    if args.torch_threads > 0:
+        os.environ.setdefault("OMP_NUM_THREADS", str(args.torch_threads))
+        os.environ.setdefault("MKL_NUM_THREADS", str(args.torch_threads))
+
     # Heavy deps imported only here, with a clear message if the ML stack is
     # missing (the package install_requires it, but a bare checkout may not).
     try:
         from stable_baselines3 import SAC
-        from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+        from stable_baselines3.common.callbacks import (
+            BaseCallback, CheckpointCallback, EvalCallback)
         from stable_baselines3.common.monitor import Monitor
+        import torch
     except ImportError as e:  # pragma: no cover - environment guard
         raise SystemExit(
             "training needs stable-baselines3 + torch:\n"
             "    pip install stable-baselines3[extra] torch\n"
             f"(import failed: {e})"
         )
+
+    # Belt-and-suspenders alongside the OMP/MKL env above: torch's own intra-op
+    # pool. Clamps the [256,256] SAC matmuls to args.torch_threads cores.
+    if args.torch_threads > 0:
+        torch.set_num_threads(args.torch_threads)
+        print(f"[train] torch intra-op threads capped at {args.torch_threads}")
 
     # SB3's Monitor only surfaces ep_rew_mean/ep_len_mean, which can't tell a
     # goal-reaching episode from a corridor breach from a run that just truncated
@@ -287,6 +369,35 @@ def main() -> None:
             save_path=os.path.join(out_dir, "checkpoints"),
             name_prefix=os.path.basename(args.out),
         ))
+
+    # Deterministic eval + save-best. SAC here reaches a good policy early (~step
+    # 7k) then walks away from it as the actor/critic limit-cycle (SAC_2/3), so the
+    # FINAL model is worse than the peak. A periodic deterministic eval on a held-out
+    # env keeps the best policy regardless of later wobble. Kinematic only: it builds
+    # a SECOND bridge (pure numpy, no shared world), seeded apart so the eval paths
+    # are a fixed held-out set. A Gazebo run has one live sim, so a 2nd eval env would
+    # fight the in-flight training episode -- skip there (matches the deploy note).
+    if args.eval_freq > 0:
+        if args.bridge == "kinematic":
+            eval_args = copy.copy(args)
+            eval_args.seed = args.seed + 1000
+            eval_env = Monitor(build_env(eval_args))
+            best_dir = os.path.join(out_dir, os.path.basename(args.out) + "_best")
+            callbacks.append(EvalCallback(
+                eval_env,
+                best_model_save_path=best_dir,
+                eval_freq=args.eval_freq,
+                n_eval_episodes=args.eval_episodes,
+                deterministic=True,
+                render=False,
+                verbose=1,
+            ))
+            print(f"[train] deterministic eval every {args.eval_freq} steps "
+                  f"({args.eval_episodes} eps); best policy -> "
+                  f"{os.path.join(best_dir, 'best_model.zip')}")
+        else:
+            print("[train] --eval-freq ignored for --bridge gazebo "
+                  "(single live sim can't host a separate eval env)")
 
     if args.load:
         # Curriculum continuation: restore the policy/critic weights and attach

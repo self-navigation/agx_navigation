@@ -93,6 +93,30 @@ def test_nonzero_action_changes_trajectory():
     assert abs(info_a["e_heading"]) > 1e-3
 
 
+def test_goal_grace_extends_episode():
+    """Once the nominal is exhausted the episode keeps running for
+    goal_grace_steps extra steps so the corrector can reach goal tolerance.
+    Success is disabled here (negative tolerance) to isolate the grace window:
+    identity on a no-slip straight stays in-corridor and never succeeds, so the
+    episode must truncate at exactly n + goal_grace_steps."""
+    for grace in (0, 4):
+        cfg = RLCorrectorConfig(
+            use_costates=False, goal_grace_steps=grace, goal_tolerance_xy=-1.0,
+        )
+        env = _make_env(cfg)
+        env.reset(seed=0)
+        n = len(env.nominal)
+        steps = 0
+        terminated = truncated = False
+        while not (terminated or truncated):
+            _o, _r, terminated, truncated, info = env.step(np.zeros(4, dtype=np.float32))
+            steps += 1
+        assert not terminated          # success disabled, no-slip => no failure
+        assert truncated
+        assert steps == n + grace
+        assert info["outcome_kind"] == "ran_out"
+
+
 def test_seed_determinism():
     env1 = _make_env()
     env2 = _make_env()
