@@ -17,6 +17,7 @@ PARAM_VARS := SIM \
 							PMP_MODE \
 							USE_SERVER \
 							DO_CORRECTIONS \
+							CORRECTOR \
 							PORT_NAME
 
 define lc

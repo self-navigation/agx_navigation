@@ -42,6 +42,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
@@ -68,6 +69,7 @@ from agx_planning.rl_corrector.coeff import apply_coefficients, coefficients_fro
 from agx_planning.rl_corrector.config import RLCorrectorConfig
 from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
+from agx_planning.runtime_corrector import tvlqr as tvlqr_mod
 from agx_planning.utils import declare_and_load_dataclass
 
 from .trajectory_buffer import TrajectoryBuffer
@@ -205,6 +207,33 @@ class WheelCorrectorNode(Node):
         )
         self._policy = load_policy(self._rl_cfg.policy_path)
 
+        # TVLQR (neighboring-optimal) corrector, under the `tvlqr.` prefix.
+        # Disabled by default, so loading it changes nothing. When enabled it
+        # TAKES PRECEDENCE over the RL policy: the two are alternative
+        # correctors, not a stack, and running both would double-correct. The
+        # intended end state is TVLQR as the baseline with an RL residual on
+        # top, but that needs a policy trained against this baseline -- until
+        # then, one or the other.
+        self._tvlqr_cfg = declare_and_load_dataclass(
+            self, tvlqr_mod.TVLQRConfig(), prefix="tvlqr."
+        )
+        self._tvlqr_gains: Optional[tvlqr_mod.GainCache] = None
+        self._tvlqr_diag_pub = None
+        if self._tvlqr_cfg.enabled:
+            self._tvlqr_gains = tvlqr_mod.GainCache(
+                self._tvlqr_cfg, self._rl_cfg.control_dt
+            )
+            self._tvlqr_diag_pub = self.create_publisher(
+                Float64MultiArray, "~/tvlqr_diagnostics", 10
+            )
+            # Running tallies so a run can be judged from one log line rather
+            # than by scraping the whole diagnostics stream.
+            self._tvlqr_ticks = 0
+            self._tvlqr_sat_ticks = 0
+            self._tvlqr_sq_cross = 0.0
+            self._tvlqr_max_cross = 0.0
+            self.create_timer(2.0, self._log_tvlqr_summary)
+
         # Per-trajectory obs state: previous tracking error (for error rates) and
         # previous coefficients (smoothness feature). Reset on each new traj.
         self._prev_err = None
@@ -216,7 +245,17 @@ class WheelCorrectorNode(Node):
         # here too -- the obs layout (hence the policy) is fixed at train time.
         self._imu: Optional[Tuple[float, float, float]] = None
 
-        if self._policy is not None:
+        if self._tvlqr_cfg.enabled:
+            c = self._tvlqr_cfg
+            self.get_logger().info(
+                "TVLQR corrector ACTIVE (Q=[%.2g,%.2g,%.2g] R=[%.2g,%.2g] "
+                "max_dv=%.2g max_domega=%.2g)%s"
+                % (c.q_along, c.q_cross, c.q_heading, c.r_v, c.r_omega,
+                   c.max_dv, c.max_domega,
+                   "  [RL policy present but OVERRIDDEN]"
+                   if self._policy is not None else "")
+            )
+        elif self._policy is not None:
             # Only the policy path needs the measured twist; skip the sub otherwise.
             self.create_subscription(Odometry, "/odom", self._on_odom, 10)
             if self._rl_cfg.use_imu:
@@ -301,6 +340,9 @@ class WheelCorrectorNode(Node):
         identity on any error or non-finite action, so a bad policy can never
         inject motion beyond clamped multiples of the planned command.
         """
+        if self._tvlqr_cfg.enabled:
+            return self._correct_tvlqr(left, right, planned_pose, actual_pose)
+
         if (self._policy is None or planned_pose is None or actual_pose is None):
             return [left, left, right, right]
 
@@ -330,6 +372,85 @@ class WheelCorrectorNode(Node):
                 throttle_duration_sec=2.0,
             )
             return [left, left, right, right]
+
+    def _correct_tvlqr(
+        self,
+        left: float,
+        right: float,
+        planned_pose: Optional[Tuple[float, float, float]],
+        actual_pose: Optional[Tuple[float, float, float]],
+    ) -> List[float]:
+        """Neighboring-optimal correction of one wheel-pair command.
+
+        The reference wheel command is converted to the reference twist, the
+        feedback is applied in twist space (the space the real chassis accepts),
+        and the corrected twist is mapped back to wheel speeds for the
+        controller. On hardware the middle value -- the corrected (v, omega) --
+        is what would be published directly, with no wheel mapping at all.
+
+        Fails safe to the identity whenever the pose pair is missing (the online
+        relay has no planned pose until the planner supplies one) or anything
+        raises, so an unusable correction can never inject motion.
+        """
+        if planned_pose is None or actual_pose is None:
+            return [left, left, right, right]
+
+        kin = self._rl_cfg
+        try:
+            v_ref, omega_ref = tvlqr_mod.wheels_to_twist(left, right, kin)
+            err = tvlqr_mod.tracking_error(planned_pose, actual_pose)
+            K = self._tvlqr_gains.get(v_ref, omega_ref)
+            v_cmd, omega_cmd, diag = tvlqr_mod.correct(
+                K, err, v_ref, omega_ref, self._tvlqr_cfg
+            )
+            if not diag.valid:
+                return [left, left, right, right]
+
+            wl, wr = tvlqr_mod.twist_to_wheels(v_cmd, omega_cmd, kin)
+            m = kin.wheel_cmd_max
+            wl = float(np.clip(wl, -m, m))
+            wr = float(np.clip(wr, -m, m))
+
+            self._accumulate_tvlqr(diag)
+            if self._tvlqr_diag_pub is not None:
+                msg = Float64MultiArray()
+                msg.data = [float(x) for x in diag.as_array()]
+                self._tvlqr_diag_pub.publish(msg)
+            return [wl, wl, wr, wr]
+        except Exception as exc:  # noqa: BLE001 - fail safe to identity, never crash
+            self.get_logger().warn(
+                "TVLQR corrector errored (%s); falling back to identity." % exc,
+                throttle_duration_sec=2.0,
+            )
+            return [left, left, right, right]
+
+    def _accumulate_tvlqr(self, diag) -> None:
+        """Fold one tick into the running summary tallies."""
+        self._tvlqr_ticks += 1
+        if diag.saturated_v or diag.saturated_omega:
+            self._tvlqr_sat_ticks += 1
+        self._tvlqr_sq_cross += diag.e_cross ** 2
+        self._tvlqr_max_cross = max(self._tvlqr_max_cross, abs(diag.e_cross))
+
+    def _log_tvlqr_summary(self) -> None:
+        """Periodic one-line verdict on how well the corrector is holding.
+
+        RMS cross-track is the headline number; `sat` is the health warning. A
+        corrector that is saturated a large fraction of the time is being asked
+        for more authority than it has, which means either max_dv/max_domega are
+        too tight or the deviation is genuinely beyond correction and the
+        trajectory needs replanning.
+        """
+        if not self._tvlqr_ticks:
+            return
+        rms = math.sqrt(self._tvlqr_sq_cross / self._tvlqr_ticks)
+        sat = 100.0 * self._tvlqr_sat_ticks / self._tvlqr_ticks
+        self.get_logger().info(
+            "TVLQR: ticks=%d  rms_cross=%.4f m  max_cross=%.4f m  sat=%.1f%%  "
+            "gain_buckets=%d"
+            % (self._tvlqr_ticks, rms, self._tvlqr_max_cross, sat,
+               len(self._tvlqr_gains) if self._tvlqr_gains else 0)
+        )
 
     def _publish_zero(self) -> None:
         """Explicit stop. Bypasses _correct() so a correction can never add
@@ -594,6 +715,18 @@ def main(args=None) -> None:
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
+        # Ctrl-C: the context is still up, so the stop below can still go out.
+        node._publish_zero()
+    except ExternalShutdownException:
+        # SIGTERM (launch teardown, `timeout`, systemd): rclpy has ALREADY torn
+        # the context down by the time this propagates, so publishing a stop
+        # here is not possible -- the message would have nowhere to go. Exit
+        # quietly instead of dumping a traceback that looks like a crash.
+        #
+        # NB this is the one terminal path that cannot honour the
+        # publish-an-explicit-zero invariant, because the controller latches its
+        # last command. Closing that hole needs a pre-shutdown hook that stops
+        # the wheels before the context goes away.
         pass
     finally:
         node.destroy_node()

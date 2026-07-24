@@ -32,19 +32,18 @@ def __getattr__(name):
 
 
 def main(args=None):
-    import rclpy
+    """Console-script entry point (setup.py maps `runtime_corrector` here).
 
-    from .node import WheelCorrectorNode
+    Delegates to node.main rather than duplicating the spin/shutdown dance: the
+    copy that used to live here lacked node.main's `if rclpy.ok()` guard, so a
+    SIGTERM (which makes rclpy shut the context down itself) raised RCLError out
+    of the finally block. That matters more than it looks -- the velocity
+    controller LATCHES its last command, so a shutdown path that throws is a
+    shutdown path that can leave the wheels spinning.
+    """
+    from .node import main as node_main
 
-    rclpy.init(args=args)
-    node = WheelCorrectorNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node_main(args)
 
 
 if __name__ == "__main__":

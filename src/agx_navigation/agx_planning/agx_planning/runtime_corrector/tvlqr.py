@@ -114,6 +114,11 @@ class TVLQRConfig:
     what matters: larger Q = track harder, larger R = correct more gently.
     """
 
+    # Master switch. OFF by default so merely loading this config changes
+    # nothing: the corrector stays the identity pass-through, exactly like an
+    # unset rl_corrector.policy_path. Same fail-safe philosophy.
+    enabled: bool = False
+
     # --- Tracking weights (diagonal Q on [e_along, e_cross, e_heading]) ----
     # Cross-track is weighted hardest: leaving the corridor is the failure mode,
     # while an along-track lag is benign (the robot is on the path, just behind).
@@ -146,6 +151,12 @@ class TVLQRConfig:
     # Iterations for the steady-state (online / frozen-time) Riccati solve.
     dare_iters: int = 500
     dare_tol: float = 1e-9
+    # GainCache bucket widths. The gain varies smoothly with the reference
+    # twist, so quantizing to these and caching turns a per-tick Riccati
+    # iteration into a dict lookup. Fine enough that the gain difference within
+    # a bucket is far below the modelling error we already accept.
+    cache_dv: float = 0.02        # [m/s]
+    cache_domega: float = 0.05    # [rad/s]
 
     def q_matrix(self) -> np.ndarray:
         return np.diag([self.q_along, self.q_cross, self.q_heading]).astype(float)
@@ -324,6 +335,48 @@ def steady_state_gain(
             break
         S = S_next
     return K
+
+
+class GainCache:
+    """Quantized cache of frozen-time gains, for the streaming (online) path.
+
+    The online mode gets one command at a time and has no future trajectory to
+    run a backward pass over, so it uses the frozen-time gain for the current
+    reference twist. Solving that per tick is wasteful when the twist barely
+    changes; bucketing by (cache_dv, cache_domega) makes it a dict lookup after
+    the first visit to each bucket.
+
+    Offline mode should prefer gain_schedule() -- it knows the trajectory ends,
+    so it stiffens the gains near the goal, which no frozen-time solve can do.
+    """
+
+    def __init__(self, cfg: TVLQRConfig, dt: float) -> None:
+        self.cfg = cfg
+        self.dt = float(dt)
+        self._cache = {}
+
+    def key(self, v_ref: float, omega_ref: float) -> Tuple[int, int]:
+        return (
+            int(round(v_ref / self.cfg.cache_dv)),
+            int(round(omega_ref / self.cfg.cache_domega)),
+        )
+
+    def get(self, v_ref: float, omega_ref: float) -> np.ndarray:
+        k = self.key(v_ref, omega_ref)
+        K = self._cache.get(k)
+        if K is None:
+            # Solve at the bucket CENTRE, not the requested value, so every
+            # member of a bucket gets the identical gain (no hysteresis where
+            # the first caller's exact twist defines the bucket forever).
+            K = steady_state_gain(
+                k[0] * self.cfg.cache_dv, k[1] * self.cfg.cache_domega,
+                self.dt, self.cfg,
+            )
+            self._cache[k] = K
+        return K
+
+    def __len__(self) -> int:
+        return len(self._cache)
 
 
 def _faded_speed(v_ref: float, cfg: TVLQRConfig) -> float:

@@ -206,6 +206,36 @@ def test_twist_wheel_roundtrip():
         assert omega2 == pytest.approx(omega)
 
 
+def test_gain_cache_reuses_buckets_and_matches_direct_solve():
+    c = cfg()
+    cache = tvlqr.GainCache(c, DT)
+    # Two twists inside one bucket must share a gain and cost one solve.
+    K1 = cache.get(0.300, 0.10)
+    K2 = cache.get(0.3005, 0.101)
+    assert len(cache) == 1
+    assert np.allclose(K1, K2)
+    # A distant twist gets its own bucket.
+    cache.get(0.45, -0.8)
+    assert len(cache) == 2
+    # The cached gain is the direct solve at the BUCKET CENTRE.
+    k = cache.key(0.300, 0.10)
+    expected = tvlqr.steady_state_gain(k[0] * c.cache_dv, k[1] * c.cache_domega, DT, c)
+    assert np.allclose(K1, expected)
+
+
+def test_gain_cache_is_stable_under_reversed_visit_order():
+    """Bucket centres, not first-caller values, define the gain -- so the cache
+    cannot depend on the order twists arrive in."""
+    c = cfg()
+    a, b = tvlqr.GainCache(c, DT), tvlqr.GainCache(c, DT)
+    assert np.allclose(a.get(0.301, 0.099), b.get(0.299, 0.101))
+
+
+def test_disabled_by_default():
+    """Loading the config must not turn the corrector on."""
+    assert tvlqr.TVLQRConfig().enabled is False
+
+
 def test_diagnostics_array_matches_declared_fields():
     """as_array() order is API for logged runs; keep it in step with FIELDS."""
     d = tvlqr.CorrectionDiagnostics()
