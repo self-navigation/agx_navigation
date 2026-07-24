@@ -11,6 +11,7 @@ from launch.substitutions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -30,12 +31,26 @@ def generate_launch_description():
             default_value="true",
             description="Whether to do runtime corrections of the trajectory.",
         ),
+        DeclareLaunchArgument(
+            "corrector",
+            default_value="identity",
+            description=(
+                "Which runtime corrector runs in _correct(). "
+                "identity -- pass-through (the fail-safe); "
+                "tvlqr -- neighboring-optimal feedback about the planned "
+                "trajectory (no training, publishes ~/tvlqr_diagnostics); "
+                "rl -- the learned residual policy (needs rl_corrector.policy_path). "
+                "tvlqr and rl are alternatives, not a stack: enabling tvlqr "
+                "overrides a loaded policy."
+            ),
+        ),
     ]
 
     pmp_mode = LaunchConfiguration("pmp_mode")
     use_server = LaunchConfiguration("use_server")
     sim = LaunchConfiguration("sim")
     do_corrections = LaunchConfiguration("do_corrections")
+    corrector = LaunchConfiguration("corrector")
 
     vector_field = Node(
         package="agx_planning",
@@ -91,6 +106,14 @@ def generate_launch_description():
                 "robot_frame": "base_link",
                 "corridor_epsilon": 0.2,
                 "debug_marker_rate": 5.0,
+                # Neighboring-optimal corrector. Off unless corrector:=tvlqr,
+                # so the default stays the identity pass-through. ParameterValue
+                # with value_type=bool is required: the substitution yields the
+                # string "true"/"false", which would not match the dataclass's
+                # declared bool type otherwise.
+                "tvlqr.enabled": ParameterValue(
+                    EqualsSubstitution(corrector, "tvlqr"), value_type=bool
+                ),
             }
         ],
         remappings=[
