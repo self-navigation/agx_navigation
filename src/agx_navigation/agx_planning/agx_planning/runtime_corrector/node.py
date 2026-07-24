@@ -38,6 +38,7 @@ draw. Recovery markers will return with the recovery logic.
 """
 
 import math
+import signal
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -45,6 +46,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from builtin_interfaces.msg import Duration as BuiltinDuration
@@ -709,24 +711,58 @@ class WheelCorrectorNode(Node):
         return dt <= self._idle_after
 
 
+def _install_stop_on_signal(node: "WheelCorrectorNode") -> None:
+    """Publish an explicit stop on SIGINT/SIGTERM while the context is still up.
+
+    JointGroupVelocityController LATCHES its last command, so every terminal path
+    must publish a zero -- silence keeps the wheels spinning. The goal-reached and
+    starvation paths do that themselves; signals are the gap.
+
+    rclpy will not let us chain in front of it. `rclpy.init()` installs a
+    C-LEVEL signal handler, so a Python `signal.signal()` registered afterwards
+    never runs at all (verified: the handler's log line never appeared), and by
+    the time ExternalShutdownException surfaces in spin() the context is already
+    torn down and nothing can be published. So we ask rclpy not to install
+    handlers (SignalHandlerOptions.NO) and own the signal outright: stop the
+    wheels first, then shut the context down, which makes spin() exit normally.
+
+    Publishing from a signal handler is not async-signal-safe in the strict
+    sense. That is the accepted trade: the alternative is signalling a spin loop
+    that is already being torn down, and a wedged shutdown is far less dangerous
+    than a robot that keeps driving. Every step is wrapped so a failed stop can
+    never prevent the shutdown itself.
+    """
+
+    def handler(signum, frame):
+        try:
+            node._publish_zero()
+            node.get_logger().info("signal %d: published explicit stop" % signum)
+        except Exception as exc:  # noqa: BLE001 - never block shutdown on a stop failure
+            node.get_logger().warn("signal %d: failed to publish stop (%s)"
+                                   % (signum, exc))
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:  # noqa: BLE001 - the finally block retries this
+            pass
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+
 def main(args=None) -> None:
-    rclpy.init(args=args)
+    # NO signal handlers from rclpy: we install our own so the wheels can be
+    # stopped before the context dies. See _install_stop_on_signal.
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = WheelCorrectorNode()
+    _install_stop_on_signal(node)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        # Ctrl-C: the context is still up, so the stop below can still go out.
         node._publish_zero()
     except ExternalShutdownException:
-        # SIGTERM (launch teardown, `timeout`, systemd): rclpy has ALREADY torn
-        # the context down by the time this propagates, so publishing a stop
-        # here is not possible -- the message would have nowhere to go. Exit
-        # quietly instead of dumping a traceback that looks like a crash.
-        #
-        # NB this is the one terminal path that cannot honour the
-        # publish-an-explicit-zero invariant, because the controller latches its
-        # last command. Closing that hole needs a pre-shutdown hook that stops
-        # the wheels before the context goes away.
+        # Our handler already published the stop and called shutdown; spin
+        # unwinding this way is the expected path, not a crash.
         pass
     finally:
         node.destroy_node()
