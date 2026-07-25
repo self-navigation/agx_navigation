@@ -88,7 +88,13 @@ class RandomGoalDriver(Node):
         self.declare_parameter("map_yaml", "")
         self.declare_parameter("floor_number", 3)
         self.declare_parameter("count", 10)
-        self.declare_parameter("dwell", 60.0)
+        # Cap, not an expected duration. The corrector publishes its completion
+        # sentinel ONLY on success (_finish in runtime_corrector/node.py), so a
+        # goal that ends in a reported failure -- including the false failure
+        # the stagnation detector raises when the robot stops because it has
+        # ARRIVED -- sends no signal at all, and the full dwell elapses. Keep it
+        # a little above the slowest expected goal rather than generous.
+        self.declare_parameter("dwell", 90.0)
         self.declare_parameter("clearance", 0.45)
         self.declare_parameter("min_range", 2.0)
         self.declare_parameter("max_range", 15.0)
@@ -96,9 +102,25 @@ class RandomGoalDriver(Node):
         self.declare_parameter("seed_y", 0.0)
         self.declare_parameter("rng_seed", 0)
         # Publishing before every subscriber has been matched silently drops the
-        # goal for whoever was slow -- /goal_pose has two consumers (the vector
-        # field and the corrector) and losing either wedges the run with no error.
-        self.declare_parameter("expected_subscribers", 2)
+        # goal for whoever was slow, and each loss wedges the run differently
+        # with no error naming the cause: losing the corrector means nothing
+        # drives, losing vector_field means the planner sits until it reports
+        # 'Timeout waiting for vector field'.
+        #
+        # COUNTS THIS NODE'S OWN SUBSCRIPTION. We subscribe to /goal_pose
+        # ourselves to catch the completion sentinel, and rclpy counts that too.
+        # So the default 3 means {vector_field, wheel_corrector, self} -- add one
+        # for each extra listener, e.g. 4 when run_recorder is up. Setting this
+        # too low is not benign: it lets the goal go out early and the run then
+        # fails in a way that looks like a planner bug.
+        self.declare_parameter("expected_subscribers", 3)
+        # Seconds to keep waiting AFTER the count is satisfied. The count goes
+        # green when DDS reports the endpoints matched, which is earlier than
+        # the reliable channel being ready to carry data -- publish on that edge
+        # and the first (only) message can still be dropped by every peer at
+        # once. Observed exactly that: the sampler logged the goal, and the
+        # corrector, vector_field and planner all recorded zero goals received.
+        self.declare_parameter("settle", 3.0)
 
         map_yaml = self.get_parameter("map_yaml").value
         if not map_yaml:
@@ -157,6 +179,8 @@ class RandomGoalDriver(Node):
         self._pub = self.create_publisher(PoseStamped, "/goal_pose", qos)
         self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
 
+        self._settle = float(self.get_parameter("settle").value)
+        self._matched_since = None
         self._sent = 0
         self._done = False
         self._deadline = None
@@ -184,12 +208,25 @@ class RandomGoalDriver(Node):
             self.get_logger().info("sequence complete")
             raise SystemExit(0)
 
-        if self._pub.get_subscription_count() < self._expected_subs:
+        matched = self._pub.get_subscription_count()
+        if matched < self._expected_subs:
+            self._matched_since = None
             self.get_logger().warn(
-                f"only {self._pub.get_subscription_count()} of "
-                f"{self._expected_subs} subscribers matched; waiting",
+                f"only {matched} of {self._expected_subs} subscribers matched; "
+                f"waiting",
                 throttle_duration_sec=5.0,
             )
+            return
+
+        # Count satisfied -- now let the channel settle before publishing. See
+        # the `settle` parameter: matched != ready, and this goal is sent once.
+        if self._matched_since is None:
+            self._matched_since = now
+            self.get_logger().info(
+                f"{matched} subscribers matched; settling {self._settle}s "
+                f"before publishing")
+            return
+        if now - self._matched_since < self._settle:
             return
 
         x, y = self._rng.choice(self._candidates)

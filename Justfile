@@ -145,6 +145,17 @@ remote-status:
     {{_ssh}} 'nvidia-smi; free -h; \
         tmux list-windows -t {{session}} 2>/dev/null || echo "no {{session}} tmux session"'
 
+# Pull fixture run data (run_recorder's CSVs) back for plotting. The
+# destination is gitignored -- these are regenerable measurements, not source.
+#   <run>_track.csv    per-sample true pose, nearest planned point, cross-track
+#   <run>_plan.csv     the planned path, for drawing it alongside the real one
+#   <run>_summary.txt  rms/max/final error
+fetch-runs dest='run_data':
+    mkdir -p {{dest}}
+    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/tmp/runs/ {{dest}}/
+    @ls -1 {{dest}} | tail -20
+
 # POLICY_OUT defaults to ~/rl_corrector_policy, phases to ~/rl_corrector_pN.
 # Pull trained policies back from the server's $HOME.
 fetch-policies dest='policies':

@@ -637,13 +637,28 @@ class WheelCorrectorNode(Node):
             self._finish()
 
     def _finish(self) -> None:
-        """Trajectory drained: stop the wheels and return to IDLE. On success,
-        clear the goal and signal completion ROS-wide."""
+        """Trajectory drained: stop the wheels and return to IDLE, and signal
+        completion ROS-wide on ANY terminal outcome.
+
+        The sentinel used to fire only on success, which left a failed goal
+        signalling nothing at all -- every consumer sat waiting on a goal that
+        nobody was pursuing any more, until its own timeout. That was not
+        hypothetical: it hung the random-goal driver for its full dwell, and it
+        was worst for the near-miss case the planner used to report as failure
+        (see the stagnation note in pmp_planner/rollout.py).
+
+        Firing on failure is safe for the known consumers. The sentinel means
+        "no goal is being pursued", which is exactly true after a failure:
+        vector_field clears current_goal and stops recomputing its field, which
+        is what we want when nothing is driving. It is NOT a claim of arrival --
+        anything that needs to distinguish the two must read the action result,
+        which carries success and a message.
+        """
         success = self._buf.result_success
         traj_id = self._buf.active_traj_id
         self._publish_zero()
         self._buf.clear()
-        if success and self._goal_xyth is not None:
+        if self._goal_xyth is not None:
             self._goal_xyth = None
             self._publish_cleared_goal_sentinel()
         self.get_logger().info(

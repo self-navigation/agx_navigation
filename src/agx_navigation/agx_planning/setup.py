@@ -45,6 +45,7 @@ setup(
                 "runtime_corrector",
                 "calibrator",
                 "slip_ident",
+                "run_recorder",
             ]
         ]
         # Submodule entrypoints that don't follow the {package}.{name}:main shape.
