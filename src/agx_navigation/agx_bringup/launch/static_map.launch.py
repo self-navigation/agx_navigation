@@ -1,19 +1,27 @@
 """Drop-in replacement for slam.launch.py that serves a pre-baked map.
 
-Selected with map_source:=static. Serves /map from the baked floor map
-(rasterized from the Gazebo collision meshes by bake_floor_map.py) and
-publishes map->odom as identity, so the robot runs on raw odometry. Nothing
-here consumes the lidar or cameras, so the sim can run with SIM_SENSORS=false.
-The map never updates; use the SLAM path to test navigation itself.
+Serves /map from the baked floor map (rasterized from the Gazebo collision
+meshes by bake_floor_map.py) and map->odom from the estimator chosen by
+localization:
+
+  amcl   nav2_amcl against the baked grid (needs sim_sensors:=true)
+  truth  Gazebo ground truth via truth_localization.py, sim only
+  none   identity, i.e. raw wheel odometry; not usable for evaluating a
+         pose-feedback corrector
+
+The map never updates; use localization:=slam to test navigation itself.
 """
 
-from agx_bringup import launch_file
+import math
+
+from agx_bringup import Topics, cfg_file, launch_file
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     TimerAction,
 )
+from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -33,6 +41,10 @@ def generate_launch_description():
             default_value="",
             description="Explicit map YAML path, overriding floor_number.",
         ),
+        # Only read by localization:=truth, which has to find the robot among
+        # every entity Gazebo publishes a pose for.
+        DeclareLaunchArgument("world_name", default_value="ordjo_world"),
+        DeclareLaunchArgument("model_name", default_value="scout_mini"),
     ]
 
     sim = LaunchConfiguration("sim")
@@ -54,6 +66,9 @@ def generate_launch_description():
         }.items(),
     )
 
+    localization = LaunchConfiguration("localization")
+
+    # --- localization:=none -------------------------------------------------
     # Stands in for the SLAM correction. Identity: see the module docstring for
     # what that costs. The EKF still supplies odom->base_link.
     map_to_odom = Node(
@@ -68,6 +83,94 @@ def generate_launch_description():
             "--child-frame-id", "odom",
         ],
         parameters=[{"use_sim_time": sim}],
+        condition=LaunchConfigurationEquals("localization", "none"),
+    )
+
+    # --- localization:=truth ------------------------------------------------
+    truth_localization = Node(
+        package="agx_bringup",
+        executable="truth_localization",
+        name="truth_localization",
+        output="screen",
+        parameters=[{
+            "use_sim_time": sim,
+            "world_name": LaunchConfiguration("world_name"),
+            "model_name": LaunchConfiguration("model_name"),
+        }],
+        condition=LaunchConfigurationEquals("localization", "truth"),
+    )
+
+    # --- localization:=amcl -------------------------------------------------
+    # AMCL wants a 2-D LaserScan; the robot carries a 3-D lidar. slam.launch.py
+    # flattens the *aggregated* cloud (lidar + depth camera), but localizing
+    # against a map baked from wall geometry only needs the lidar, so this skips
+    # the aggregator and the camera with it. Band and resolution match
+    # slam.launch.py so the two modes see comparable scans.
+    scan_from_lidar = Node(
+        package="pointcloud_to_laserscan",
+        executable="pointcloud_to_laserscan_node",
+        name="pointcloud_to_laserscan",
+        output="screen",
+        remappings=[
+            ("cloud_in", Topics.LIDAR_POINTS),
+            ("scan", Topics.SCAN),
+        ],
+        parameters=[{
+            "target_frame": "base_link",
+            "transform_tolerance": 0.1,
+            "min_height": 0.05,
+            "max_height": 0.7,
+            "angle_min": -math.pi,
+            "angle_max": math.pi,
+            "angle_increment": (2 * math.pi) / 360 / 4,
+            "scan_time": 0.1,
+            "range_min": 0.2,
+            "range_max": 150.0,
+            "use_inf": True,
+            "use_sim_time": sim,
+        }],
+        condition=LaunchConfigurationEquals("localization", "amcl"),
+    )
+
+    # The amcl block in nav2_params.yaml has been carried for a while but never
+    # launched -- the nav2 stack relies on rtabmap for map->odom. This is its
+    # first use. `set_initial_pose` matters: the robot spawns at the map origin
+    # (see truth_localization.py on frames), and global localization from
+    # scratch in a corridor of near-identical walls is not something a fixture
+    # should be asked to do.
+    amcl = Node(
+        package="nav2_amcl",
+        executable="amcl",
+        name="amcl",
+        output="screen",
+        parameters=[
+            cfg_file("nav2_params.yaml"),
+            {
+                "use_sim_time": sim,
+                "scan_topic": Topics.SCAN,
+                "set_initial_pose": True,
+                "initial_pose.x": 0.0,
+                "initial_pose.y": 0.0,
+                "initial_pose.yaw": 0.0,
+            },
+        ],
+        condition=LaunchConfigurationEquals("localization", "amcl"),
+    )
+
+    # amcl is a lifecycle node and stays UNCONFIGURED unless something drives
+    # it. The nav2 stack has its own lifecycle manager; this one exists because
+    # under vec-pmp there is no nav2 stack to borrow one from.
+    amcl_lifecycle = Node(
+        package="nav2_lifecycle_manager",
+        executable="lifecycle_manager",
+        name="lifecycle_manager_localization",
+        output="screen",
+        parameters=[{
+            "use_sim_time": sim,
+            "autostart": True,
+            "node_names": ["amcl"],
+        }],
+        condition=LaunchConfigurationEquals("localization", "amcl"),
     )
 
     nav_launch = IncludeLaunchDescription(
@@ -84,6 +187,10 @@ def generate_launch_description():
         + [
             publish_map,
             map_to_odom,
+            truth_localization,
+            scan_from_lidar,
+            amcl,
+            amcl_lifecycle,
             delayed_nav_launch,
         ]
     )
