@@ -334,12 +334,34 @@ def rollout_generator(
         if new_d_xy < near_goal_thresh and (prev_d_xy - new_d_xy) < progress_eps:
             stagnation_count += 1
             if stagnation_count >= stagnation_limit:
+                # Stopping this close is ARRIVAL, not a planning failure.
+                #
+                # goal_reached needs d_xy < goal_tolerance_xy (0.05 m) AND
+                # d_th < goal_tolerance_th. 5 cm is tighter than this chassis
+                # holds open-loop, so a good run settles a little outside it,
+                # stops improving, and trips the guard below. Measured
+                # 2026-07-25 on the baked floor map: a 4.8 m run with the
+                # identity corrector finished 0.08 m from the goal (heading
+                # within 2.8 deg) and was reported as
+                #   'Plan failure (BVP / stagnation / sim-time cap)'
+                # -- indistinguishable, to any consumer, from the BVP never
+                # converging at all. It also suppressed the corrector's
+                # completion sentinel, which fires only on success, so
+                # everything waiting on that goal hung until its own timeout.
+                #
+                # Note this branch cannot fire far from the goal: the guard
+                # above already requires new_d_xy < near_goal_thresh, so
+                # "stagnated" here always means "stopped within 4x the goal
+                # tolerance". A robot that stalls out in open space is caught
+                # by the sim-time cap below instead, which is the honest
+                # failure signal.
                 return RolloutResult(
-                    status="failed",
+                    status="success",
                     message=(
-                        f"Stagnated near goal "
-                        f"(d_xy={new_d_xy:.3f} m, "
-                        f"{stagnation_count} iters without progress)"
+                        f"Arrived near goal "
+                        f"(d_xy={new_d_xy:.3f} m, outside "
+                        f"goal_tolerance_xy={cfg.goal_tolerance_xy:.3f} m "
+                        f"but no longer improving)"
                     ),
                 )
         else:

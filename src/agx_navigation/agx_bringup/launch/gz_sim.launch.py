@@ -173,6 +173,12 @@ def generate_launch_description():
             # GZ->ROS
             # Clock
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+            # NOTE: ground-truth pose is deliberately NOT bridged here. The
+            # Pose_V -> TFMessage conversion drops the entity names (every
+            # frame_id and child_frame_id arrives empty), leaving no way to pick
+            # the robot out of the hundreds of entities in pose/info. Consumers
+            # that need it (agx_planning/run_recorder.py, the RL GazeboBridge)
+            # subscribe over gz-transport directly and match Pose_V.pose[].name.
             # Camera
             "/d435_camera/color/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
             "/d435_camera/color/image_raw@sensor_msgs/msg/Image[gz.msgs.Image",
