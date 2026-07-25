@@ -50,7 +50,7 @@ def generate_launch_description():
                 "control_rate": 10.0,
 
                 # --- Horizon / collocation (your tuned values) ---
-                "T_horizon": 4.0,        # default 2.5
+                "T_horizon": 2.5,        # default 2.5
                 "N": 40,                 # default 21
                 "bvp_max_nodes": 3000,   # default 2000
                 "dt_segment": 0.5,       # offline only; default 1.25
