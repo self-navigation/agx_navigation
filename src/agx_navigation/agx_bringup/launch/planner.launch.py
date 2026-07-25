@@ -75,8 +75,14 @@ def generate_launch_description():
                 "wheel_radius": 0.08,
                 "track": 0.416503,       # == diff_drive wheel_separation
                 # Sim ICR value (chi >= 1). NOT 1/chassis_gain_omega: that
-                # identity was for the old feedforward model. Re-id per surface.
-                "slip_chi": 1.2987,
+                # identity was for the old feedforward model. Re-id per surface
+                # with `ros2 run agx_planning slip_ident` (see its docstring --
+                # it needs a gyro reference, since /odom cannot observe chi).
+                # Measured 2026-07-25 in rl-sim, patches off, cmd_mode:=wheels:
+                # 1.3736 mean over arcs r=0.23..0.75 m, spread 0.030. The old
+                # 1.2987 under-compensated by ~6%, so every commanded turn came
+                # out that much shallow -- open-loop, with nothing to catch it.
+                "slip_chi": 1.3736,
                 # = your old a_max (1.408) / wheel_radius. Config default 12.5
                 # assumes a_max=1.0; use that if matching the rewrite baseline.
                 "a_wheel_max": 17.6,
