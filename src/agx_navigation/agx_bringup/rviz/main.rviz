@@ -781,6 +781,10 @@ Visualization Manager:
       Enabled: true
       Name: corrector status
       Namespaces:
+        centerline: true
+        corridor: true
+        lag: true
+        reference: true
         state: true
       Topic:
         Depth: 5
@@ -788,6 +792,20 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /wheel_corrector/debug_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: ground truth + goal
+      Namespaces:
+        ground_truth: true
+        goal: true
+        plan_end: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /run_recorder/truth_markers
       Value: true
   Enabled: true
   Global Options:
