@@ -15,10 +15,18 @@ controller already believes -- it reported 7 mm of cross-track error on a run
 that ended metres off course. Ground truth is the only honest referee.
 
 That makes this node SIM-ONLY, deliberately. It is an instrument, not part of
-the control path: nothing it publishes feeds back into planning or control, so
-it cannot create a dependency that fails to exist on the real robot. Keep it
-that way -- if a controller ever needs this data, that controller is not
-deployable.
+the control path: the only thing it publishes is an RViz marker of the true
+pose, which nothing consumes. Keep it that way -- if a controller ever needs
+this data, that controller is not deployable.
+
+WHY IT DRAWS THE TRUE POSE
+--------------------------
+RViz places the robot at its TF pose, which under `map_source:=static` is dead
+reckoning. Odometry cannot observe slip, so on a run that ended 0.71 m short of
+the plan the screen showed the robot arriving exactly on target -- the display
+and the controller share one belief, and neither can see the error. The green
+marker is ground truth; when it separates from the robot model, that gap IS the
+odometry error, and it is the thing every screenshot was previously hiding.
 
 WHAT CROSS-TRACK MEANS HERE
 ---------------------------
@@ -31,8 +39,9 @@ signed nearest-point distance separates them. `along_track` records progress
 along the path, so lag is still visible as along_track falling behind time.
 
 OUTPUT
-  <output_dir>/<run_name>_track.csv    per-sample: t, true pose, nearest planned
-                                       point, signed cross-track, along-track
+  <output_dir>/<run_name>_track.csv    per-sample: t, true pose, odom pose,
+                                       nearest planned point, signed
+                                       cross-track, along-track
   <output_dir>/<run_name>_plan.csv     the planned path as x,y (for plotting)
   <output_dir>/<run_name>_summary.txt  rms/max/final error and run metadata
 
@@ -51,9 +60,10 @@ from typing import List, Optional, Tuple
 
 import gz.transport13 as gz_transport
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
+from visualization_msgs.msg import Marker, MarkerArray
 from gz.msgs10.pose_v_pb2 import Pose_V
-from nav_msgs.msg import Path
+from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -110,6 +120,9 @@ class RunRecorder(Node):
         # Ground truth arrives at the physics rate, which is far denser than
         # anything a plot needs and makes the CSV awkward to open.
         self.declare_parameter("sample_period", 0.05)
+        # The pose the CONTROLLER believes, for comparison against truth. This
+        # is what RViz draws the robot at, and what the corrector corrects on.
+        self.declare_parameter("odom_topic", "/odom/filtered")
 
         self.run_name = str(self.get_parameter("run_name").value)
         self.output_dir = str(self.get_parameter("output_dir").value)
@@ -122,6 +135,8 @@ class RunRecorder(Node):
         self._t0: Optional[float] = None
         self._last_sample_t = -1e9
         self._written = False
+        self._odom: Optional[Tuple[float, float, float]] = None
+        self._truth: Optional[Tuple[float, float, float]] = None
 
         self.create_subscription(
             Path, str(self.get_parameter("plan_topic").value), self._on_plan, 10)
@@ -130,6 +145,14 @@ class RunRecorder(Node):
         self.create_subscription(
             PoseStamped, str(self.get_parameter("goal_topic").value),
             self._on_goal, qos)
+
+        self.create_subscription(
+            Odometry, str(self.get_parameter("odom_topic").value), self._on_odom, 10)
+
+        # Viz only -- see the module docstring. Nothing subscribes to this in
+        # the control path, and nothing may.
+        self._marker_pub = self.create_publisher(MarkerArray, "~/truth_markers", 10)
+        self.create_timer(0.1, self._publish_truth_marker)
 
         # Ground truth over gz-transport rather than a ros_gz_bridge topic.
         # The Pose_V -> TFMessage bridge drops the entity names (every
@@ -159,6 +182,11 @@ class RunRecorder(Node):
         pts = [(p.pose.position.x, p.pose.position.y) for p in msg.poses]
         if len(pts) > len(self._plan):
             self._plan = pts
+
+    def _on_odom(self, msg: Odometry):
+        q = msg.pose.pose.orientation
+        self._odom = (msg.pose.pose.position.x, msg.pose.pose.position.y,
+                      yaw_from_quat(q.x, q.y, q.z, q.w))
 
     def _on_goal(self, msg: PoseStamped):
         if msg.header.frame_id == "":
@@ -190,13 +218,55 @@ class RunRecorder(Node):
             q = p.orientation
             yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
 
+            self._truth = (x, y, yaw)
+            ox, oy, oyaw = self._odom if self._odom is not None else (
+                float("nan"), float("nan"), float("nan"))
+
             if len(self._plan) >= 2:
                 nx, ny, cross, along = nearest_on_polyline((x, y), self._plan)
             else:
                 nx = ny = cross = along = float("nan")
 
-            self._rows.append((rel_t, x, y, yaw, nx, ny, cross, along))
+            self._rows.append((rel_t, x, y, yaw, ox, oy, oyaw, nx, ny, cross, along))
             return
+
+    def _publish_truth_marker(self):
+        """Draw ground truth in green. The gap to the robot model is the
+        odometry error -- the thing a screenshot otherwise cannot show."""
+        if self._truth is None:
+            return
+        x, y, yaw = self._truth
+        arr = MarkerArray()
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = "ground_truth"
+        m.id = 0
+        m.type = Marker.ARROW
+        m.action = Marker.ADD
+        m.points = [Point(x=x, y=y, z=0.05),
+                    Point(x=x + 0.4 * math.cos(yaw), y=y + 0.4 * math.sin(yaw), z=0.05)]
+        m.scale.x, m.scale.y, m.scale.z = 0.06, 0.12, 0.0
+        m.color.r, m.color.g, m.color.b, m.color.a = 0.1, 1.0, 0.2, 1.0
+        arr.markers.append(m)
+
+        t = Marker()
+        t.header.frame_id = "map"
+        t.header.stamp = m.header.stamp
+        t.ns = "ground_truth"
+        t.id = 1
+        t.type = Marker.TEXT_VIEW_FACING
+        t.action = Marker.ADD
+        t.pose.position.x, t.pose.position.y, t.pose.position.z = x, y, 0.35
+        t.scale.z = 0.2
+        t.color.r, t.color.g, t.color.b, t.color.a = 0.1, 1.0, 0.2, 1.0
+        if self._odom is not None:
+            t.text = "truth (odom err %.2f m)" % math.hypot(
+                x - self._odom[0], y - self._odom[1])
+        else:
+            t.text = "truth"
+        arr.markers.append(t)
+        self._marker_pub.publish(arr)
 
     # ---- output ----------------------------------------------------------
 
@@ -215,6 +285,7 @@ class RunRecorder(Node):
         with open(base + "_track.csv", "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["t", "true_x", "true_y", "true_yaw",
+                        "odom_x", "odom_y", "odom_yaw",
                         "plan_x", "plan_y", "cross_track", "along_track"])
             for r in self._rows:
                 w.writerow([f"{r[0]:.3f}"] + [f"{v:.5f}" for v in r[1:]])
@@ -225,12 +296,20 @@ class RunRecorder(Node):
             for x, y in self._plan:
                 w.writerow([f"{x:.5f}", f"{y:.5f}"])
 
-        crosses = [abs(r[6]) for r in self._rows if not math.isnan(r[6])]
+        crosses = [abs(r[9]) for r in self._rows if not math.isnan(r[9])]
         rms = (sum(c * c for c in crosses) / len(crosses)) ** 0.5 if crosses else float("nan")
         peak = max(crosses) if crosses else float("nan")
         last = self._rows[-1]
         final_err = (math.hypot(last[1] - self._goal[0], last[2] - self._goal[1])
                      if self._goal else float("nan"))
+
+        # The odometry error is the gap between what the controller (and RViz)
+        # believe and what actually happened. When it is the same size as the
+        # final error, no amount of feedback ON odometry can close the miss.
+        odom_err = (math.hypot(last[1] - last[4], last[2] - last[5])
+                    if not math.isnan(last[4]) else float("nan"))
+        odom_final_err = (math.hypot(last[4] - self._goal[0], last[5] - self._goal[1])
+                          if self._goal and not math.isnan(last[4]) else float("nan"))
 
         summary = (
             f"run:             {self.run_name}\n"
@@ -239,7 +318,10 @@ class RunRecorder(Node):
             f"planned points:  {len(self._plan)}\n"
             f"goal:            {self._goal}\n"
             f"final true pose: ({last[1]:.3f}, {last[2]:.3f}) yaw {last[3]:.3f}\n"
+            f"final odom pose: ({last[4]:.3f}, {last[5]:.3f}) yaw {last[6]:.3f}\n"
             f"final error:     {final_err:.3f} m\n"
+            f"final err(odom): {odom_final_err:.3f} m  <- what the robot believes\n"
+            f"odom drift:      {odom_err:.3f} m  <- truth vs odom\n"
             f"cross-track rms: {rms:.4f} m\n"
             f"cross-track max: {peak:.4f} m\n"
         )

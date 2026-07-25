@@ -18,6 +18,7 @@ PARAM_VARS := SIM \
 							USE_SERVER \
 							DO_CORRECTIONS \
 							CORRECTOR \
+							PLAYBACK_INDEX \
 							MAP_SOURCE \
 							SURFACE_PATCHES \
 							PORT_NAME
@@ -177,6 +178,13 @@ nav2:
 # debug PLANNER geometry: with slip patches on, a wall strike is ambiguous
 # between a bad plan and a slip excursion off a good one.
 #   make fixture SURFACE_PATCHES=false
+#
+# PLAYBACK_INDEX selects how the offline playback cursor advances:
+#   time     -- (default) one plan sample per control tick. Every correction
+#               costs forward speed and the plan runs out short of the goal.
+#   progress -- project the measured pose onto the plan, so a slow robot takes
+#               longer rather than stopping early.
+#   make fixture CORRECTOR=tvlqr PLAYBACK_INDEX=progress
 fixture:
 	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static \
 		EXTRA_PARAMS="sim_sensors:=false"

@@ -63,7 +63,7 @@ from tf2_ros import (
     ExtrapolationException,
     TransformException,
 )
-from tf_transformations import euler_from_quaternion
+from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
 from agx_planning_msgs.action import PlanToGoal
 
@@ -110,6 +110,27 @@ class WheelCorrectorNode(Node):
         # comment in _on_tick -- streaming playback starves and stutters,
         # because this planner is slower than realtime on the baked map.
         self.declare_parameter("wait_for_complete", True)
+        # Offline playback cursor: "time" (one sample per tick) or "progress"
+        # (project the measured pose onto the plan). See the trajectory_buffer
+        # module docstring. Time indexing makes every correction cost distance,
+        # so the plan runs out with the robot short of the goal; progress
+        # indexing trades that for a longer drive. Default "time" until the
+        # fixture says otherwise -- this is the only writer of wheel commands.
+        self.declare_parameter("playback_index", "time")
+        # Progress mode only. How far ahead of the cursor the projection may
+        # jump in one tick, in samples: a plan that loops back near itself must
+        # not be able to skip the loop.
+        self.declare_parameter("playback_max_skip", 20)
+        # Progress mode only. Give up at this multiple of the planned duration.
+        # Time indexing is self-terminating (the samples run out); progress
+        # indexing is not, so a robot that stalls against a wall would otherwise
+        # replay its feed-forward for ever.
+        self.declare_parameter("playback_timeout_factor", 3.0)
+        # Progress mode only. How far the reference may lead the robot, in
+        # samples. Zero would slave the cursor to measured progress, which
+        # deadlocks: the plan starts from rest, so sample 0 commands zero speed
+        # and nothing ever moves. Must be > 0.
+        self.declare_parameter("playback_max_lead", 10)
 
         self._mode = str(self.get_parameter("mode").value).lower()
         if self._mode not in ("online", "offline"):
@@ -124,6 +145,20 @@ class WheelCorrectorNode(Node):
         self._idle_after = float(self.get_parameter("idle_after").value)
         control_rate = float(self.get_parameter("control_rate").value)
         self._default_dt = 1.0 / control_rate if control_rate > 0.0 else 0.1
+        self._playback_index = str(self.get_parameter("playback_index").value).lower()
+        if self._playback_index not in ("time", "progress"):
+            raise ValueError(
+                "playback_index must be 'time' or 'progress', got "
+                f"{self._playback_index!r}"
+            )
+        self._playback_max_skip = int(self.get_parameter("playback_max_skip").value)
+        self._playback_max_lead = int(self.get_parameter("playback_max_lead").value)
+        if self._playback_index == "progress" and self._playback_max_lead < 1:
+            raise ValueError("playback_max_lead must be >= 1 (0 deadlocks at rest)")
+        self._playback_timeout_factor = float(
+            self.get_parameter("playback_timeout_factor").value
+        )
+        self._play_started: Optional[rclpy.time.Time] = None
 
         # The forward command controller subscribes with the rclcpp default
         # (reliable, volatile, keep-last). Match it so no command is dropped.
@@ -168,7 +203,11 @@ class WheelCorrectorNode(Node):
     def _init_offline(self) -> None:
         self._goal_xyth: Optional[Tuple[float, float, float]] = None
         self._goal_handle = None
-        self._buf = TrajectoryBuffer(self._default_dt)
+        self._buf = TrajectoryBuffer(
+            self._default_dt,
+            max_skip=self._playback_max_skip,
+            max_lead=self._playback_max_lead,
+        )
         self._wait_for_complete = bool(
             self.get_parameter("wait_for_complete").value)
         self._playing = False
@@ -302,6 +341,10 @@ class WheelCorrectorNode(Node):
     def _init_debug(self) -> None:
         marker_rate = float(self.get_parameter("debug_marker_rate").value)
         self._plan_xy: List[Tuple[float, float]] = []
+        # The plan sample currently being commanded -- the point the robot is
+        # being told to be at right now. Drawn as an arrow so a screenshot shows
+        # where the reference is, not just where the path goes.
+        self._ref_pose: Optional[Tuple[float, float, float]] = None
         self._marker_pub = self.create_publisher(MarkerArray, "~/debug_markers", 10)
         #   ~/plan <- planner nav_msgs/Path (debug viz only)
         self._plan_sub = self.create_subscription(Path, "~/plan", self._on_plan, 10)
@@ -561,6 +604,7 @@ class WheelCorrectorNode(Node):
             dt = float(chunk.dt) if chunk.dt > 0.0 else self._default_dt
             self._buf.reset(traj_id, dt)
             self._playing = False
+            self._play_started = None
             self._ensure_tick_timer(dt)
             self._reset_corrector_state()
             self.get_logger().info("Playing trajectory %d (dt=%.3fs)." % (traj_id, dt))
@@ -614,8 +658,35 @@ class WheelCorrectorNode(Node):
             if not self._buf.result_received:
                 return
             self._playing = True
+            self._play_started = self.get_clock().now()
 
-        sample = self._buf.advance()
+        pose = self._robot_pose()
+
+        # Progress indexing has no natural end -- the cursor only moves when the
+        # robot does -- so bound it by the planned duration. Time indexing needs
+        # no such guard: it drains one sample per tick regardless.
+        if self._playback_index == "progress" and self._play_started is not None:
+            _, total = self._buf.progress
+            budget = total * self._buf.active_dt * self._playback_timeout_factor
+            elapsed = (self.get_clock().now() - self._play_started).nanoseconds * 1e-9
+            if budget > 0.0 and elapsed > budget:
+                consumed, _ = self._buf.progress
+                self.get_logger().warn(
+                    "Playback timed out after %.1fs (%.1fx planned); at sample "
+                    "%d/%d. Stopping." % (elapsed, self._playback_timeout_factor,
+                                          consumed, total)
+                )
+                self._finish()
+                return
+
+        # Progress mode needs the measured position to project onto the plan; if
+        # TF is momentarily unavailable, fall back to a time step rather than
+        # stalling the cursor -- a held cursor republishes the same feed-forward.
+        actual_xy = None
+        if self._playback_index == "progress" and pose is not None:
+            actual_xy = (pose[0], pose[1])
+
+        sample = self._buf.advance(actual_xy)
         if sample is None:
             if self._buf.is_done():
                 self._finish()
@@ -629,8 +700,8 @@ class WheelCorrectorNode(Node):
                 )
             return
 
-        self._emit(sample.left, sample.right, sample.pose,
-                   self._robot_pose(), sample.costates)
+        self._ref_pose = sample.pose
+        self._emit(sample.left, sample.right, sample.pose, pose, sample.costates)
 
         # Last sample of the last chunk just went out and the result is in.
         if self._buf.is_done():
@@ -733,9 +804,40 @@ class WheelCorrectorNode(Node):
                 self._make_marker(1, Marker.LINE_STRIP, "corridor", Marker.DELETE, stamp)
             )
 
+        robot = self._robot_pose()
+
+        # -- 2: the sample being commanded right now (ARROW, with heading) --
+        # -- 3: robot -> reference, so the LEAD/LAG is visible at a glance --
+        if self._ref_pose is not None and self._relaying():
+            rx, ry, rth = self._ref_pose
+            a = self._make_marker(2, Marker.ARROW, "reference", stamp=stamp)
+            a.pose.position.x, a.pose.position.y, a.pose.position.z = rx, ry, 0.05
+            qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, rth)
+            a.pose.orientation.x = qx
+            a.pose.orientation.y = qy
+            a.pose.orientation.z = qz
+            a.pose.orientation.w = qw
+            a.scale.x, a.scale.y, a.scale.z = 0.4, 0.08, 0.08
+            a.color.r, a.color.g, a.color.b, a.color.a = 1.0, 0.6, 0.0, 1.0
+            markers.markers.append(a)
+
+            if robot is not None:
+                g = self._make_marker(3, Marker.LINE_LIST, "lag", stamp=stamp)
+                g.scale.x = 0.03
+                g.color.r, g.color.g, g.color.b, g.color.a = 1.0, 0.6, 0.0, 0.8
+                g.points = [Point(x=robot[0], y=robot[1], z=0.05),
+                            Point(x=rx, y=ry, z=0.05)]
+                markers.markers.append(g)
+        else:
+            markers.markers.append(
+                self._make_marker(2, Marker.ARROW, "reference", Marker.DELETE, stamp)
+            )
+            markers.markers.append(
+                self._make_marker(3, Marker.LINE_LIST, "lag", Marker.DELETE, stamp)
+            )
+
         # -- 5: state text above the robot --
         t = self._make_marker(5, Marker.TEXT_VIEW_FACING, "state", stamp=stamp)
-        robot = self._robot_pose()
         if robot is not None:
             t.pose.position.x, t.pose.position.y, t.pose.position.z = robot[0], robot[1], 0.5
         t.scale.z = 0.3
