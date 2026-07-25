@@ -56,19 +56,34 @@ remote-shell:
 # `tmux kill-server` does NOT protect you: it kills the tmux sessions but ORPHANS
 # the gz processes they started, which keep running and keep publishing. That is
 # exactly how the duplicate above got created. Check the process table, not tmux.
+#
+# Checking for `gz sim` alone is NOT sufficient, and that gap cost a whole
+# measurement sweep: killing a fixture's `ros2 launch` leaves its children
+# running, so Gazebo is gone while a full vector_field/pmp_planner/
+# runtime_corrector trio is still alive and subscribed. The next fixture starts
+# clean by this check and then stacks a second planner on the first, each
+# planning from a different odom belief. So look for workspace nodes too.
 check-sim:
-    @{{_ssh}} 'if pgrep -af "gz[ -]sim"; then \
+    @{{_ssh}} 'if pgrep -u "$(id -u)" -a -f . 2>/dev/null | grep -v "pgrep\|grep\|rviz" \
+            | grep -E "gz[ -]sim|{{remote}}"; then \
         echo; \
-        echo "REFUSING TO LAUNCH: Gazebo is already running (see above)."; \
-        echo "Stop it first:  just kill-sim"; \
+        echo "REFUSING TO LAUNCH: Gazebo and/or workspace ROS nodes are already"; \
+        echo "running (see above). Stop them first:  just kill-sim"; \
         exit 1; \
-      else echo "process table clear -- no Gazebo running"; fi'
+      else echo "process table clear -- no Gazebo, no workspace ROS nodes"; fi'
 
-# Kill every Gazebo process on the server and confirm the table is actually
-# clear. Use this instead of `tmux kill-server`, which leaves them orphaned.
+# Kill Gazebo AND every ROS 2 node of this workspace on the server, then confirm
+# the table is actually clear. Use this instead of `tmux kill-server`, which
+# kills the panes and orphans everything they started.
+#
+# The sweep lives in tools/kill_stack.sh and is piped over stdin rather than
+# inlined here -- see the long comment at the top of that script for why an
+# inline `ssh host 'pkill -f ...'` silently kills only itself. It matches on
+# process provenance (the workspace in the process's own environment), so new
+# packages are covered without editing anything, and it spares RViz, which only
+# subscribes and is the only view of a headless sim.
 kill-sim:
-    -@{{_ssh}} 'pkill -f "gz[ -]sim"; sleep 3; pkill -9 -f "gz[ -]sim" 2>/dev/null; sleep 1; \
-        if pgrep -af "gz[ -]sim"; then echo "STILL RUNNING (above)"; else echo "all Gazebo processes stopped"; fi'
+    -@{{_ssh}} 'bash -s {{remote}}' < tools/kill_stack.sh
 
 # ---------------------------------------------------------------- training
 
