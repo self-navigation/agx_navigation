@@ -44,6 +44,18 @@ def generate_launch_description():
                 "overrides a loaded policy."
             ),
         ),
+        DeclareLaunchArgument(
+            "playback_index",
+            default_value="time",
+            description=(
+                "Offline playback cursor. "
+                "time -- one plan sample per control tick, so every correction "
+                "costs forward distance and the plan runs out short of the goal; "
+                "progress -- project the measured pose onto the plan, so a slow "
+                "robot takes longer instead of stopping early. See the "
+                "trajectory_buffer module docstring."
+            ),
+        ),
     ]
 
     pmp_mode = LaunchConfiguration("pmp_mode")
@@ -51,6 +63,7 @@ def generate_launch_description():
     sim = LaunchConfiguration("sim")
     do_corrections = LaunchConfiguration("do_corrections")
     corrector = LaunchConfiguration("corrector")
+    playback_index = LaunchConfiguration("playback_index")
 
     vector_field = Node(
         package="agx_planning",
@@ -111,6 +124,7 @@ def generate_launch_description():
                 # with value_type=bool is required: the substitution yields the
                 # string "true"/"false", which would not match the dataclass's
                 # declared bool type otherwise.
+                "playback_index": playback_index,
                 "tvlqr.enabled": ParameterValue(
                     EqualsSubstitution(corrector, "tvlqr"), value_type=bool
                 ),
