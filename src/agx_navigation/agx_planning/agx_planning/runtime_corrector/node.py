@@ -836,11 +836,16 @@ class WheelCorrectorNode(Node):
                 self._make_marker(3, Marker.LINE_LIST, "lag", Marker.DELETE, stamp)
             )
 
-        # -- 5: state text above the robot --
+        # -- 5: state text, offset from the robot in the GROUND PLANE --
+        # Raising it in z does not separate it: the fixture is watched from
+        # directly overhead, so a label above the robot lands on the robot. The
+        # +y offset is chosen to clear run_recorder's truth label, which sits at
+        # -y on the same point.
         t = self._make_marker(5, Marker.TEXT_VIEW_FACING, "state", stamp=stamp)
         if robot is not None:
-            t.pose.position.x, t.pose.position.y, t.pose.position.z = robot[0], robot[1], 0.5
-        t.scale.z = 0.3
+            t.pose.position.x, t.pose.position.y, t.pose.position.z = (
+                robot[0], robot[1] + 0.6, 0.5)
+        t.scale.z = 0.2
         if self._relaying():
             t.text = "PLAY (%s)" % self._mode
             t.color.r, t.color.g, t.color.b, t.color.a = 0.2, 1.0, 0.2, 1.0

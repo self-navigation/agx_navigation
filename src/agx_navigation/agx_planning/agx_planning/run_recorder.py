@@ -133,7 +133,7 @@ class RunRecorder(Node):
 
         self._plan: List[Tuple[float, float]] = []
         self._rows: List[Tuple] = []
-        self._goal: Optional[Tuple[float, float]] = None
+        self._goal: Optional[Tuple[float, float, float]] = None
         self._t0: Optional[float] = None
         self._last_sample_t = -1e9
         self._written = False
@@ -195,7 +195,9 @@ class RunRecorder(Node):
             # Completion sentinel -- fires on any terminal outcome.
             self._write()
             return
-        self._goal = (msg.pose.position.x, msg.pose.position.y)
+        q = msg.pose.orientation
+        self._goal = (msg.pose.position.x, msg.pose.position.y,
+                      yaw_from_quat(q.x, q.y, q.z, q.w))
 
     def _on_truth(self, msg: Pose_V):
         """Called on a gz-transport thread, not the rclpy executor.
@@ -259,15 +261,73 @@ class RunRecorder(Node):
         t.id = 1
         t.type = Marker.TEXT_VIEW_FACING
         t.action = Marker.ADD
-        t.pose.position.x, t.pose.position.y, t.pose.position.z = x, y, 0.35
-        t.scale.z = 0.2
+        # Offset in the GROUND PLANE, not in z: the fixture is watched from
+        # directly overhead, where a label raised in z lands on the very point
+        # it annotates. Each label gets its own y offset so they cannot stack.
+        t.pose.position.x, t.pose.position.y, t.pose.position.z = x, y - 0.6, 0.35
+        t.scale.z = 0.16
         t.color.r, t.color.g, t.color.b, t.color.a = 0.1, 1.0, 0.2, 1.0
         if self._odom is not None:
-            t.text = "truth (odom err %.2f m)" % math.hypot(
+            t.text = "truth d%.2f" % math.hypot(
                 x - self._odom[0], y - self._odom[1])
         else:
             t.text = "truth"
         arr.markers.append(t)
+
+        # The GOAL that was asked for, and -- separately -- where the PLAN ends.
+        # They are not the same point: the planner terminates inside a goal ball
+        # and its last sample sits ~0.05 m short, consistently across every run
+        # measured so far. Drawing both splits a miss into the part the planner
+        # conceded and the part the controller lost, which one marker cannot do.
+        if self._goal is not None:
+            gx, gy, gyaw = self._goal
+            g = Marker()
+            g.header.frame_id = "map"
+            g.header.stamp = m.header.stamp
+            g.ns = "goal"
+            g.id = 2
+            g.type = Marker.ARROW
+            g.action = Marker.ADD
+            g.points = [
+                Point(x=gx, y=gy, z=0.05),
+                Point(x=gx + 0.5 * math.cos(gyaw),
+                      y=gy + 0.5 * math.sin(gyaw), z=0.05),
+            ]
+            g.scale.x, g.scale.y, g.scale.z = 0.08, 0.16, 0.0
+            g.color.r, g.color.g, g.color.b, g.color.a = 1.0, 0.1, 0.1, 1.0
+            arr.markers.append(g)
+
+            gt = Marker()
+            gt.header.frame_id = "map"
+            gt.header.stamp = m.header.stamp
+            gt.ns = "goal"
+            gt.id = 3
+            gt.type = Marker.TEXT_VIEW_FACING
+            gt.action = Marker.ADD
+            gt.pose.position.x, gt.pose.position.y = gx, gy + 0.6
+            gt.pose.position.z = 0.35
+            gt.scale.z = 0.16
+            gt.color.r, gt.color.g, gt.color.b, gt.color.a = 1.0, 0.1, 0.1, 1.0
+            # Distance from GROUND TRUTH, not from the robot model: under
+            # localization:=none those differ by however far odometry has
+            # drifted, and the true number is the one worth reading.
+            gt.text = "goal d%.2f" % math.hypot(x - gx, y - gy)
+            arr.markers.append(gt)
+
+        if len(self._plan) >= 1:
+            px, py = self._plan[-1]
+            p = Marker()
+            p.header.frame_id = "map"
+            p.header.stamp = m.header.stamp
+            p.ns = "plan_end"
+            p.id = 4
+            p.type = Marker.SPHERE
+            p.action = Marker.ADD
+            p.pose.position.x, p.pose.position.y, p.pose.position.z = px, py, 0.05
+            p.scale.x = p.scale.y = p.scale.z = 0.18
+            p.color.r, p.color.g, p.color.b, p.color.a = 1.0, 0.6, 0.0, 0.9
+            arr.markers.append(p)
+
         self._marker_pub.publish(arr)
 
     # ---- output ----------------------------------------------------------
