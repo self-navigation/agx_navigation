@@ -15,3 +15,4 @@ skid_steer_vfield.json
 # server by `just fetch-runs` (CSVs are regenerable, so they stay out of git).
 acados/
 run_data/
+figures/
