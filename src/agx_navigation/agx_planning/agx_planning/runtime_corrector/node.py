@@ -106,6 +106,10 @@ class WheelCorrectorNode(Node):
         self.declare_parameter("debug_marker_rate", 5.0)
         # Seconds since the last command before the state text flips to IDLE.
         self.declare_parameter("idle_after", 0.5)
+        # Offline mode: buffer the entire rollout before driving. See the long
+        # comment in _on_tick -- streaming playback starves and stutters,
+        # because this planner is slower than realtime on the baked map.
+        self.declare_parameter("wait_for_complete", True)
 
         self._mode = str(self.get_parameter("mode").value).lower()
         if self._mode not in ("online", "offline"):
@@ -165,6 +169,9 @@ class WheelCorrectorNode(Node):
         self._goal_xyth: Optional[Tuple[float, float, float]] = None
         self._goal_handle = None
         self._buf = TrajectoryBuffer(self._default_dt)
+        self._wait_for_complete = bool(
+            self.get_parameter("wait_for_complete").value)
+        self._playing = False
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -553,6 +560,7 @@ class WheelCorrectorNode(Node):
             # retime the playback tick to the planner's committed sample dt.
             dt = float(chunk.dt) if chunk.dt > 0.0 else self._default_dt
             self._buf.reset(traj_id, dt)
+            self._playing = False
             self._ensure_tick_timer(dt)
             self._reset_corrector_state()
             self.get_logger().info("Playing trajectory %d (dt=%.3fs)." % (traj_id, dt))
@@ -584,6 +592,28 @@ class WheelCorrectorNode(Node):
         # Idle: nothing to play. The controller is latched at the last zero.
         if self._buf.active_traj_id < 0:
             return
+
+        # Don't begin playback until the whole rollout has arrived.
+        #
+        # The streaming design assumed BVP solves outrun playback (hence the
+        # depth=64 feedback queue). Measured on the baked floor map, the
+        # opposite holds: the planner emits a 0.5 s chunk about every 0.68 s,
+        # so playback starves on nearly every chunk.
+        #
+        # Starving is not a harmless pause. The hold path below publishes ZERO,
+        # and the plan's state includes the wheel speeds (w_l, w_r) -- so each
+        # stall brakes the wheels and playback then resumes from a sample that
+        # assumes them already spinning. During a turn the two wheels differ,
+        # so the injected error lands mostly on heading, and the robot wanders
+        # off a trajectory that was never actually executed.
+        #
+        # Waiting costs the pre-drive planning time but plays the trajectory as
+        # planned, which is the point of "offline" mode. Set false to restore
+        # streaming if a future planner is genuinely faster than realtime.
+        if self._wait_for_complete and not self._playing:
+            if not self._buf.result_received:
+                return
+            self._playing = True
 
         sample = self._buf.advance()
         if sample is None:
