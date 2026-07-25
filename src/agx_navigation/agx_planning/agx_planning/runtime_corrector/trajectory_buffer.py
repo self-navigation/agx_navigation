@@ -50,10 +50,11 @@ point. Measured on the fixture, that parked the robot on its spawn point for the
 full timeout at `sample 0/199`. The feed-forward has to be allowed to lead the
 robot; it just must not be allowed to abandon it.
 
-The projection is only as good as the pose fed to it. Under `map_source:=static`
-that pose is odometry, which cannot observe slip and so tends to over-report
-distance travelled; the gate then opens slightly too readily. Better than a
-cursor that ignores the robot completely, but not exact.
+The projection is only as good as the pose fed to it. Under `localization:=none`
+that pose is raw odometry, which cannot observe slip and so tends to over-report
+distance travelled; the gate then opens too readily, which is most of why gating
+measured as nearly inert. It is worth re-measuring under `localization:=truth`
+or `amcl`, where the pose means something.
 
 The forward search is windowed (`max_skip`) and never moves backwards, so a plan
 that loops back near itself cannot teleport the cursor across the loop.

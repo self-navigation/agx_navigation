@@ -21,12 +21,14 @@ this data, that controller is not deployable.
 
 WHY IT DRAWS THE TRUE POSE
 --------------------------
-RViz places the robot at its TF pose, which under `map_source:=static` is dead
-reckoning. Odometry cannot observe slip, so on a run that ended 0.71 m short of
-the plan the screen showed the robot arriving exactly on target -- the display
-and the controller share one belief, and neither can see the error. The green
-marker is ground truth; when it separates from the robot model, that gap IS the
-odometry error, and it is the thing every screenshot was previously hiding.
+RViz places the robot at its TF pose, which is only as good as whatever provides
+map->odom. Under `localization:=none` that is dead reckoning: odometry cannot
+observe slip, so on a run that ended 0.71 m short of the plan the screen showed
+the robot arriving exactly on target -- the display and the controller share one
+belief, and neither can see the error. The green marker is ground truth; when it
+separates from the robot model, that gap IS the localization error, and it is
+the thing every screenshot was previously hiding. Under `localization:=truth`
+the two coincide by construction, which is itself the check that the mode works.
 
 WHAT CROSS-TRACK MEANS HERE
 ---------------------------

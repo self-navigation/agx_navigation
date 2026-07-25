@@ -132,14 +132,37 @@ rtabmap) → `nav` which branches on `nav_mode` into `nav2.launch.py` or
 `agx_bringup.utils.launch_file` / `cfg_file`; topic names come from
 `agx_bringup.constants.Topics` rather than string literals.
 
-`map_source` picks what provides `/map` and `map`→`odom`: `slam` (the default,
-rtabmap as above) or `static`, which swaps in
-[static_map.launch.py](src/agx_navigation/agx_bringup/launch/static_map.launch.py).
+`localization` picks what provides `/map` and `map`→`odom` — one knob, because
+an estimator needs a map to localize against. `slam` (the default, rtabmap as
+above); everything else swaps in
+[static_map.launch.py](src/agx_navigation/agx_bringup/launch/static_map.launch.py)
+with the baked map and differs only in the estimator:
+
+| value | `map`→`odom` from | what it represents |
+| --- | --- | --- |
+| `slam` | rtabmap, mapping online | real deployment |
+| `amcl` | nav2_amcl vs. the baked grid | deployment after a good site survey; realistic *and* repeatable |
+| `truth` | Gazebo pose ([truth_localization.py](src/agx_navigation/agx_bringup/agx_bringup/truth_localization.py)) | sim-only; the corrector's performance **ceiling** |
+| `none` | pinned to identity | raw wheel odometry; fastest, least honest |
+
+Only `amcl` consumes the lidar, so only it needs `sim_sensors:=true`.
+
+**`none` cannot evaluate a pose-feedback corrector**, and that is not a subtlety
+— it invalidated a whole day of measurements. Wheel odometry over-reports
+distance travelled by 0.6–0.7 m over one fixture run here. Open-loop control
+ignores pose and is unharmed; a pose-feedback corrector *drives to the bias*, so
+TVLQR stopped 0.74 m short while believing it had arrived within 5 cm. Measure
+the corrector under `truth`, the system under `amcl`, and use `none` only for
+things that genuinely do not care (planner geometry, throughput, smoke tests).
+Ground truth reaches the control path **only** as that transform, exactly where a
+real estimator's output would go.
 
 ### Static map fixture (controller testing)
 
-`make fixture` == `make run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static
-sim_sensors:=false`. It exists because rtabmap is a bad fixture for testing the
+`make fixture` == `make run NAV_MODE=vec-pmp PMP_MODE=offline LOCALIZATION=truth
+sim_sensors:=false`. `LOCALIZATION` defaults to `truth` *here* (unlike `make run`,
+which defaults to `slam`) because this is the corrector rig — see the table above
+for why `none` is the wrong default for it. It exists because rtabmap is a bad fixture for testing the
 *corrector*: it needs the robot to drive before any map exists (so no plan from a
 standing start), it intermittently never initialises on this world's untextured
 walls, and it yields a slightly different map each run — so two corrector runs
@@ -165,11 +188,10 @@ map goes silently stale:
 `trimesh` is an *offline* dependency only — run the baker from a venv; it is
 deliberately not in any package's `install_requires`.
 
-Since nothing on this path consumes the lidar or cameras, the whole
-pointcloud pipeline is gone and the sim runs much faster. The trade: no
-localisation, so `map`→`odom` is pinned to identity and the robot trusts its own
-odometry — fine here because the TVLQR corrector is scored against Gazebo
-ground truth, wrong if you are testing navigation itself (use `map_source:=slam`).
+Under `truth` and `none` nothing consumes the lidar or cameras, so the whole
+pointcloud pipeline is gone and the sim runs much faster; `amcl` pays for the
+lidar because it localizes off it. Either way the map itself never updates, so
+this is the wrong rig for testing navigation — use `localization:=slam` for that.
 
 `SURFACE_PATCHES=false` removes the low-friction ground patches. They default to
 on (slip is what the corrector exists to handle), but they sit *under the spawn

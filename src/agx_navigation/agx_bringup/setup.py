@@ -30,6 +30,7 @@ setup(
     entry_points={
         "console_scripts": [
             "random_goals = agx_bringup.random_goals:main",
+            "truth_localization = agx_bringup.truth_localization:main",
         ],
     },
 )

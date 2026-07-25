@@ -6,6 +6,7 @@ from launch.actions import (
 )
 from launch.substitutions import (
     LaunchConfiguration,
+    NotEqualsSubstitution,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition, LaunchConfigurationEquals
@@ -20,15 +21,25 @@ def generate_launch_description():
             description="Run in Gazebo sim (spawns the robot and uses sim time).",
         ),
         DeclareLaunchArgument(
-            "map_source",
+            "localization",
             default_value="slam",
             description=(
-                "Where /map and map->odom come from. "
-                "slam -- rtabmap builds the map online (the real behaviour); "
-                "static -- serve a pre-baked map of the floor and pin map->odom "
-                "to identity. The static path needs no sensors, so it pairs with "
-                "sim_sensors:=false for a much faster sim; use it for controller "
-                "work, where a deterministic map matters more than mapping."
+                "Where /map and map->odom come from. One knob, because the two "
+                "are not independent -- an estimator needs a map to localize "
+                "against. Four values, in decreasing order of realism:\n"
+                "  slam  -- rtabmap builds the map online and localizes in it. "
+                "The real deployment.\n"
+                "  amcl  -- nav2_amcl localizes the lidar against the pre-baked "
+                "map. Deployment after a good site survey; realistic AND "
+                "repeatable, since the map is fixed.\n"
+                "  truth -- the baked map, with map->odom taken from Gazebo. "
+                "Sim only. The corrector's performance CEILING: use it to tell a "
+                "corrector defect apart from a localization limit.\n"
+                "  none  -- the baked map with map->odom pinned to identity, so "
+                "the robot navigates on raw wheel odometry. Needs no sensors and "
+                "so runs fastest, but odometry drift lands entirely in the "
+                "measurement -- see static_map.launch.py before trusting a "
+                "number from it."
             ),
         ),
     ]
@@ -48,12 +59,15 @@ def generate_launch_description():
 
     slam_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("slam")),
-        condition=LaunchConfigurationEquals("map_source", "slam"),
+        condition=LaunchConfigurationEquals("localization", "slam"),
     )
 
+    # Every other mode serves the baked map; they differ only in what estimates
+    # map->odom, which static_map.launch.py branches on.
     static_map_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("static_map")),
-        condition=LaunchConfigurationEquals("map_source", "static"),
+        condition=IfCondition(
+            NotEqualsSubstitution(LaunchConfiguration("localization"), "slam")),
     )
 
     # The 10 s delay exists to let the sensor pipeline settle before rtabmap
