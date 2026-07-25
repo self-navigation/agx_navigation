@@ -76,6 +76,13 @@ def generate_launch_description():
             default_value="false",
             description="Enable headless rendering for gz sim.",
         ),
+        DeclareLaunchArgument(
+            "surface_patches",
+            default_value="true",
+            description="Spawn the low-friction/rough ground patches. On by "
+                        "default (they are what the corrector exists to handle); "
+                        "set false to isolate planner geometry from slip.",
+        ),
     ]
 
     headless = LaunchConfiguration("headless")
@@ -136,6 +143,13 @@ def generate_launch_description():
         {"x":  6.0, "y": -2.0, "width": 3.0, "length": 3.0, "profile": "directional_y"},
     ])
 
+    # The patches sit on top of the robot's start: it spawns at (0, 0), which is
+    # inside the "icy" patch, and a drive along y=0 crosses the directional ones
+    # at x=3 and x=6. That is deliberate for corrector work -- slip is the whole
+    # phenomenon being corrected -- but it confounds PLANNER debugging, where a
+    # wall strike then has two candidate causes (a bad plan, or a slip excursion
+    # off a good one) and no way to tell them apart. Turn them off to isolate
+    # planner geometry, back on to test the corrector.
     spawn_surface_patches = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
@@ -147,6 +161,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={"patches": surface_patches_json}.items(),
+        condition=IfCondition(LaunchConfiguration("surface_patches")),
     )
 
     gz_bridge = Node(
