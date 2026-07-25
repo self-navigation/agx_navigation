@@ -19,6 +19,7 @@ PARAM_VARS := SIM \
 							DO_CORRECTIONS \
 							CORRECTOR \
 							MAP_SOURCE \
+							SURFACE_PATCHES \
 							PORT_NAME
 
 define lc
@@ -171,6 +172,11 @@ nav2:
 #   make fixture CORRECTOR=tvlqr     # the corrector under test
 #   make fixture CORRECTOR=identity  # the do-nothing baseline to compare against
 # Rebake the map with rudn_ordjo_building's tools/bake_floor_map.py.
+#
+# SURFACE_PATCHES defaults to true here, matching `make run`. Set it false to
+# debug PLANNER geometry: with slip patches on, a wall strike is ambiguous
+# between a bad plan and a slip excursion off a good one.
+#   make fixture SURFACE_PATCHES=false
 fixture:
 	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static \
 		EXTRA_PARAMS="sim_sensors:=false"
