@@ -28,6 +28,8 @@ setup(
         ],
     },
     entry_points={
-        "console_scripts": [],
+        "console_scripts": [
+            "random_goals = agx_bringup.random_goals:main",
+        ],
     },
 )
