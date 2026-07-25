@@ -19,7 +19,7 @@ PARAM_VARS := SIM \
 							DO_CORRECTIONS \
 							CORRECTOR \
 							PLAYBACK_INDEX \
-							MAP_SOURCE \
+							LOCALIZATION \
 							SURFACE_PATCHES \
 							PORT_NAME
 
@@ -168,8 +168,8 @@ nav2:
 # Controller test rig: the vec-pmp stack on a PRE-BAKED map instead of live SLAM.
 # Skips rtabmap entirely, so a plan can be requested from a standing start and
 # the map is identical every run -- which is what makes two corrector runs
-# comparable. Nothing consumes the lidar/cameras on this path, hence
-# sim_sensors:=false and a much better realtime factor.
+# comparable. Nothing but the amcl mode consumes
+# the lidar/cameras, hence sim_sensors:=false and a much better realtime factor.
 #   make fixture CORRECTOR=tvlqr     # the corrector under test
 #   make fixture CORRECTOR=identity  # the do-nothing baseline to compare against
 # Rebake the map with rudn_ordjo_building's tools/bake_floor_map.py.
@@ -185,9 +185,24 @@ nav2:
 #   progress -- project the measured pose onto the plan, so a slow robot takes
 #               longer rather than stopping early.
 #   make fixture CORRECTOR=tvlqr PLAYBACK_INDEX=progress
+#
+# LOCALIZATION picks what estimates map->odom (see main.launch.py). It defaults
+# to `truth` HERE -- unlike `make run`, which defaults to slam -- because this is
+# the corrector rig: under `none` the robot navigates on wheel odometry, which
+# over-reports distance by 0.6-0.7 m per run, and a pose-feedback corrector
+# drives to that bias. `none` measures odometry, not the corrector.
+#   make fixture LOCALIZATION=truth   # (default) corrector performance ceiling
+#   make fixture LOCALIZATION=amcl    # localize the lidar against the baked map
+#   make fixture LOCALIZATION=none    # identity map->odom; fastest, least honest
+#
+# Only amcl consumes the lidar, so only amcl pays for the rendering sensors.
+FIXTURE_LOCALIZATION := $(or $(LOCALIZATION),truth)
+FIXTURE_SENSORS := $(if $(filter amcl,$(FIXTURE_LOCALIZATION)),true,false)
+
 fixture:
-	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static \
-		EXTRA_PARAMS="sim_sensors:=false"
+	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline \
+		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
+		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS)"
 
 # ---- RL runtime corrector: training ----------------------------------------
 # Two terminals. First bring up the MINIMAL sim (physics + wheel controller +
