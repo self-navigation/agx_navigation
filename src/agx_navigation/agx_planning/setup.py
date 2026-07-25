@@ -44,6 +44,7 @@ setup(
                 "pmp_planner",
                 "runtime_corrector",
                 "calibrator",
+                "slip_ident",
             ]
         ]
         # Submodule entrypoints that don't follow the {package}.{name}:main shape.

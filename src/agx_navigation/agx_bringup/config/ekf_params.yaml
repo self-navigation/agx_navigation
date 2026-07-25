@@ -1,3 +1,23 @@
+# robot_localization EKF: fuses wheel odometry with the IMU into the filtered
+# odometry the planner and corrector consume, and publishes odom->base_link.
+#
+# READING THE *_config MASKS
+# --------------------------
+# Each is 15 booleans, "should the filter absorb this field from this sensor":
+#
+#   index  0  1  2   3  4  5   6   7   8    9   10  11    12  13  14
+#   field  x  y  z   r  p  y   vx  vy  vz   vr  vp  vy    ax  ay  az
+#          \position/ \angle/  \--velocity--------/  \--acceleration--/
+#
+# So index 5 is absolute yaw and index 11 is yaw RATE -- easy to confuse, and
+# they behave very differently: an absolute angle anchors the estimate, a rate
+# only shapes how it evolves.
+#
+# The rule of thumb is that a field should be fused from exactly one source
+# unless the sources are genuinely independent. The filter weights sources by
+# covariance, which handles NOISE well and BIAS not at all: a systematically
+# wrong input is not outvoted, it is averaged in, and the estimate settles at a
+# blend of right and wrong. See the yaw-rate note on odom0_config below.
 ekf_filter_node:
   ros__parameters:
     frequency: 30.0
@@ -17,14 +37,35 @@ ekf_filter_node:
     predict_to_current_time: true
     sensor_timeout: 0.2
 
+    # Wheel odometry from agx_chassis/wheel_odometry. Trustworthy for
+    # translation; see the yaw-rate warning below.
     # remapped in launch file
     odom0: odom
     # prettier-ignore
     odom0_config: [true,  true,  false, # x, y, z position
                    false, false, false, # r, p, y
                    true,  true,  false, # x, y, z vel
-                   false, false, true,  # r, p, y rate
+                   false, false, true,  # r, p, y rate   <-- yaw rate, see below
                    false, false, false] # x, y, z accel
+    #
+    # WARNING -- index 11 (yaw rate) is a biased source on a skid-steer.
+    # wheel_odometry integrates the IDEAL differential-drive relation
+    #     d_theta = (d_right - d_left) / track
+    # which has no slip term, while the platform loses roughly 30% of its ideal
+    # yaw to lateral tyre scrub (the planner models this as slip_chi ~= 1.3 in
+    # planner.launch.py). Wheel-derived yaw rate therefore overstates rotation
+    # by about that factor, systematically, on every turn.
+    #
+    # That bias is fused here alongside the IMU's unbiased yaw rate, and per the
+    # header note the filter cannot reject it -- the yaw estimate settles between
+    # truth and 1.3x truth. Downstream, a corrector comparing that estimate to
+    # the plan concludes the robot has over-rotated and steers OUT of the turn,
+    # producing understeer on a trajectory that was correct to begin with.
+    #
+    # The gyro observes rotation directly and needs no per-surface calibration,
+    # so letting the IMU own yaw (index 11 -> false here) is the fix that works
+    # identically in sim and on the robot. Wheels keep x/y and forward velocity,
+    # which they measure well.
     # Treat odom movement as relative,
     # in this case relative to IMU's rotation
     odom0_differential: true
@@ -34,11 +75,19 @@ ekf_filter_node:
     # remapped in launch file
     imu0: imu
     # prettier-ignore
-    imu0_config: [false, false, false,
-                  true,  true,  true,
-                  false, false, false,
-                  true,  true,  true,
-                  false, false, false]
+    imu0_config: [false, false, false, # x, y, z position  (an IMU has none)
+                  true,  true,  true,  # r, p, y           <-- ABSOLUTE angles
+                  false, false, false, # x, y, z vel
+                  true,  true,  true,  # r, p, y rate      <-- gyro, unbiased
+                  false, false, false] # x, y, z accel
+    #
+    # OPEN QUESTION -- index 5 is ABSOLUTE yaw, which an IMU can only supply
+    # from a magnetometer; without one the driver reports a yaw integrated from
+    # the same gyro as index 11, so fusing both feeds one measurement in twice
+    # and lets its drift anchor the estimate. Roll and pitch are fine either
+    # way: gravity observes them absolutely. Confirm what the ch10x actually
+    # publishes before trusting index 5 -- and note two_d_mode: true discards
+    # roll/pitch anyway, so on flat floors only yaw is in question.
     # Treat IMU rotation as absolute,
     # in this case as the only rotation source
     imu0_differential: false
