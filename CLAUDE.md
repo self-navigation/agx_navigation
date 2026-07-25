@@ -33,6 +33,7 @@ make test                 # unit tests (pytest, no ROS needed)
 make run SIM=true         # full stack in Gazebo;  SIM=false runs on the robot
 make online / offline     # run with NAV_MODE=vec-pmp and the matching PMP_MODE
 make nav2                 # run with the nav2 stack instead
+make fixture              # controller test rig: pre-baked map, no SLAM/sensors
 make rviz / make teleop
 ```
 
@@ -100,6 +101,45 @@ rtabmap) → `nav` which branches on `nav_mode` into `nav2.launch.py` or
 `agx_bringup.utils.launch_file` / `cfg_file`; topic names come from
 `agx_bringup.constants.Topics` rather than string literals.
 
+`map_source` picks what provides `/map` and `map`→`odom`: `slam` (the default,
+rtabmap as above) or `static`, which swaps in
+[static_map.launch.py](src/agx_navigation/agx_bringup/launch/static_map.launch.py).
+
+### Static map fixture (controller testing)
+
+`make fixture` == `make run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static
+sim_sensors:=false`. It exists because rtabmap is a bad fixture for testing the
+*corrector*: it needs the robot to drive before any map exists (so no plan from a
+standing start), it intermittently never initialises on this world's untextured
+walls, and it yields a slightly different map each run — so two corrector runs
+are never comparable.
+
+The map is baked ahead of time from the same meshes Gazebo collides against, by
+[tools/bake_floor_map.py](src/rudn-ordjo-building/tools/bake_floor_map.py) in the
+`rudn-ordjo-building` submodule (which owns the meshes, hence the map). It slices
+the floor GLBs over the lidar height band and rasterizes to `maps/floor_N.png` +
+`.yaml`; `rudn_ordjo_building/map_publisher.py` serves that as a latched
+`OccupancyGrid`. The PNG is deliberately a plain greyscale image (254 free / 0
+wall / 205 unknown) so it can be hand-edited to block a doorway or carve a
+shortcut.
+
+Three couplings the baker cannot verify at runtime — if any changes, the baked
+map goes silently stale:
+
+- the GLBs are Y-up and `model_template.sdf` rolls the link +90°, so mesh
+  `(x,y,z)` → world `(x,-z,y)`;
+- `gz_sim.launch.py` spawns the floor at `(23, 5)` (`--floor-origin`);
+- `spawn_floor.launch.py` drops `center` on floors ≥4 and `right` on floors ≥6.
+
+`trimesh` is an *offline* dependency only — run the baker from a venv; it is
+deliberately not in any package's `install_requires`.
+
+Since nothing on this path consumes the lidar or cameras, the whole
+pointcloud pipeline is gone and the sim runs much faster. The trade: no
+localisation, so `map`→`odom` is pinned to identity and the robot trusts its own
+odometry — fine here because the TVLQR corrector is scored against Gazebo
+ground truth, wrong if you are testing navigation itself (use `map_source:=slam`).
+
 ### RL runtime corrector
 
 [rl_corrector/](src/agx_navigation/agx_planning/agx_planning/rl_corrector/) trains a
@@ -136,6 +176,21 @@ make rl-kill                          # ALWAYS run this after a Ctrl-C'd/orphane
 Only **one** sim at a time — two instances share Gazebo's default transport
 partition and both advertise `set_pose`/`pose/info`, so resets silently break.
 
+Worse, if the second instance is a full `make run`/`make fixture` rather than
+`make rl-sim`, both spawn a `scout_mini` and both run their own controllers and
+`robot_state_publisher` on the same topics. The robot gets contradictory joint
+commands and **physically disintegrates** — wheels detach, links fall through the
+floor — while TF reports a pose wandering tens of metres with the wheels sitting
+uncommanded. If you see that, count the `gz sim` processes before debugging
+anything else; it is not a physics bug.
+
+**`tmux kill-server` does not stop the sim.** It kills the tmux sessions but
+*orphans* the `gz sim` processes they started, which keep running and keep
+publishing. Always check the process table (`pgrep -af 'gz[ -]sim'`) before
+launching, not the tmux session list. `just check-sim` does this and refuses to
+launch if anything is alive; every sim-starting `just` recipe depends on it, and
+`just kill-sim` clears the table properly.
+
 `make rl-deps` is *not* the only thing that installs torch, despite the name:
 `agx_planning/setup.py` lists `torch` and `stable-baselines3` in `install_requires`,
 so plain `make deps` already drags in the whole CUDA wheel stack (~3-4 GB of
@@ -158,9 +213,11 @@ for building and running; the recipes only drive `make` over ssh.
 
 ```bash
 just sync / remote-build      # rsync the working tree up, build there
+just check-sim / kill-sim     # guard: refuse to start a 2nd Gazebo / clear it
 just remote-sim               # headless sim in tmux (only ever one)
 just remote-train p1          # a phase in its own tmux window, TB=runs
-just remote-log sim|train     # attach read-only
+just remote-fixture tvlqr     # the corrector test rig (`make fixture`), GUI on
+just remote-log sim|train|fixture   # attach read-only
 just tb                       # TensorBoard tunnelled to localhost:6006
 just fetch-policies           # pull ~/rl_corrector_p*.zip back
 ```
