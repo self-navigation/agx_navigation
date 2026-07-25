@@ -92,13 +92,16 @@ remote-train target='p1': sync
 
 # The controller test rig (`make fixture`): vec-pmp on the pre-baked map, no
 # SLAM and no rendering sensors. GUI on, so it can be watched over Moonlight.
-#   just remote-fixture              # tvlqr, the corrector under test
-#   just remote-fixture identity     # the do-nothing baseline
-remote-fixture corrector='tvlqr': sync check-sim
+#   just remote-fixture                    # tvlqr, the corrector under test
+#   just remote-fixture identity           # the do-nothing baseline
+#   just remote-fixture tvlqr false        # no slip patches -- isolates planner
+#                                          # geometry from slip excursions
+remote-fixture corrector='tvlqr' patches='true': sync check-sim
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:fixture 2>/dev/null; \
         tmux new-window -d -t {{session}} -n fixture \
         "cd {{remote}} && DISPLAY=:0 vglrun -d egl0 make fixture CORRECTOR={{corrector}} \
+         SURFACE_PATCHES={{patches}} \
          HEADLESS=false USE_GPU_RENDER_ACCELERATION=false 2>&1 | tee /tmp/fixture.log"'
     @echo "fixture starting -- follow it with:  just remote-log fixture"
 
