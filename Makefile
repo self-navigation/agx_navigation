@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 fixture rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
 
 SIM ?= true
 HEADLESS ?= false
@@ -18,6 +18,7 @@ PARAM_VARS := SIM \
 							USE_SERVER \
 							DO_CORRECTIONS \
 							CORRECTOR \
+							MAP_SOURCE \
 							PORT_NAME
 
 define lc
@@ -146,7 +147,7 @@ run: build can-bus
 		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
-		$(PARAMS)
+		$(PARAMS) $(EXTRA_PARAMS)
 
 # Convenience entry points wrapping `run` with the right nav/planner mode.
 # All accept the usual overrides (e.g. `make online SIM=false`).
@@ -161,6 +162,18 @@ offline:
 
 nav2:
 	$(MAKE) run NAV_MODE=nav2
+
+# Controller test rig: the vec-pmp stack on a PRE-BAKED map instead of live SLAM.
+# Skips rtabmap entirely, so a plan can be requested from a standing start and
+# the map is identical every run -- which is what makes two corrector runs
+# comparable. Nothing consumes the lidar/cameras on this path, hence
+# sim_sensors:=false and a much better realtime factor.
+#   make fixture CORRECTOR=tvlqr     # the corrector under test
+#   make fixture CORRECTOR=identity  # the do-nothing baseline to compare against
+# Rebake the map with rudn_ordjo_building's tools/bake_floor_map.py.
+fixture:
+	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline MAP_SOURCE=static \
+		EXTRA_PARAMS="sim_sensors:=false"
 
 # ---- RL runtime corrector: training ----------------------------------------
 # Two terminals. First bring up the MINIMAL sim (physics + wheel controller +
