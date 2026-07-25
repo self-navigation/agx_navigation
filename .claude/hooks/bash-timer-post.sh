@@ -27,6 +27,6 @@ fi
 jq -n --arg elapsed "$elapsed" '{
   hookSpecificOutput: {
     hookEventName: "PostToolUse",
-    additionalContext: ("This command took \($elapsed)s to run.")
+    additionalContext: ("This command ran for \($elapsed)s.")
   }
 }'
