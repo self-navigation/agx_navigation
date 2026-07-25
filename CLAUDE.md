@@ -34,8 +34,24 @@ make run SIM=true         # full stack in Gazebo;  SIM=false runs on the robot
 make online / offline     # run with NAV_MODE=vec-pmp and the matching PMP_MODE
 make nav2                 # run with the nav2 stack instead
 make fixture              # controller test rig: pre-baked map, no SLAM/sensors
+make fixture CORRECTOR=identity SURFACE_PATCHES=false   # baseline, no slip
 make rviz / make teleop
 ```
+
+Analysis nodes that only make sense against the fixture (see "Measuring a
+fixture run"):
+
+```bash
+ros2 run agx_planning run_recorder --ros-args -p use_sim_time:=true -p run_name:=x
+ros2 run agx_bringup random_goals --ros-args -p use_sim_time:=true -p count:=5
+ros2 run agx_planning slip_ident  --ros-args -p use_sim_time:=true -p cmd_mode:=wheels
+```
+
+Anything that drives the robot and measures the response must take its timing
+from the **ROS clock**, not the wall clock: `make rl-sim` is unthrottled and runs
+at ~30x realtime, so wall-clock phase timing moves the robot ~30x further than
+intended while sensors (stamped in sim time) report the true duration. A result
+wrong by a suspiciously round factor of 20-30 is this, not physics.
 
 `make build` is stamp-gated (`.build.stamp` vs. every file under `src/`), so a
 touched file forces a rebuild; delete the stamp if a build seems stale.
@@ -88,6 +104,21 @@ SLAM/rtabmap map ─► vector_field ─► pmp_planner ─► runtime_corrector
   latches its last command, so **every terminal path must publish an explicit
   zero** — silence keeps the wheels spinning.
 
+In `offline` mode the corrector buffers the **whole** rollout before driving
+(`wait_for_complete`, default true): the planner emits a 0.5 s chunk roughly
+every 0.68 s on the baked map, so streaming playback starved, and the stall path
+publishes zero — which brakes the wheels mid-trajectory and then resumes from a
+sample assuming them already spinning. The robot stands still for the entire
+planning phase and then drives; that is expected, not a hang.
+
+Playback is indexed by **time**, so anything that costs forward speed (including
+the corrector's own work) makes the robot fall short of the goal rather than
+arrive late. Note also that "arrival" is looser than `goal_tolerance_xy` (0.05 m,
+tighter than the chassis holds): stopping within `4x` that counts as success, and
+the completion sentinel on `/goal_pose` fires on **any** terminal outcome —
+it means "nobody is pursuing a goal", not "arrived". Read the action result to
+tell those apart.
+
 Left/right pair speeds expand to the controller's joint order
 `[front_left, rear_left, front_right, rear_right] = [w_l, w_l, w_r, w_r]`.
 
@@ -139,6 +170,65 @@ pointcloud pipeline is gone and the sim runs much faster. The trade: no
 localisation, so `map`→`odom` is pinned to identity and the robot trusts its own
 odometry — fine here because the TVLQR corrector is scored against Gazebo
 ground truth, wrong if you are testing navigation itself (use `map_source:=slam`).
+
+`SURFACE_PATCHES=false` removes the low-friction ground patches. They default to
+on (slip is what the corrector exists to handle), but they sit *under the spawn
+point* — the robot starts inside the `icy` patch — so with them on, a wall strike
+has two candidate causes and the log cannot tell them apart. Turn them off when
+debugging planner geometry, on when testing the corrector.
+
+### Measuring a fixture run
+
+Scoring uses Gazebo **ground truth**, never `/odom` — wheel odometry is a
+prediction from wheel speeds and shares the errors being measured. It once
+reported 7 mm of cross-track error on a run that ended metres off course.
+
+- `run_recorder` ([run_recorder.py](src/agx_navigation/agx_planning/agx_planning/run_recorder.py))
+  writes `<run>_track.csv` / `_plan.csv` / `_summary.txt`. Sim-only and publishes
+  nothing — an instrument, never part of the control path.
+- `random_goals` ([random_goals.py](src/agx_navigation/agx_bringup/agx_bringup/random_goals.py))
+  samples reachable goals from the baked map, inflated by a clearance radius and
+  restricted to the robot's connected component.
+- `just fetch-runs` pulls the CSVs into gitignored `run_data/`;
+  [tools/plot_run.py](tools/plot_run.py) renders path + deviation figures
+  (matplotlib in a venv, offline-only like the map baker).
+
+Each measured run needs a **freshly started fixture**: odometry is never reset,
+and after one run it is already ~0.6 m from truth, so a second run plans from a
+lie. Teleporting the robot does not help — odom would not know it moved.
+
+Two traps when consuming these CSVs or driving the fixture by hand:
+
+- **`nan` is expected** in `cross_track`/`plan_*` for every sample before the
+  planner publishes its path. `float("nan")` parses without raising, so guarding
+  only `ValueError` silently admits NaN and one NaN turns any `max()`/`mean()`
+  into NaN. Mask non-finite values explicitly.
+- **Publishing a goal races discovery.** `/goal_pose` has several subscribers and
+  a single message reaches only those already matched; losing `vector_field`
+  gives `'Timeout waiting for vector field'`, losing the corrector means nothing
+  drives. Use `ros2 topic pub -w <n>`, and note `random_goals`'
+  `expected_subscribers` counts its *own* subscription. A matched count is still
+  not a ready channel, hence its `settle` delay.
+
+### Corrector-model constants
+
+`slip_chi` is the skid-steer yaw loss: `omega_actual = omega_ideal / chi`. Measure
+it with `ros2 run agx_planning slip_ident`
+([slip_ident.py](src/agx_navigation/agx_planning/agx_planning/slip_ident.py)),
+which references the **gyro** — so it runs unchanged on the real robot, and a
+sim/real difference is a statement about friction, not method. `calibrator.py`
+cannot identify it: it compares commands against `/odom`, and both sides share
+the missing slip term.
+
+Two known-wrong things left deliberately unchanged, because they affect the real
+robot and want a decision rather than a patch:
+
+- `wheel_odometry` integrates heading with the ideal relation and no `chi`, so
+  its yaw overstates rotation by ~`chi`.
+- `ekf_params.yaml` fuses that biased wheel yaw rate (`odom0_config` index 11)
+  alongside the gyro's unbiased one. A Kalman filter cannot reject bias, only
+  noise, so the estimate settles between right and wrong. The file documents the
+  mask layout and the fix.
 
 ### RL runtime corrector
 
@@ -216,14 +306,21 @@ just sync / remote-build      # rsync the working tree up, build there
 just check-sim / kill-sim     # guard: refuse to start a 2nd Gazebo / clear it
 just remote-sim               # headless sim in tmux (only ever one)
 just remote-train p1          # a phase in its own tmux window, TB=runs
-just remote-fixture tvlqr     # the corrector test rig (`make fixture`), GUI on
+just remote-fixture tvlqr false   # corrector test rig, GUI on; false = no slip patches
 just remote-log sim|train|fixture   # attach read-only
 just tb                       # TensorBoard tunnelled to localhost:6006
 just fetch-policies           # pull ~/rl_corrector_p*.zip back
+just fetch-runs               # pull fixture run CSVs into gitignored run_data/
 ```
 
 Non-obvious facts about that box, all of which cost time to work out:
 
+- **Detach long runs and poll a log file.** `ssh host 'cmd | tail'` shows nothing
+  until the command exits, so a working run looks frozen; and interrupting the
+  local ssh does not kill the remote processes, which then fight the next launch
+  (`pgrep -af` before relaunching). Use
+  `setsid nohup script </dev/null >/tmp/x.log 2>&1 &`, then read `/tmp/x.log`.
+  A fixture run is ~90 s: ~10 s discovery, ~20 s planning, ~15-60 s driving.
 - **`packages.osrfoundation.org` is throttled to ~6 KB/s** from the VM (other
   mirrors run at ~800 KB/s), so `apt install gz-harmonic` stalls indefinitely.
   Workaround: `apt-get install --print-uris`, fetch the osrfoundation `.deb`s from
