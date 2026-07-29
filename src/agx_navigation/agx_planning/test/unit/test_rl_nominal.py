@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 
 from agx_planning.rl_corrector.config import RLCorrectorConfig
-from agx_planning.rl_corrector.nominal import generate_primitive
+from agx_planning.rl_corrector.nominal import (
+    generate_primitive,
+    load_recorded,
+    load_recorded_dir,
+)
 
 
 def test_kinematics_round_trip():
@@ -69,3 +73,45 @@ def test_unknown_kind_raises():
     cfg = RLCorrectorConfig()
     with pytest.raises(ValueError):
         generate_primitive(cfg, "spiral", v=0.3, omega=0.1, duration=1.0)
+
+
+def test_load_recorded_round_trip(tmp_path):
+    """load_recorded() must reconstruct a Nominal matching what a RolloutChunk-
+    shaped .npz saves -- the exact contract generate_trajectories.py writes and
+    the training sampler reads back."""
+    poses = np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]])
+    wheel_cmds = np.array([[1.0, 1.0], [1.0, 1.0]])
+    costates = np.array([[0.1, 0.2, 0.3, 0.4, 0.5], [0.1, 0.2, 0.3, 0.4, 0.5]])
+    path = tmp_path / "traj_00000.npz"
+    np.savez(path, poses=poses, wheel_cmds=wheel_cmds, costates=costates,
+             dt_sample=0.1)
+
+    nom = load_recorded(str(path))
+    # RolloutChunk's poses/wheels are parallel (both length N); Nominal.poses
+    # must gain the extra (N+1)-th row env.py's grace-window indexing assumes
+    # (poses[min(k, n)]) -- regression test for the IndexError this caused when
+    # an episode ran a recorded nominal all the way to its end.
+    assert nom.poses.shape == (poses.shape[0] + 1, 3)
+    assert np.allclose(nom.poses[:-1], poses)
+    assert np.allclose(nom.poses[-1], poses[-1])
+    assert np.allclose(nom.wheels, wheel_cmds)
+    assert np.allclose(nom.costates, costates)
+    assert nom.dt == pytest.approx(0.1)
+    assert len(nom) == wheel_cmds.shape[0]
+
+
+def test_load_recorded_dir_lists_npz_files(tmp_path):
+    for i in range(3):
+        np.savez(tmp_path / f"traj_{i:05d}.npz",
+                 poses=np.zeros((1, 3)), wheel_cmds=np.zeros((1, 2)),
+                 costates=np.zeros((1, 5)), dt_sample=0.1)
+    (tmp_path / "not_a_trajectory.txt").write_text("ignore me")
+
+    paths = load_recorded_dir(str(tmp_path))
+    assert len(paths) == 3
+    assert all(p.endswith(".npz") for p in paths)
+
+
+def test_load_recorded_dir_empty_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_recorded_dir(str(tmp_path))

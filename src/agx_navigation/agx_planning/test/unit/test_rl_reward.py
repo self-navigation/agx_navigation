@@ -40,7 +40,7 @@ def test_is_success():
 def test_reward_penalizes_cross_track():
     cfg = RLCorrectorConfig(w_cross=10.0, w_heading=0, w_progress=0,
                             w_effort=0, w_smooth=0, w_ontrack=0)
-    ones = np.ones(4)
+    ones = np.zeros(4)
     r_small = compute_reward(cfg, [0, 0.1, 0], ones, ones, 0.0)
     r_big = compute_reward(cfg, [0, 0.3, 0], ones, ones, 0.0)
     assert r_big < r_small < 0
@@ -49,51 +49,51 @@ def test_reward_penalizes_cross_track():
 def test_reward_rewards_progress():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=5.0,
                             w_effort=0, w_smooth=0, w_ontrack=0)
-    ones = np.ones(4)
+    ones = np.zeros(4)
     assert compute_reward(cfg, [0, 0, 0], ones, ones, 0.2) == pytest.approx(1.0)
 
 
 def test_reward_effort_anchored_at_identity():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=0,
                             w_effort=1.0, w_smooth=0, w_ontrack=0)
-    ones = np.ones(4)
-    # identity coefficients -> zero effort penalty
-    assert compute_reward(cfg, [0, 0, 0], ones, ones, 0.0) == pytest.approx(0.0)
-    # deviated coefficients -> negative
-    c = np.array([1.5, 0.5, 1.0, 1.0])
-    assert compute_reward(cfg, [0, 0, 0], c, c, 0.0) == pytest.approx(-0.5)
+    zero = np.zeros(4)
+    # zero (identity) action -> zero effort penalty
+    assert compute_reward(cfg, [0, 0, 0], zero, zero, 0.0) == pytest.approx(0.0)
+    # nonzero action -> negative
+    a = np.array([0.5, -0.5, 0.0, 0.0])
+    assert compute_reward(cfg, [0, 0, 0], a, a, 0.0) == pytest.approx(-0.5)
 
 
 def test_reward_smoothness_penalizes_change():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=0,
                             w_effort=0, w_smooth=1.0, w_ontrack=0)
-    c = np.array([1.2, 1.2, 1.2, 1.2])
-    prev = np.array([1.0, 1.0, 1.0, 1.0])
-    # sum((1.2-1.0)^2)*4 = 0.04*4 = 0.16
-    assert compute_reward(cfg, [0, 0, 0], c, prev, 0.0) == pytest.approx(-0.16)
+    a = np.array([0.2, 0.2, 0.2, 0.2])
+    prev = np.array([0.0, 0.0, 0.0, 0.0])
+    # sum((0.2-0.0)^2)*4 = 0.04*4 = 0.16
+    assert compute_reward(cfg, [0, 0, 0], a, prev, 0.0) == pytest.approx(-0.16)
 
 
 def test_reward_terminal_penalty_and_bonus():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=0,
                             w_effort=0, w_smooth=0, w_ontrack=0,
                             term_penalty=50.0, success_bonus=40.0)
-    ones = np.ones(4)
+    ones = np.zeros(4)
     assert compute_reward(cfg, [0, 0, 0], ones, ones, 0.0, failed=True) == pytest.approx(-50.0)
     assert compute_reward(cfg, [0, 0, 0], ones, ones, 0.0, succeeded=True) == pytest.approx(40.0)
 
 
-def test_reward_prev_coeff_none_defaults_identity():
+def test_reward_prev_action_none_defaults_zero():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=0,
                             w_effort=0, w_smooth=1.0, w_ontrack=0)
-    ones = np.ones(4)
-    assert compute_reward(cfg, [0, 0, 0], ones, None, 0.0) == pytest.approx(0.0)
+    zero = np.zeros(4)
+    assert compute_reward(cfg, [0, 0, 0], zero, None, 0.0) == pytest.approx(0.0)
 
 
 def test_reward_ontrack_bonus_decays_with_distance():
     cfg = RLCorrectorConfig(w_cross=0, w_heading=0, w_progress=0,
                             w_effort=0, w_smooth=0, w_ontrack=2.0,
                             corridor_epsilon=0.5)
-    ones = np.ones(4)
+    ones = np.zeros(4)
     # On the target point -> full bonus.
     assert compute_reward(cfg, [0, 0, 0], ones, ones, 0.0) == pytest.approx(2.0)
     # At the corridor edge -> decays to zero.

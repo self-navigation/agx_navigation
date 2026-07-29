@@ -3,7 +3,7 @@
 Keeps the torch and stable-baselines3 imports here so that a deployment
 without a policy never imports torch: load_policy("") returns None and the
 corrector stays identity. Prediction is deterministic; on any error or
-non-finite action the caller falls back to identity (coefficient 1).
+non-finite action the caller falls back to identity (zero residual).
 """
 
 from typing import Optional
