@@ -16,3 +16,4 @@ skid_steer_vfield.json
 acados/
 run_data/
 figures/
+tools/attention_mcp/.venv/
