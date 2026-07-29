@@ -11,7 +11,7 @@ Observation layout (fixed order):
     e_along_dot, e_cross_dot, e_heading_dot,     # error rates
     cmd_left, cmd_right,                          # nominal commands (normalized)
     v_meas, omega_meas,                           # measured body twist (normalized)
-   (prev_coeff - 1) * action_dim   if use_prev_coeff,
+    prev_action * action_dim        if use_prev_action, (already zero-centered)
     imu_gyro_z, imu_ax, imu_ay     if use_imu,
     wheel_speeds * 4               if use_wheel_speeds,
     costates * 5                   if use_costates ]
@@ -49,7 +49,7 @@ def tracking_error(planned_pose, actual_pose) -> np.ndarray:
 
 def observation_dim(cfg) -> int:
     n = 3 + 3 + 2 + 2
-    if cfg.use_prev_coeff:
+    if cfg.use_prev_action:
         n += cfg.action_dim
     if cfg.use_imu:
         n += 3
@@ -69,7 +69,7 @@ def build_observation(
     cmd_right: float,
     v_meas: float,
     omega_meas: float,
-    prev_coeff=None,
+    prev_action=None,
     imu=None,
     wheel_speeds=None,
     costates=None,
@@ -99,13 +99,13 @@ def build_observation(
         omega_meas / cfg.twist_w_norm,
     ]
 
-    if cfg.use_prev_coeff:
-        pc = (
-            np.ones(cfg.action_dim)
-            if prev_coeff is None
-            else np.asarray(prev_coeff, dtype=float).ravel()
+    if cfg.use_prev_action:
+        pa = (
+            np.zeros(cfg.action_dim)
+            if prev_action is None
+            else np.asarray(prev_action, dtype=float).ravel()
         )
-        parts.extend((pc - 1.0).tolist())  # centered at identity
+        parts.extend(pa.tolist())  # already zero-centered (0 == identity)
 
     if cfg.use_imu:
         # (gyro_z, ax, ay): yaw rate normalized like omega, body accel by its own

@@ -67,7 +67,7 @@ from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
 from agx_planning_msgs.action import PlanToGoal
 
-from agx_planning.rl_corrector.coeff import apply_coefficients, coefficients_from_action
+from agx_planning.rl_corrector.coeff import apply_residual, clipped_action
 from agx_planning.rl_corrector.config import RLCorrectorConfig
 from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
@@ -283,9 +283,9 @@ class WheelCorrectorNode(Node):
             self.create_timer(2.0, self._log_tvlqr_summary)
 
         # Per-trajectory obs state: previous tracking error (for error rates) and
-        # previous coefficients (smoothness feature). Reset on each new traj.
+        # previous action (smoothness feature). Reset on each new traj.
         self._prev_err = None
-        self._prev_coeff = np.ones(self._rl_cfg.action_dim)
+        self._prev_action = np.zeros(self._rl_cfg.action_dim)
         # Latest body twist from /odom (a rate, so localization-frame agnostic).
         self._odom_twist: Tuple[float, float] = (0.0, 0.0)
         # Latest IMU reading (gyro_z, ax, ay); None until the first message. The
@@ -334,9 +334,9 @@ class WheelCorrectorNode(Node):
 
     def _reset_corrector_state(self) -> None:
         """Clear per-trajectory obs history so a new plan starts with zero error
-        rates and identity previous-coefficients (no carryover across plans)."""
+        rates and zero previous-action (no carryover across plans)."""
         self._prev_err = None
-        self._prev_coeff = np.ones(self._rl_cfg.action_dim)
+        self._prev_action = np.zeros(self._rl_cfg.action_dim)
 
     def _init_debug(self) -> None:
         marker_rate = float(self.get_parameter("debug_marker_rate").value)
@@ -387,10 +387,10 @@ class WheelCorrectorNode(Node):
 
         With a policy loaded, it builds the SAME observation the env trained on
         (path-relative tracking error of `actual_pose` vs `planned_pose`, plus the
-        measured /odom twist, previous coefficients, and optional costates),
-        predicts per-wheel coefficients, and applies them. It FAILS SAFE to the
-        identity on any error or non-finite action, so a bad policy can never
-        inject motion beyond clamped multiples of the planned command.
+        measured /odom twist, previous action, and optional costates), predicts a
+        per-wheel residual, and adds it to the planned command. It FAILS SAFE to
+        the identity on any error or non-finite action, so a bad policy can never
+        inject motion beyond the clamped residual on top of the planned command.
         """
         if self._tvlqr_cfg.enabled:
             return self._correct_tvlqr(left, right, planned_pose, actual_pose)
@@ -405,18 +405,18 @@ class WheelCorrectorNode(Node):
                 cfg, planned_pose, actual_pose, self._prev_err,
                 cmd_left=left, cmd_right=right,
                 v_meas=self._odom_twist[0], omega_meas=self._odom_twist[1],
-                prev_coeff=self._prev_coeff,
+                prev_action=self._prev_action,
                 imu=self._imu if cfg.use_imu else None,
                 wheel_speeds=None, costates=cs,
             )
             action = self._policy.predict(obs)
             if not np.all(np.isfinite(action)):
                 raise ValueError("policy returned a non-finite action")
-            wheels = apply_coefficients(action, left, right, cfg)
+            wheels = apply_residual(action, left, right, cfg)
             # Commit obs history only on success, so a failed tick can't poison
             # the next step's error rate / smoothness features.
             self._prev_err = err
-            self._prev_coeff = coefficients_from_action(action, cfg)
+            self._prev_action = clipped_action(action, cfg)
             return wheels
         except Exception as exc:  # noqa: BLE001 - fail safe to identity, never crash
             self.get_logger().warn(

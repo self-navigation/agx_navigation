@@ -40,7 +40,9 @@ sys.modules.setdefault("tensorflow", None)
 import numpy as np  # safe: numpy does not pull in TF, unlike the SB3/torch stack
 
 from .config import RLCorrectorConfig
-from .env import WheelCorrectorEnv, make_nominal_sampler
+from .env import (WheelCorrectorEnv, make_blended_sampler, make_nominal_sampler,
+                   make_recorded_sampler)
+from . import nominal as nominal_mod
 # NOTE: GazeboBridge is imported lazily inside build_env (it pulls gz.transport),
 # so a --bridge kinematic run is fully Gazebo-free and needs no sim process.
 
@@ -134,7 +136,9 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--duration-min", type=float, default=2.0, help="min primitive [s]")
     ap.add_argument("--duration-max", type=float, default=5.0, help="max primitive [s]")
     # MDP / observation.
-    ap.add_argument("--action-dim", type=int, choices=(2, 4), default=4)
+    ap.add_argument("--action-dim", type=int, choices=(2, 4), default=2,
+                    help="2 = per-side residual (hardware-realizable, default); "
+                         "4 = independent per-wheel residual (sim-only).")
     ap.add_argument("--imu", action=argparse.BooleanOptionalAction, default=True,
                     help="include the IMU (gyro_z + body accel) in the obs: a "
                          "slip-observing, on-robot signal. On by default; must match "
@@ -142,6 +146,31 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--costates", action=argparse.BooleanOptionalAction, default=False,
                     help="include PMP costates in the obs (Tier-B recorded "
                          "nominals only; parametric training has none -> default off)")
+    ap.add_argument("--recorded-dir", default=None,
+                    help="directory of .npz trajectories from generate_trajectories.py "
+                         "(Tier-B, real PMP-solved rollouts). Default: none, synthetic "
+                         "primitives only.")
+    ap.add_argument("--recorded-frac", type=float, default=1.0,
+                    help="fraction of episodes drawn from --recorded-dir when set (the "
+                         "rest are synthetic primitives). 1.0 = recorded only. A mixed "
+                         "curriculum with --costates has zero-costate synthetic episodes "
+                         "(see env._costate_at) -- a real distribution-shift risk, so "
+                         "prefer 1.0 once Tier-B is introduced rather than a permanent "
+                         "blend.")
+    ap.add_argument("--corridor-epsilon", type=float, default=None,
+                    help="override RLCorrectorConfig.corridor_epsilon [m] (default "
+                         "0.5). Widen this for early curriculum phases so episodes "
+                         "survive long enough to get gradient signal -- see "
+                         "rl-corrector-turn-induced-corridor-breach memory. Reward "
+                         "stays dense regardless (w_ontrack/w_cross/w_progress are "
+                         "per-step), so widening only changes the termination bound.")
+    ap.add_argument("--w-effort", type=float, default=None,
+                    help="override RLCorrectorConfig.w_effort (default 0.1): penalty "
+                         "on the clipped action's magnitude, i.e. non-zero additive "
+                         "control.")
+    ap.add_argument("--w-smooth", type=float, default=None,
+                    help="override RLCorrectorConfig.w_smooth (default 0.1): penalty "
+                         "on action change between steps.")
     # SAC.
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto",
@@ -198,8 +227,15 @@ def _parse_args() -> argparse.Namespace:
 
 def build_env(args) -> WheelCorrectorEnv:
     """Construct the training env from CLI args (no SB3 import needed)."""
+    cfg_overrides = {}
+    if args.corridor_epsilon is not None:
+        cfg_overrides["corridor_epsilon"] = args.corridor_epsilon
+    if args.w_effort is not None:
+        cfg_overrides["w_effort"] = args.w_effort
+    if args.w_smooth is not None:
+        cfg_overrides["w_smooth"] = args.w_smooth
     cfg = RLCorrectorConfig(action_dim=args.action_dim, use_imu=args.imu,
-                            use_costates=args.costates)
+                            use_costates=args.costates, **cfg_overrides)
     if args.bridge == "kinematic":
         from .kinematic_bridge import KinematicBridge
         bridge = KinematicBridge(cfg)
@@ -210,13 +246,24 @@ def build_env(args) -> WheelCorrectorEnv:
             deterministic=not args.wall_clock,
             unthrottle=not args.realtime,
         )
-    sampler = make_nominal_sampler(
+    primitive_sampler = make_nominal_sampler(
         cfg,
         kinds=args.nominal_kinds,
         v_range=(args.v_min, args.v_max),
         omega_max=args.omega_max,
         duration_range=(args.duration_min, args.duration_max),
     )
+    if args.recorded_dir:
+        recorded_sampler = make_recorded_sampler(nominal_mod.load_recorded_dir(args.recorded_dir))
+        if args.recorded_frac >= 1.0:
+            sampler = recorded_sampler
+        else:
+            sampler = make_blended_sampler(
+                [recorded_sampler, primitive_sampler],
+                [args.recorded_frac, 1.0 - args.recorded_frac],
+            )
+    else:
+        sampler = primitive_sampler
     env = WheelCorrectorEnv(cfg, bridge, nominal_sampler=sampler, seed=args.seed,
                             debug_steps=args.debug_steps)
 

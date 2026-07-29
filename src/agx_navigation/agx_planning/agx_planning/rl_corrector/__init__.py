@@ -1,13 +1,13 @@
 """Reinforcement-learning runtime corrector.
 
-A residual policy that adjusts per-wheel velocity coefficients so the robot
+A residual policy that adds a per-wheel velocity residual (rad/s) so the robot
 stays on the PMP planner's frozen trajectory under terrain-induced slip.
 
 This package is split so the math is shared verbatim between training and
 deployment, and so the pure logic imports neither ROS nor torch:
 
   config   -- RLCorrectorConfig dataclass (also the kinematics single source)
-  coeff    -- action -> per-wheel coefficients -> clamped wheel commands (pure)
+  coeff    -- action -> additive per-wheel residual -> clamped wheel commands (pure)
   obs      -- observation construction in the path-relative frame (pure)
   reward   -- reward + termination/success predicates (pure)
   nominal  -- frozen reference-trajectory generation (pure)

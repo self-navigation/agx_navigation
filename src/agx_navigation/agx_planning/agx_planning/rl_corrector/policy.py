@@ -7,7 +7,7 @@ falls back to identity. Only when a real `.zip` path is given do we import SB3.
 Both training and deployment build observations through the same pure `obs.py`,
 so the action this returns is consistent with what SAC saw during training. The
 predict path is deterministic (no exploration noise) and fails safe: any error or
-non-finite action makes the caller revert to identity (action = 0 -> coeff = 1).
+non-finite action makes the caller revert to identity (action = 0 -> zero residual).
 """
 
 from typing import Optional

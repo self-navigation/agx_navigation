@@ -16,18 +16,27 @@ from dataclasses import dataclass
 @dataclass
 class RLCorrectorConfig:
     # --- Action ---------------------------------------------------------
-    # 4 = per-wheel coefficients [fl, rl, fr, rr]; 2 = per-side [left, right].
-    action_dim: int = 4
-    # coeff_i = 1 + coeff_k * a_i, with a_i in [-1, 1]. a_i = 0 -> coeff 1 -> exact
-    # identity (the fail-safe contract; also where SAC's zero-centred tanh policy
-    # naturally sits). coeff_k is the ACTION AUTHORITY dial: k=0.2 -> coeff in
-    # [0.8, 1.2]. Dropped from 0.5 ([0.5,1.5]) because that let the policy command
-    # such asymmetric wheels that it over-rotated and breached the pi/2 heading
-    # corridor on turns (SAC_6/8: heading breaches at |e_heading|~1.6-2.0 rad). A
-    # residual corrector should nudge the feedforward, not overpower it. SINGLE
-    # SOURCE OF TRUTH for train+deploy -- the deployed node reads this same value,
-    # so a policy must be deployed with the coeff_k it trained on.
-    coeff_k: float = 0.2
+    # 4 = independent per-wheel residuals [fl, rl, fr, rr]; 2 = per-side
+    # [left, right]. 2 is the default: the real Scout Mini chassis only accepts a
+    # twist and does its own wheel-effort mapping, so a 4-D front/rear-asymmetric
+    # residual is unrealizable on hardware (see scout-twist-only-chassis memory)
+    # and would invite a sim-only exploit that can't transfer.
+    action_dim: int = 2
+    # residual_i = wheel_residual_max * a_i, with a_i in [-1, 1]. a_i = 0 -> zero
+    # residual -> exact identity (the fail-safe contract; also where SAC's
+    # zero-centred tanh policy naturally sits). ADDITIVE, in rad/s -- replaces the
+    # old multiplicative coeff_k scheme, whose authority was proportional to
+    # |nominal| and exactly zero whenever a nominal wheel command was zero (a
+    # structural flaw independent of hyperparameters; see rl-corrector-diagnosis
+    # memory). wheel_residual_max is the ACTION AUTHORITY dial, analogous to the
+    # old coeff_k=0.2 ([0.8,1.2] on a ~20 rad/s command -- keep the same rough
+    # authority budget as a starting point, i.e. ~0.2 * wheel_cmd_max, and
+    # re-tune from there; the old bound existed because a wider one let the
+    # policy over-rotate and breach the pi/2 heading corridor on turns (SAC_6/8:
+    # heading breaches at |e_heading|~1.6-2.0 rad)). SINGLE SOURCE OF TRUTH for
+    # train+deploy -- the deployed node reads this same value, so a policy must
+    # be deployed with the wheel_residual_max it trained on.
+    wheel_residual_max: float = 4.0
     # Per-wheel command clamp [rad/s]; matches the joint <limit velocity>.
     wheel_cmd_max: float = 20.0
 
@@ -42,7 +51,7 @@ class RLCorrectorConfig:
     # or the obs won't match and the corrector fails safe to identity. This
     # dataclass is the single source of truth: train.py and the deployed node both
     # load it, so the defaults here are what keeps train and deploy in lockstep.
-    use_prev_coeff: bool = True      # previous step's coefficients (smoothness)
+    use_prev_action: bool = True     # previous step's clipped action (smoothness)
     use_imu: bool = True             # IMU gyro_z + body accel (slip-observing, on-robot)
     use_wheel_speeds: bool = False   # measured per-wheel speeds from /joint_states
     # PMP costates only exist for recorded planner nominals (Tier-B). The working

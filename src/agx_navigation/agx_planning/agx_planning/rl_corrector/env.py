@@ -1,9 +1,10 @@
 """Gymnasium environment for training the residual wheel corrector.
 
 The robot must follow a FROZEN nominal trajectory (it never replans). Each step:
-the agent observes the current tracking error (path-relative), outputs per-wheel
-coefficients, those scale the nominal feedforward, the bridge advances the sim by
-one control_dt, and the resulting error drives the reward.
+the agent observes the current tracking error (path-relative), outputs a
+per-wheel residual (rad/s), that residual is ADDED to the nominal feedforward,
+the bridge advances the sim by one control_dt, and the resulting error drives
+the reward.
 
 The env is bridge-agnostic (see bridge.py): KinematicBridge for fast, Gazebo-free
 validation; GazeboBridge for real training. All MDP math is the shared pure logic
@@ -11,7 +12,7 @@ in obs/coeff/reward, so the observation matches deployment exactly.
 
 Episode:
   reset()  -- sample a nominal, randomize start offset, reset the bridge.
-  step(a)  -- apply coeff(a)*nominal[k], advance dt, score error vs nominal[k+1].
+  step(a)  -- apply nominal[k] + residual(a), advance dt, score error vs nominal[k+1].
   ends     -- terminated on failure (corridor/heading/contact) or success
               (reached goal in tolerance); truncated on reaching the nominal end
               without success or hitting max_steps.
@@ -31,7 +32,7 @@ except ImportError as e:  # pragma: no cover - import guard
         "Install with: pip install gymnasium"
     ) from e
 
-from .coeff import apply_coefficients, coefficients_from_action
+from .coeff import apply_residual, clipped_action
 from .config import RLCorrectorConfig
 from .geometry import cumulative_arclength, project_arclength
 from .obs import build_observation, observation_dim, wrap_to_pi
@@ -76,6 +77,37 @@ def make_nominal_sampler(
 def default_nominal_sampler(cfg: RLCorrectorConfig) -> Callable:
     """Return a sampler(rng) -> Nominal drawing the default full-difficulty mix."""
     return make_nominal_sampler(cfg)
+
+
+def make_recorded_sampler(paths) -> Callable:
+    """Return a sampler(rng) -> Nominal that loads a uniformly-random recorded
+    (Tier-B) trajectory from `paths` (see nominal.load_recorded_dir) each
+    episode. Loads from disk every call rather than caching in memory -- a
+    trajectory library is expected to be far larger than fits comfortably in
+    RAM, and training throughput is bridge-bound, not I/O-bound."""
+    paths = list(paths)
+
+    def sample(rng: np.random.Generator):
+        path = paths[int(rng.integers(len(paths)))]
+        return nominal_mod.load_recorded(path)
+
+    return sample
+
+
+def make_blended_sampler(samplers, weights) -> Callable:
+    """Return a sampler(rng) -> Nominal that each episode picks one of
+    `samplers` with the given `weights` (need not sum to 1) and delegates to it.
+    Used to mix Tier-A synthetic primitives with Tier-B recorded trajectories in
+    one curriculum phase."""
+    samplers = list(samplers)
+    w = np.asarray(weights, dtype=float)
+    w = w / w.sum()
+
+    def sample(rng: np.random.Generator):
+        idx = int(rng.choice(len(samplers), p=w))
+        return samplers[idx](rng)
+
+    return sample
 
 
 class WheelCorrectorEnv(gym.Env):
@@ -124,7 +156,7 @@ class WheelCorrectorEnv(gym.Env):
         self._cum = None
         self.k = 0
         self._steps = 0
-        self.prev_coeff = np.ones(cfg.action_dim)
+        self.prev_action = np.zeros(cfg.action_dim)
         self._prev_err = None
         self._prev_proj = 0.0
 
@@ -136,7 +168,7 @@ class WheelCorrectorEnv(gym.Env):
         i = min(idx, self.nominal.costates.shape[0] - 1)
         return self.nominal.costates[i]
 
-    def _make_obs(self, planned_pose, st, cmd, prev_coeff, costates):
+    def _make_obs(self, planned_pose, st, cmd, prev_action, costates):
         return build_observation(
             self.cfg,
             planned_pose,
@@ -146,7 +178,7 @@ class WheelCorrectorEnv(gym.Env):
             cmd_right=float(cmd[1]),
             v_meas=st.v,
             omega_meas=st.omega,
-            prev_coeff=prev_coeff,
+            prev_action=prev_action,
             imu=st.imu if self.cfg.use_imu else None,
             wheel_speeds=st.wheel_speeds if self.cfg.use_wheel_speeds else None,
             costates=costates,
@@ -161,7 +193,7 @@ class WheelCorrectorEnv(gym.Env):
         self._cum = cumulative_arclength(self.nominal.poses[:, :2])
         self.k = 0
         self._steps = 0
-        self.prev_coeff = np.ones(self.cfg.action_dim)
+        self.prev_action = np.zeros(self.cfg.action_dim)
         self._prev_err = None
 
         ox = self._rng.uniform(-self.start_offset[0], self.start_offset[0])
@@ -176,7 +208,7 @@ class WheelCorrectorEnv(gym.Env):
         self._prev_proj, _ = project_arclength(start[:2], self.nominal.poses[:, :2], self._cum)
         obs, err = self._make_obs(
             self.nominal.poses[0], st, self.nominal.wheels[0],
-            prev_coeff=self.prev_coeff, costates=self._costate_at(0),
+            prev_action=self.prev_action, costates=self._costate_at(0),
         )
         self._prev_err = err
         return obs, {}
@@ -191,8 +223,8 @@ class WheelCorrectorEnv(gym.Env):
         # tolerance. min() also keeps the normal in-path steps unchanged.
         cmd_idx = min(k, n - 1)
         cmd_l, cmd_r = self.nominal.wheels[cmd_idx]
-        coeff = coefficients_from_action(action, cfg)
-        wheels = apply_coefficients(action, float(cmd_l), float(cmd_r), cfg)
+        action_c = clipped_action(action, cfg)
+        wheels = apply_residual(action, float(cmd_l), float(cmd_r), cfg)
 
         st = self.bridge.step(wheels, cfg.control_dt)
         self.k = k + 1
@@ -204,7 +236,7 @@ class WheelCorrectorEnv(gym.Env):
 
         obs, err = self._make_obs(
             planned_next, st, cmd_next,
-            prev_coeff=coeff, costates=self._costate_at(min(self.k, n)),
+            prev_action=action_c, costates=self._costate_at(min(self.k, n)),
         )
 
         proj, _ = project_arclength(st.pose[:2], self.nominal.poses[:, :2], self._cum)
@@ -212,7 +244,7 @@ class WheelCorrectorEnv(gym.Env):
         self._prev_proj = proj
         # Cap rewarded progress at the nominal's OWN per-step advance. The task is
         # to TRACK the nominal, not to race ahead of it: without the cap the agent
-        # farms the (dense) progress reward by over-throttling (coeff>1) or by
+        # farms the (dense) progress reward by over-throttling (positive residual) or by
         # drifting so its path-projection jumps forward on curves -- both trade
         # tracking accuracy for arc-length and walk it into the corridor wall (the
         # SAC_5 drift). Falling behind / going backward is still penalized via the
@@ -230,7 +262,7 @@ class WheelCorrectorEnv(gym.Env):
             succeeded = is_success(cfg, d, hd)
 
         failed = bool(is_failure(cfg, err) or st.contact)
-        reward = compute_reward(cfg, err, coeff, self.prev_coeff, progress, failed, succeeded)
+        reward = compute_reward(cfg, err, action_c, self.prev_action, progress, failed, succeeded)
 
         # Error rate this step (same quantity the obs feeds the policy, divided by
         # control_dt): a teleport/stale-twist spike at reset shows up here first.
@@ -241,7 +273,7 @@ class WheelCorrectorEnv(gym.Env):
                   f"e_along={err[0]:+.3f} e_cross={err[1]:+.3f} e_head={err[2]:+.3f} "
                   f"rate={err_rate:7.2f} r={reward:+.2f}", flush=True)
 
-        self.prev_coeff = coeff
+        self.prev_action = action_c
         self._prev_err = err
 
         # Steps spent past the nominal's end. We only declare "ran out of path"

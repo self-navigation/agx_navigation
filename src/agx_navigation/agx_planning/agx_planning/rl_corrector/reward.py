@@ -5,8 +5,8 @@ Reward (per step):
   - w_cross   * e_cross^2          cross-track tracking (dominant)
   - w_heading * e_heading^2        heading tracking
   + w_progress * progress_delta    along-track advance (anti-stall, capped by env)
-  - w_effort  * sum((c_i - 1)^2)   deviation from the identity feedforward
-  - w_smooth  * sum((c_i - c_prev_i)^2)   coefficient smoothness
+  - w_effort  * sum(a_i^2)         magnitude of the (clipped, zero-centered) action
+  - w_smooth  * sum((a_i - a_prev_i)^2)   action smoothness
   (- term_penalty on failure;  + success_bonus on success)
 
 `progress_delta` (arc-length advanced along the nominal toward the goal this
@@ -39,18 +39,18 @@ def is_success(cfg, dist_to_goal_xy: float, heading_err_to_goal: float) -> bool:
 def compute_reward(
     cfg,
     err,
-    coeff,
-    prev_coeff,
+    action,
+    prev_action,
     progress_delta: float,
     failed: bool = False,
     succeeded: bool = False,
 ) -> float:
-    """`coeff`/`prev_coeff` are the multiplicative coefficient vectors (1.0 ==
-    identity), NOT the raw [-1,1] actions."""
+    """`action`/`prev_action` are the CLIPPED [-1,1] action vectors (0 ==
+    identity) -- see coeff.clipped_action -- not the raw rad/s residual."""
     err = np.asarray(err, dtype=float)
-    coeff = np.asarray(coeff, dtype=float)
-    prev_coeff = (
-        np.ones_like(coeff) if prev_coeff is None else np.asarray(prev_coeff, dtype=float)
+    action = np.asarray(action, dtype=float)
+    prev_action = (
+        np.zeros_like(action) if prev_action is None else np.asarray(prev_action, dtype=float)
     )
 
     e_along = err[0]
@@ -69,8 +69,8 @@ def compute_reward(
     r -= cfg.w_cross * e_cross ** 2
     r -= cfg.w_heading * e_heading ** 2
     r += cfg.w_progress * progress_delta
-    r -= cfg.w_effort * float(np.sum((coeff - 1.0) ** 2))
-    r -= cfg.w_smooth * float(np.sum((coeff - prev_coeff) ** 2))
+    r -= cfg.w_effort * float(np.sum(action ** 2))
+    r -= cfg.w_smooth * float(np.sum((action - prev_action) ** 2))
     if failed:
         r -= cfg.term_penalty
     if succeeded:

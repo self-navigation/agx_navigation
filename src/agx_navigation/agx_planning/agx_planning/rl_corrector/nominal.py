@@ -7,11 +7,15 @@ nominal never reacts to deviation. Each Nominal carries, per tick:
   wheels[i] = (w_left, w_right) nominal command APPLIED during step i
 which mirrors the planner's "wheel command at tick i is applied at pose i".
 
-Tier-B (recorded planner runs, which also carry costates) will load into the
-same Nominal container later; load_recorded() is a stub for now.
+Tier-B (recorded PMP-planner rollouts, which also carry costates) load into the
+same Nominal container via load_recorded() / load_recorded_dir() below. They are
+produced offline by generate_trajectories.py from a real PMPShootingSolver
+rollout (poses, wheel_cmds, costates, dt_sample -- see pmp_planner/rollout.py's
+RolloutChunk, whose fields map 1:1 onto Nominal's) and saved as .npz files.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -86,10 +90,33 @@ def generate_primitive(
     return Nominal(poses=poses, wheels=wheels, dt=dt, label=label)
 
 
-def load_recorded(path: str) -> Nominal:  # pragma: no cover - Tier-B stub
-    """Load a once-recorded planner rollout (poses, wheels, costates) from disk.
+def load_recorded(path: str) -> Nominal:
+    """Load a once-recorded PMP rollout (poses, wheels, costates, dt) from an
+    .npz file written by generate_trajectories.py (or any producer matching
+    RolloutChunk's field names: poses, wheel_cmds, costates, dt_sample)."""
+    with np.load(path) as f:
+        poses = np.asarray(f["poses"], dtype=float)
+        wheels = np.asarray(f["wheel_cmds"], dtype=float)
+        costates = np.asarray(f["costates"], dtype=float) if "costates" in f else None
+        dt = float(f["dt_sample"])
+    # RolloutChunk's poses/wheel_cmds are PARALLEL arrays (both length N, one pose
+    # per commanded tick) -- unlike Tier-A's generate_primitive(), which appends
+    # one extra integrated final pose. Nominal.poses is contractually (N+1, 3):
+    # env.py's grace-window indexing (poses[min(k, n)]) relies on that extra row
+    # existing. rollout_generator only yields a chunk on success, terminating
+    # within goal tolerance, so duplicating the last recorded pose as the "goal"
+    # row is accurate to within that tolerance, not a placeholder.
+    poses = np.concatenate([poses, poses[-1:]], axis=0)
+    label = f"recorded ({Path(path).stem})"
+    return Nominal(poses=poses, wheels=wheels, dt=dt, costates=costates, label=label)
 
-    Implemented in the Tier-B phase; recorded chunks come from the offline
-    planner's PlanToGoal feedback (pose_x/y/theta, wheel_left/right, lam_*).
-    """
-    raise NotImplementedError("Tier-B recorded-nominal loading not implemented yet")
+
+def load_recorded_dir(directory: str) -> list:
+    """Return the sorted list of .npz trajectory paths in `directory`, for a
+    sampler to draw from at random each episode. Raises if the directory has no
+    trajectories -- an empty recorded library silently degrading to Tier-A-only
+    training would be easy to miss."""
+    paths = sorted(str(p) for p in Path(directory).glob("*.npz"))
+    if not paths:
+        raise FileNotFoundError(f"no .npz trajectories found under {directory}")
+    return paths
