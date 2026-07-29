@@ -39,6 +39,17 @@ class RLCorrectorConfig:
     wheel_residual_max: float = 4.0
     # Per-wheel command clamp [rad/s]; matches the joint <limit velocity>.
     wheel_cmd_max: float = 20.0
+    # Max |a_t - a_{t-1}| per control_dt in the clipped [-1,1] action, applied
+    # in coeff.clipped_action. 0 disables. A policy trained on KinematicBridge
+    # (no actuator dynamics -- see wheel_residual_max's comment) can learn to
+    # flip the action between -1 and +1 every single step at zero cost there;
+    # real Gazebo inertia turns that chatter into actual angular-velocity
+    # spikes (~4 rad/s measured, 2026-07-29, vs <0.6 rad/s anywhere in the
+    # recorded trajectories) that spin the chassis into a heading breach. This
+    # is a hard structural bound on top of (not instead of) w_smooth, which
+    # only discourages chatter through the reward and wasn't enough alone.
+    # 0.3 caps a full -1->+1 swing at ~7 steps (0.7s).
+    action_rate_limit: float = 0.3
 
     # --- Control / episode ---------------------------------------------
     control_dt: float = 0.1          # [s] one env step (10 Hz)
@@ -95,7 +106,11 @@ class RLCorrectorConfig:
     # dominate and the policy drifted off-centre to chase arc-length.
     w_progress: float = 10.0         # along-track progress (anti-stall, capped)
     w_effort: float = 0.1            # deviation from identity coefficient
-    w_smooth: float = 0.1            # coefficient change between steps
+    # Raised 0.1 -> 0.5 (2026-07-29): the reward-side discouragement of action
+    # chatter, on top of the hard action_rate_limit clamp above -- neither
+    # alone was trusted to prevent the KinematicBridge->Gazebo instability
+    # (see action_rate_limit's comment), so both apply.
+    w_smooth: float = 0.5            # coefficient change between steps
     term_penalty: float = 15.0       # failure terminal penalty
     success_bonus: float = 50.0      # success terminal bonus
 
@@ -122,7 +137,7 @@ class RLCorrectorConfig:
     # --- Kinematics (mirror PlannerConfig; keep in sync) ---------------
     wheel_radius: float = 0.08
     track: float = 0.416503
-    slip_chi: float = 1.2987
+    slip_chi: float = 1.373  # re-identified 2026-07-29, see PlannerConfig's note
 
     # --- Deployment -----------------------------------------------------
     # Path to the saved SB3 policy (.zip). Empty -> _correct() stays identity.

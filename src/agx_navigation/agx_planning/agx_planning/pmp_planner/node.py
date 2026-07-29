@@ -287,6 +287,24 @@ class PlannerNode(Node):
         self._field_lock = threading.Lock()
         self._field_event = threading.Event()
 
+        # State-update subscriptions (_on_odom/_on_goal/_on_field) MUST NOT
+        # share a callback group with _control_loop's timer: the default
+        # group is mutually exclusive, and a single slow/degenerate BVP
+        # solve (e.g. from a hard initial condition) then blocks pose
+        # updates for as long as the solve runs -- observed 2026-07-29 in
+        # online mode: self._xi (and the logged costates) froze bit-for-bit
+        # identical across ~25 solves spanning ~4 minutes of wall time while
+        # TF (queried externally) kept updating live, because _on_odom's TF
+        # lookup never got to run. The result is a control loop that
+        # forever re-solves from the same stale pose and never sees the
+        # robot has moved -- it looks like a planner defect (endless
+        # spin-in-place) but is actually callback starvation.
+        # MultiThreadedExecutor(num_threads=2) in __init__.py only helps if
+        # the blocking callbacks are in DIFFERENT groups: with 2 threads and
+        # this group, a stuck solve on one thread no longer prevents pose
+        # updates from running on the other.
+        self._io_cb_group = ReentrantCallbackGroup()
+
         self._diag_logger: Optional[TurnDiagnosticLogger] = None
         if self.node_cfg.diag_log_path:
             try:
@@ -306,7 +324,8 @@ class PlannerNode(Node):
             depth=1,
         )
         self.create_subscription(
-            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos
+            Float32MultiArray, "/vector_field/planner_data", self._on_field, qos,
+            callback_group=self._io_cb_group,
         )
         self._traj_pub = self.create_publisher(Path, "/pmp_planner/trajectory", 10)
 
@@ -337,8 +356,10 @@ class PlannerNode(Node):
         # across the boundary lands Newton in the wrong basin.
         self._was_in_goal_zone: bool = False
 
-        self.create_subscription(Odometry, "/odom", self._on_odom, qos)
-        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos)
+        self.create_subscription(Odometry, "/odom", self._on_odom, qos,
+                                 callback_group=self._io_cb_group)
+        self.create_subscription(PoseStamped, "/goal_pose", self._on_goal, qos,
+                                 callback_group=self._io_cb_group)
 
         self._cmd_pub = self.create_publisher(
             Float64MultiArray, self.node_cfg.wheel_cmd_topic, 10
@@ -578,7 +599,28 @@ class PlannerNode(Node):
         twist = self._chassis_twist
         wl0, wr0 = self.cfg.body_to_wheels(float(twist[0]), float(twist[1]))
         x0 = np.array([xi[0], xi[1], xi[2], wl0, wr0])
+        _solve_t0 = time.monotonic()
         result = self._solver.solve(x0, self._goal)
+        _solve_dt = time.monotonic() - _solve_t0
+        # Diagnostic (2026-07-29): the online control_rate timer assumes each
+        # solve is fast (<30ms per the module docstring); if a hard initial
+        # condition (e.g. the goal is roughly opposite the current heading,
+        # so the BVP must plan a large in-place reorientation) makes
+        # solve_bvp slow or repeatedly mesh-refine, this loop silently
+        # degrades from "10Hz control" to "whatever the solve takes", and
+        # the wheel controller just keeps replaying the last command for
+        # the whole gap -- indistinguishable from a stuck planner without
+        # this timing. Logged unconditionally (not throttled): a slow solve
+        # is by definition rare enough not to spam.
+        control_period = 1.0 / self.cfg.control_rate
+        if _solve_dt > control_period:
+            self.get_logger().warn(
+                f"BVP solve took {_solve_dt:.3f}s, {_solve_dt / control_period:.1f}x "
+                f"the {control_period:.3f}s control period -- control loop is "
+                f"running slower than {self.cfg.control_rate} Hz."
+            )
+        else:
+            self.get_logger().debug(f"BVP solve took {_solve_dt:.3f}s.")
         if result is None:
             self.get_logger().warn(
                 f"BVP solve failed: {self._solver._last_error} -- zeroing command.",

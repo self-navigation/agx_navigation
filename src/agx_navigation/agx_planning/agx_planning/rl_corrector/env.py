@@ -157,6 +157,10 @@ class WheelCorrectorEnv(gym.Env):
         self.k = 0
         self._steps = 0
         self.prev_action = np.zeros(cfg.action_dim)
+        # RAW clipped action (bounded to [-1,1] only, NOT rate-limited) from the
+        # previous step, used solely for the reward's effort/smooth terms -- see
+        # step()'s comment on why this must be separate from self.prev_action.
+        self.prev_action_raw = np.zeros(cfg.action_dim)
         self._prev_err = None
         self._prev_proj = 0.0
 
@@ -194,6 +198,7 @@ class WheelCorrectorEnv(gym.Env):
         self.k = 0
         self._steps = 0
         self.prev_action = np.zeros(self.cfg.action_dim)
+        self.prev_action_raw = np.zeros(self.cfg.action_dim)
         self._prev_err = None
 
         ox = self._rng.uniform(-self.start_offset[0], self.start_offset[0])
@@ -223,8 +228,21 @@ class WheelCorrectorEnv(gym.Env):
         # tolerance. min() also keeps the normal in-path steps unchanged.
         cmd_idx = min(k, n - 1)
         cmd_l, cmd_r = self.nominal.wheels[cmd_idx]
-        action_c = clipped_action(action, cfg)
-        wheels = apply_residual(action, float(cmd_l), float(cmd_r), cfg)
+        # RAW: clipped to [-1,1] only, no rate limit -- this is what the reward
+        # scores, so w_effort/w_smooth see the policy's true intent even though
+        # the physical command below is smoothed. Scoring the SMOOTHED value
+        # here would be a no-op: two rate-limited values can only ever differ by
+        # <= action_rate_limit, so w_smooth would never see the raw oscillation
+        # it exists to suppress (found 2026-07-29: a policy trained against the
+        # smoothed value learned to swing its raw output between -1 and +1 at
+        # zero reward cost, since the reward never observed the swing).
+        action_raw = clipped_action(action, cfg)
+        # SMOOTHED: rate-limited toward the actual previous wheel command -- this
+        # is what reaches the robot and what the observation's prev_action
+        # reflects (matches deployment, where prev_action is real prior state).
+        action_c = clipped_action(action, cfg, prev_action=self.prev_action)
+        wheels = apply_residual(action, float(cmd_l), float(cmd_r), cfg,
+                                prev_action=self.prev_action)
 
         st = self.bridge.step(wheels, cfg.control_dt)
         self.k = k + 1
@@ -262,7 +280,8 @@ class WheelCorrectorEnv(gym.Env):
             succeeded = is_success(cfg, d, hd)
 
         failed = bool(is_failure(cfg, err) or st.contact)
-        reward = compute_reward(cfg, err, action_c, self.prev_action, progress, failed, succeeded)
+        reward = compute_reward(cfg, err, action_raw, self.prev_action_raw, progress,
+                                failed, succeeded)
 
         # Error rate this step (same quantity the obs feeds the policy, divided by
         # control_dt): a teleport/stale-twist spike at reset shows up here first.
@@ -274,6 +293,7 @@ class WheelCorrectorEnv(gym.Env):
                   f"rate={err_rate:7.2f} r={reward:+.2f}", flush=True)
 
         self.prev_action = action_c
+        self.prev_action_raw = action_raw
         self._prev_err = err
 
         # Steps spent past the nominal's end. We only declare "ran out of path"

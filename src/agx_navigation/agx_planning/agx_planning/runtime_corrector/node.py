@@ -412,11 +412,12 @@ class WheelCorrectorNode(Node):
             action = self._policy.predict(obs)
             if not np.all(np.isfinite(action)):
                 raise ValueError("policy returned a non-finite action")
-            wheels = apply_residual(action, left, right, cfg)
+            wheels = apply_residual(action, left, right, cfg,
+                                    prev_action=self._prev_action)
             # Commit obs history only on success, so a failed tick can't poison
             # the next step's error rate / smoothness features.
             self._prev_err = err
-            self._prev_action = clipped_action(action, cfg)
+            self._prev_action = clipped_action(action, cfg, prev_action=self._prev_action)
             return wheels
         except Exception as exc:  # noqa: BLE001 - fail safe to identity, never crash
             self.get_logger().warn(
