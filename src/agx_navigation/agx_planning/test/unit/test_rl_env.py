@@ -17,7 +17,7 @@ def _straight_sampler(cfg, v=0.3, duration=3.0):
 
 
 def _make_env(cfg=None, slip=None, start_offset=(0.0, 0.0, 0.0), **kw):
-    cfg = cfg or RLCorrectorConfig(use_costates=False)
+    cfg = cfg or RLCorrectorConfig(action_dim=4, use_costates=False)
     bridge = KinematicBridge(cfg, slip=slip)
     return WheelCorrectorEnv(
         cfg, bridge, nominal_sampler=_straight_sampler(cfg, **kw),
@@ -101,7 +101,8 @@ def test_goal_grace_extends_episode():
     episode must truncate at exactly n + goal_grace_steps."""
     for grace in (0, 4):
         cfg = RLCorrectorConfig(
-            use_costates=False, goal_grace_steps=grace, goal_tolerance_xy=-1.0,
+            action_dim=4, use_costates=False, goal_grace_steps=grace,
+            goal_tolerance_xy=-1.0,
         )
         env = _make_env(cfg)
         env.reset(seed=0)

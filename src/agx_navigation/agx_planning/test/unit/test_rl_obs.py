@@ -58,20 +58,20 @@ def test_tracking_error_heading_wraps():
 
 
 def test_observation_dim_toggles():
-    cfg = RLCorrectorConfig(action_dim=4, use_prev_coeff=True, use_imu=True,
+    cfg = RLCorrectorConfig(action_dim=4, use_prev_action=True, use_imu=True,
                             use_wheel_speeds=True, use_costates=True)
     assert observation_dim(cfg) == 10 + 4 + 3 + 4 + 5
-    cfg2 = RLCorrectorConfig(action_dim=2, use_prev_coeff=True, use_imu=False,
+    cfg2 = RLCorrectorConfig(action_dim=2, use_prev_action=True, use_imu=False,
                              use_wheel_speeds=False, use_costates=False)
     assert observation_dim(cfg2) == 10 + 2
 
 
 def test_build_observation_dim_matches():
-    cfg = _raw_cfg(use_costates=True, use_wheel_speeds=True)
+    cfg = _raw_cfg(action_dim=4, use_costates=True, use_wheel_speeds=True)
     obs, err = build_observation(
         cfg, (0, 0, 0), (0, 0, 0), prev_err=None,
         cmd_left=1.0, cmd_right=1.0, v_meas=0.0, omega_meas=0.0,
-        prev_coeff=np.ones(4), wheel_speeds=np.zeros(4), costates=np.zeros(5),
+        prev_action=np.zeros(4), wheel_speeds=np.zeros(4), costates=np.zeros(5),
     )
     assert obs.shape == (observation_dim(cfg),)
     assert obs.dtype == np.float32
@@ -97,7 +97,7 @@ def test_build_observation_rates_zero_on_first_step():
 
 
 def test_build_observation_rates_from_prev_err():
-    cfg = _raw_cfg(use_costates=False, use_prev_coeff=False, control_dt=0.1)
+    cfg = _raw_cfg(use_costates=False, use_prev_action=False, control_dt=0.1)
     obs, err = build_observation(
         cfg, (0, 0, 0), (0.3, 0.0, 0.0), prev_err=np.array([0.1, 0.0, 0.0]),
         cmd_left=0.0, cmd_right=0.0, v_meas=0.0, omega_meas=0.0,
@@ -106,22 +106,22 @@ def test_build_observation_rates_from_prev_err():
     assert obs[3] == pytest.approx(2.0)
 
 
-def test_prev_coeff_centered_at_identity():
-    cfg = _raw_cfg(action_dim=4, use_prev_coeff=True, use_imu=False,
+def test_prev_action_zero_centered():
+    cfg = _raw_cfg(action_dim=4, use_prev_action=True, use_imu=False,
                    use_costates=False)
     obs, _ = build_observation(
         cfg, (0, 0, 0), (0, 0, 0), prev_err=None,
         cmd_left=0.0, cmd_right=0.0, v_meas=0.0, omega_meas=0.0,
-        prev_coeff=np.array([1.5, 0.5, 1.0, 1.0]),
+        prev_action=np.array([0.5, -0.5, 0.0, 0.0]),
     )
-    # last 4 entries are prev_coeff - 1
+    # last 4 entries are prev_action, unchanged (already zero-centered)
     assert obs[-4:] == pytest.approx([0.5, -0.5, 0.0, 0.0])
 
 
 def test_imu_in_observation():
-    """IMU (gyro_z, ax, ay) appears right after prev_coeff, normalized by its
+    """IMU (gyro_z, ax, ay) appears right after prev_action, normalized by its
     scales; absent -> zeros (the fail-safe convention)."""
-    cfg = _raw_cfg(action_dim=2, use_prev_coeff=False, use_imu=True,
+    cfg = _raw_cfg(action_dim=2, use_prev_action=False, use_imu=True,
                    use_costates=False)
     obs, _ = build_observation(
         cfg, (0, 0, 0), (0, 0, 0), prev_err=None,

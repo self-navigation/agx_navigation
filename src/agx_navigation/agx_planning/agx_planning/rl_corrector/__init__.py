@@ -1,6 +1,6 @@
 """Reinforcement-learning runtime corrector.
 
-A residual policy that scales the per-wheel velocity commands so the robot
+A residual policy that adds a per-wheel velocity residual (rad/s) so the robot
 holds the PMP planner's frozen trajectory under slip. The pure modules (config,
 coeff, obs, reward, nominal, geometry, bridge, kinematic_bridge, terrain)
 import neither ROS nor torch and are shared verbatim by training and
