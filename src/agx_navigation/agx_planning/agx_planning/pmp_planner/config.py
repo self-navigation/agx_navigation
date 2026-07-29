@@ -53,9 +53,15 @@ class PlannerConfig:
     #    publication-side gain (applying both would correct twice).
     #    1.2987 = 1 / 0.77, the value identified for Scout Mini in sim
     #    (mu2 = 0.7 lateral friction). Re-identify per surface.
+    # Re-identified 2026-07-29 (slip_ident.py, wheels mode, mean over 6 arcs
+    # r=0.23-0.75m, spread 0.0255): 1.373, up from 1.2987 (~6%, not the ~30%
+    # a since-retracted mis-measurement suggested -- see
+    # rl-corrector-turn-induced-corridor-breach memory). Real, but does not
+    # explain the multi-meter identity-baseline drift on Tier-B trajectories;
+    # that cause is still open.
     wheel_radius: float = 0.08
     track: float = 0.416503
-    slip_chi: float = 1.2987
+    slip_chi: float = 1.373
 
     # --- Body-space behaviour bounds ---
     # v_max, omega_max: soft bounds on the DERIVED body velocities,
