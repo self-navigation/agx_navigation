@@ -42,5 +42,10 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "mcp__attention__notify_and_wait"
+    ]
   }
 }

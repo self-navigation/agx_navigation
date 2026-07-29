@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "attention": {
+      "command": "tools/attention_mcp/run.sh",
+      "args": []
+    }
+  }
+}
