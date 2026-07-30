@@ -164,6 +164,30 @@ def _parse_args() -> argparse.Namespace:
                          "rl-corrector-turn-induced-corridor-breach memory. Reward "
                          "stays dense regardless (w_ontrack/w_cross/w_progress are "
                          "per-step), so widening only changes the termination bound.")
+    ap.add_argument("--corridor-terminates", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="whether a corridor/heading breach ENDS the episode "
+                         "(default: yes). --no-corridor-terminates keeps the episode "
+                         "running so the policy actually experiences -- and can learn "
+                         "to recover from -- error beyond the corridor. Without it the "
+                         "whole training distribution is a 0.5 m tube around a path the "
+                         "robot started on, and everything outside is extrapolation "
+                         "(measured 2026-07-30: 4-6 m divergence on a straight plan "
+                         "open-loop identity held to 0.62 m).")
+    ap.add_argument("--start-offset", type=float, default=None,
+                    help="half-width of the uniform random start offset in x, y [m] "
+                         "and heading [rad] (default 0.08). Larger means episodes BEGIN "
+                         "with an error to correct, which is how recovery gets into the "
+                         "training distribution -- but it must stay recoverable, since "
+                         "success needs goal_tolerance_xy (0.10 m) at the end.")
+    ap.add_argument("--ground-friction", action="store_true",
+                    help="randomize GLOBAL ground friction per episode (gazebo only): "
+                         "one large patch under the whole trajectory with a randomly "
+                         "chosen profile, local patches on top. This -- not a "
+                         "randomized slip_chi -- is the lever that changes the PLANT: "
+                         "slip_chi only moves the assumed model, and with recorded "
+                         "nominals the feed-forward commands were baked at a fixed chi "
+                         "so perturbing it moves no command at all.")
     ap.add_argument("--w-effort", type=float, default=None,
                     help="override RLCorrectorConfig.w_effort (default 0.1): penalty "
                          "on the clipped action's magnitude, i.e. non-zero additive "
@@ -234,6 +258,8 @@ def build_env(args) -> WheelCorrectorEnv:
         cfg_overrides["w_effort"] = args.w_effort
     if args.w_smooth is not None:
         cfg_overrides["w_smooth"] = args.w_smooth
+    if args.corridor_terminates is not None:
+        cfg_overrides["corridor_terminates"] = args.corridor_terminates
     cfg = RLCorrectorConfig(action_dim=args.action_dim, use_imu=args.imu,
                             use_costates=args.costates, **cfg_overrides)
     if args.bridge == "kinematic":
@@ -264,8 +290,12 @@ def build_env(args) -> WheelCorrectorEnv:
             )
     else:
         sampler = primitive_sampler
+    env_kwargs = {}
+    if args.start_offset is not None:
+        o = float(args.start_offset)
+        env_kwargs["start_offset"] = (o, o, o)
     env = WheelCorrectorEnv(cfg, bridge, nominal_sampler=sampler, seed=args.seed,
-                            debug_steps=args.debug_steps)
+                            debug_steps=args.debug_steps, **env_kwargs)
 
     if args.terrain:
         if args.bridge == "kinematic":
@@ -276,10 +306,15 @@ def build_env(args) -> WheelCorrectorEnv:
             # Patches must land on the CURRENT episode's (randomized) nominal, so the
             # sampler reads env.nominal -- which reset() populates before it calls the
             # terrain sampler. Bind lazily here rather than to a fixed path.
-            from .terrain import along_path_terrain_sampler
+            from .terrain import (along_path_terrain_sampler,
+                                  ground_friction_sampler)
 
             def terrain_sampler(rng):
-                return along_path_terrain_sampler(env.nominal.poses)(rng)
+                local = along_path_terrain_sampler(env.nominal.poses)
+                if args.ground_friction:
+                    # Global ground under the whole path, local patches on top.
+                    return ground_friction_sampler(env.nominal.poses, inner=local)(rng)
+                return local(rng)
 
             env.terrain_sampler = terrain_sampler
 

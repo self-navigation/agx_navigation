@@ -16,4 +16,8 @@ skid_steer_vfield.json
 acados/
 run_data/
 figures/
+# Same rule for the corrector-comparison measurements: `just fetch-compare` and
+# `just fetch-sweep` pull these off the server and they regenerate from a run.
+compare_data/
+sweep_data/
 tools/attention_mcp/.venv/

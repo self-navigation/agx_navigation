@@ -65,3 +65,54 @@ def along_path_terrain_sampler(
         return patches
 
     return sample
+
+
+def ground_friction_sampler(
+    nominal_poses,
+    inner=None,
+    profiles: List[str] = None,
+    margin: float = 4.0,
+) -> Callable:
+    """Wrap a patch sampler with ONE large patch under the whole trajectory, so
+    the *global* ground friction varies per episode.
+
+    WHY THIS AND NOT A RANDOMIZED slip_chi
+    --------------------------------------
+    `slip_chi` is a constant of the ASSUMED model (`track_effective` -> `c_w`),
+    not of the physics: under GazeboBridge, changing it alters what the nominal
+    and the observation believe about yaw loss but nothing about what the robot
+    actually does. Worse, with recorded Tier-B nominals the feed-forward wheel
+    commands were baked at a fixed chi, so perturbing chi at training time moves
+    no command at all. Randomizing the ground the robot drives on is the lever
+    that actually changes the plant, and therefore the only one that buys
+    sim-to-real robustness here.
+
+    The patch spans the trajectory's bounding box plus `margin`, so the robot
+    cannot drive off it -- including the excursions we now deliberately train
+    recovery from (see cfg.corridor_terminates). `inner` is the per-episode local
+    patch sampler whose patches are laid ON TOP, keeping local slip variation.
+    """
+    profiles = profiles or ["slippery", "icy", "directional_x", "directional_y"]
+    xy = np.asarray(nominal_poses)[:, :2]
+    lo = xy.min(axis=0) - margin
+    hi = xy.max(axis=0) + margin
+
+    def sample(rng: np.random.Generator) -> List[dict]:
+        base = {
+            "x": float(0.5 * (lo[0] + hi[0])),
+            "y": float(0.5 * (lo[1] + hi[1])),
+            # Below the local patches, which sit at z=0.001, so where they
+            # overlap the local (more extreme) profile is what the wheels touch.
+            "z": 0.0005,
+            "width": float(hi[0] - lo[0]),
+            "length": float(hi[1] - lo[1]),
+            "yaw": 0.0,
+            "profile": str(rng.choice(profiles)),
+            "name": "rl_ground",
+        }
+        patches = [base]
+        if inner is not None:
+            patches.extend(inner(rng))
+        return patches
+
+    return sample

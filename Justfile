@@ -179,3 +179,140 @@ fetch-policies dest='policies':
     mkdir -p {{dest}}
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
         {{host}}:'/home/programmer/rl_corrector_*' {{dest}}/
+
+# ------------------------------------------------- corrector comparison
+
+# Rank recorded PMP trajectories by SHAPE, so a comparison can be run on
+# genuinely different paths rather than the same archetype three times.
+#
+# This is not busywork. Every goal used in the 2026-07-25 TVLQR validation came
+# out near-straight, 6-9 m, heading the same way (two were the same goal), so
+# "TVLQR beats identity" had only ever been shown for one kind of path. Pick a
+# STRAIGHT, an S-CURVE and a CORNER from this listing before running `compare`.
+classify-plans pattern='/home/programmer/pmp_trajectories_v2/*.npz':
+    {{_ssh}} 'cd {{remote}} && python3 tools/classify_plans.py "{{pattern}}"'
+
+# Replay the SAME frozen plan under identity / TVLQR / RL and record the true
+# path each drove. Needs `just remote-sim` up (GazeboBridge talks to it).
+#
+# Each corrector uses its OWN authority limits, deliberately: routing TVLQR
+# through the RL residual channel would cap it with a limit it does not have
+# when deployed, making the result a statement about the channel and not about
+# the two control laws.
+#
+# `trajs` is a space-separated list of .npz paths -- quote it.
+compare trajs policy='/home/programmer/rl_corrector_p0.zip' correctors='identity tvlqr rl' terrain='true': sync
+    {{_ssh}} 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
+        && source install/setup.bash \
+        && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
+        python3 -m agx_planning.rl_corrector.compare_correctors \
+        --trajectories {{trajs}} --correctors {{correctors}} \
+        --policy {{policy}} --bridge gazebo \
+        {{ if terrain == "true" { "--terrain" } else { "" } }} \
+        --out-dir /tmp/compare 2>&1 | tee /tmp/compare.log'
+    @echo "done -- pull it back with:  just fetch-compare"
+
+# Pull the comparison CSVs back into gitignored compare_data/.
+fetch-compare dest='compare_data':
+    mkdir -p {{dest}}
+    rsync -az --delete --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/tmp/compare/ {{dest}}/
+    @ls -1 {{dest}}
+
+# Draw each corrector's true path on top of the others, one figure per
+# trajectory. Offline/matplotlib, same rule as plot_run.py -- venv, not ROS.
+plot-compare src='compare_data' out='figures':
+    .venv/bin/python tools/plot_compare.py {{src}} --out {{out}} \
+        || python3 tools/plot_compare.py {{src}} --out {{out}}
+    @ls -1 {{out}}
+
+# ------------------------------------------------- dated training runs
+
+# Start a long training run in a DATE-LABELLED tree, so runs stay tellable
+# apart after the fact: policies, checkpoints and TensorBoard logs all carry
+# the same tag. `label` defaults to today's date; pass one to disambiguate a
+# second run on the same day (e.g. `just train-long 20260730b`).
+#
+# Defaults encode the 2026-07-30 comparison's conclusions:
+#   --no-corridor-terminates  episodes survive a breach, so the policy actually
+#                             experiences (and can learn to recover from) error
+#                             beyond the corridor. Training inside a 0.5 m tube
+#                             is why the learned corrector had no recovery at all.
+#   --start-offset 0.25       episodes BEGIN off-path, so recovery is on-policy
+#                             rather than a state only reachable by failing.
+#   --ground-friction         randomize the PLANT per episode (see terrain.py on
+#                             why this and not a randomized slip_chi).
+#   --recorded-dir            train on the real PMP library, not analytic
+#                             primitives: the analytic curriculum exists to make
+#                             the task survivable, which the corridor fix now
+#                             does directly, and its 2-5 s episodes are nothing
+#                             like the 200-step plans this is deployed on.
+train-long timesteps='1500000' label=`date +%Y%m%d` recorded='/home/programmer/pmp_trajectories_v2': sync
+    {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
+        tmux kill-window -t {{session}}:train 2>/dev/null; \
+        mkdir -p ~/runs_{{label}}; \
+        tmux new-window -d -t {{session}} -n train \
+        "cd {{remote}} && make rl-train \
+            TIMESTEPS={{timesteps}} \
+            POLICY_OUT=$HOME/runs_{{label}}/rl_corrector \
+            TB=$HOME/runs_{{label}}/tb \
+            TRAIN_ARGS=\"--recorded-dir {{recorded}} --no-corridor-terminates \
+                        --start-offset 0.25 --ground-friction\" \
+            2>&1 | tee /tmp/train_{{label}}.log"'
+    @echo "training '{{label}}' started -- log: /tmp/train_{{label}}.log"
+    @echo "watch it with:  just watch-train {{label}}   (opens on the server desktop)"
+
+# Open a terminal ON THE SERVER'S DESKTOP (reach it with Moonlight) showing the
+# live training output. Detached from this ssh, so closing the connection leaves
+# it up.
+#
+# Attaches to the tmux window READ-ONLY (-r) rather than tailing the log file:
+# the tqdm progress bar redraws with carriage returns, which `tail -f` renders
+# as a wall of repeated lines instead of a moving bar. The tmux window is the
+# real terminal, so it shows the bar as intended. -r means a stray keystroke on
+# the desktop cannot kill the run.
+watch-train label=`date +%Y%m%d`:
+    -{{_ssh}} 'DISPLAY=:0 setsid nohup xfce4-terminal \
+        --title="training {{label}}" \
+        --command="tmux attach -t {{session}}:train -r" \
+        </dev/null >/dev/null 2>&1 &'
+    @echo "terminal opened on the server desktop for run '{{label}}'"
+
+# Replay the shape-comparison over the checkpoints of a run, so the RL leg can
+# be seen improving (or not) rather than judged on one arbitrary snapshot.
+# Baselines are re-measured per checkpoint dir but are checkpoint-independent;
+# plot_checkpoints.py keeps the first of each.
+#
+# `stride` subsamples: training checkpoints stay FREQUENT (they are the crash
+# recovery for a multi-hour run, and the VM has been stopped mid-run before), so
+# a 1.5M-step run leaves ~300 of them -- far more than a sweep wants to replay at
+# ~9 Gazebo episodes each. stride=10 replays every 10th.
+compare-checkpoints trajs label=`date +%Y%m%d` correctors='identity tvlqr rl' stride='10':
+    {{_ssh}} 'set -e; cd {{remote}}; \
+        source /opt/ros/jazzy/setup.bash; source install/setup.bash; \
+        i=0; \
+        for ck in $(ls -1v ~/runs_{{label}}/checkpoints/*.zip 2>/dev/null); do \
+            i=$((i+1)); \
+            [ $(( (i-1) % {{stride}} )) -ne 0 ] && continue; \
+            step=$(echo "$ck" | grep -oE "[0-9]+_steps" | grep -oE "^[0-9]+"); \
+            [ -z "$step" ] && continue; \
+            outdir=/tmp/sweep_{{label}}/step_$(printf "%09d" "$step"); \
+            echo "=== $ck -> $outdir"; \
+            PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
+            python3 -m agx_planning.rl_corrector.compare_correctors \
+                --trajectories {{trajs}} --correctors {{correctors}} \
+                --policy "$ck" --bridge gazebo --terrain \
+                --out-dir "$outdir" || echo "  (failed, skipping)"; \
+        done'
+    @echo "sweep done -- pull it with:  just fetch-sweep {{label}}"
+
+fetch-sweep label=`date +%Y%m%d` dest='sweep_data':
+    mkdir -p {{dest}}
+    rsync -az --delete --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/tmp/sweep_{{label}}/ {{dest}}/
+    @ls -1 {{dest}} | head
+
+# Draw RL error vs training step per trajectory, with identity/TVLQR baselines.
+plot-checkpoints src='sweep_data' out='figures' metric='max_cross':
+    .venv/bin/python tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}} \
+        || python3 tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}}

@@ -105,7 +105,17 @@ class RLCorrectorConfig:
     # accuracy and forward pace matter equally -- w=25 (SAC_5) made progress
     # dominate and the policy drifted off-centre to chase arc-length.
     w_progress: float = 10.0         # along-track progress (anti-stall, capped)
-    w_effort: float = 0.1            # deviation from identity coefficient
+    # Raised 0.1 -> 0.3 (2026-07-30). w_effort is the strength of the IDENTITY
+    # PRIOR: the residual should cost something, so the policy only spends
+    # authority where the feed-forward is actually wrong. At 0.1 against
+    # w_cross=10 / w_progress=10 it was nearly free to wander anywhere inside
+    # the corridor, and that is what the deployment comparison showed -- on a
+    # straight PMP plan the learned residual drifted monotonically to one side
+    # (a steady bias, not chatter) and turned a 0.62 m open-loop run into 4.6 m.
+    # 0.3 still loses to the cross-track term whenever the error is real
+    # (at |e_cross| = 0.5 m, 10*0.25 = 2.5 dwarfs a full-authority 0.6), so
+    # genuine corrections remain worth making.
+    w_effort: float = 0.3            # deviation from identity coefficient
     # Raised 0.1 -> 0.5 (2026-07-29): the reward-side discouragement of action
     # chatter, on top of the hard action_rate_limit clamp above -- neither
     # alone was trusted to prevent the KinematicBridge->Gazebo instability
@@ -117,6 +127,24 @@ class RLCorrectorConfig:
     # --- Termination (failure) bounds ----------------------------------
     corridor_epsilon: float = 0.5    # [m] |cross-track| breach
     max_heading_err: float = 1.5708  # [rad] heading breach (pi/2)
+    # Whether a corridor/heading breach ENDS the episode, or merely keeps
+    # costing w_cross * e_cross^2 while the robot tries to get back.
+    #
+    # Terminating is what the training distribution has always done, and it is
+    # the reason the learned corrector has no recovery behaviour: with
+    # start_offset ~0.08 m and an episode that dies at 0.5 m, the policy never
+    # once observes a state outside a half-metre tube around a path it started
+    # on. Measured 2026-07-30, deployed against real PMP plans with termination
+    # off: the policy diverged to 4-6 m on a STRAIGHT trajectory that open-loop
+    # identity held to 0.62 m, because everything past 0.5 m is extrapolation
+    # for it. TVLQR recovers from a 19 m excursion on the same rig for exactly
+    # the opposite reason -- a Riccati law extrapolates by construction.
+    #
+    # False keeps the episode alive so recovery is inside the training
+    # distribution. The quadratic cross-track penalty is unbounded and keeps
+    # pointing home, so the gradient outside the corridor is still informative;
+    # `on_track` simply clamps to 0 out there. Success/goal logic is unchanged.
+    corridor_terminates: bool = True
 
     # --- Success tolerances (mirror PlannerConfig.goal_tolerance_*) ----
     goal_tolerance_xy: float = 0.10  # [m]
