@@ -316,3 +316,60 @@ fetch-sweep label=`date +%Y%m%d` dest='sweep_data':
 plot-checkpoints src='sweep_data' out='figures' metric='max_cross':
     .venv/bin/python tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}} \
         || python3 tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}}
+
+# ------------------------------------------------- TVLQR gain tuning
+
+# Nelder-Mead search over (q_cross, r_omega) against real Gazebo rollouts.
+# Needs `just remote-sim` up, and NOTHING else touching the sim -- one Gazebo.
+#
+# ~75 s per evaluation (three trajectories driven to completion), so 60
+# evaluations is ~75 min. Runs in its OWN TMUX WINDOW and tees to a log, like
+# `train-long`: it outlives the ssh session that started it (so a laptop can be
+# shut), and `tail -f` on the log is not enough to drive it interactively.
+# `ssh host 'cmd | tail'` shows nothing until the command exits, so a working
+# run looks frozen -- read the log file, don't wait on the pipe.
+#
+# RESUMABLE: every evaluation is appended to the JSONL cache before the next
+# starts, and re-running the same command replays it for free. A killed run
+# loses at most the evaluation in flight. Delete the cache to start over --
+# editing the trajectory list does the same thing, on purpose (the cache is
+# keyed on it and refuses to resume onto a different problem).
+tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl' trajs='/home/programmer/pmp_trajectories_v2/floor_1_00049.npz /home/programmer/pmp_trajectories_v2/floor_6_00042.npz /home/programmer/pmp_trajectories_v2/floor_6_00023.npz': sync
+    {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
+        tmux kill-window -t {{session}}:tune 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n tune \
+        "cd {{remote}} && source /opt/ros/jazzy/setup.bash \
+         && source install/setup.bash \
+         && PYTHONPATH=src/agx_navigation/agx_planning:\$PYTHONPATH \
+         python3 -m agx_planning.tuning.tune_tvlqr \
+             --trajectories {{trajs}} --max-evals {{evals}} \
+             --cache {{cache}} --out /home/programmer/tvlqr_tuned.json \
+             2>&1 | tee /tmp/tune_tvlqr.log"'
+    @echo "tuning started in tmux window '{{session}}:tune' -- follow it with:  just tune-log"
+    @echo "when it finishes:  just fetch-tune && just plot-tune"
+
+tune-log:
+    -{{_ssh}} 'tail -40 /tmp/tune_tvlqr.log'
+
+# Pull the evaluation cache back so the landscape can be drawn locally.
+fetch-tune dest='tune_data':
+    mkdir -p {{dest}}
+    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/home/programmer/tvlqr_tune.jsonl {{dest}}/
+    -rsync -az -e "ssh {{ssh_opts}}" {{host}}:/home/programmer/tvlqr_tuned.json {{dest}}/
+    @ls -1 {{dest}}
+
+# Draw what the search explored: the gain plane and the convergence curve.
+plot-tune src='tune_data/tvlqr_tune.jsonl' out='figures':
+    .venv/bin/python tools/plot_tune_landscape.py {{src}} --out {{out}} \
+        || python3 tools/plot_tune_landscape.py {{src}} --out {{out}}
+
+# Contact sheet of every recorded plan, for picking evaluation trajectories by
+# eye (the IDs then go in config/eval_trajectories.yaml).
+fetch-trajectories dest='traj_data':
+    mkdir -p {{dest}}
+    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/home/programmer/pmp_trajectories_v2/ {{dest}}/
+
+gallery src='traj_data' out='figures':
+    .venv/bin/python tools/plot_trajectory_gallery.py {{src}} --out {{out}}
