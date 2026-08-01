@@ -1,0 +1,42 @@
+# Trajectories used for every corrector comparison and tuning run.
+#
+# WHY A FILE AND NOT A FLAG
+# -------------------------
+# Every corrector claim must be made against the SAME set of plans, or numbers
+# from two sessions cannot be compared -- and the set must be picked to span
+# shapes, because "TVLQR beats identity" was once shown only on near-straight
+# paths that all happened to point the same way (see CLAUDE.md).
+#
+# HOW TO PICK
+# -----------
+#   .venv/bin/python tools/plot_trajectory_gallery.py traj_data --out figures
+# renders every plan in figures/trajectory_gallery.png, rotated onto its
+# principal axis so shape is comparable at a glance, then write the IDs here.
+#
+# CAUTION on the automatic labels: classify_plans.py calls 58 of these 100
+# CORNER, but most of those are visually straight -- the descriptor is tripped by
+# the in-place reorientation the PMP planner puts at the start of a plan, which
+# is a large heading change over no distance. Trust the picture over the label.
+#
+# Changing this list invalidates a tuning cache (tune_tvlqr keys its cache on the
+# trajectory names), so an edit means starting that search fresh, by design.
+
+# Directory the names resolve against on the VM.
+trajectory_dir: /home/programmer/pmp_trajectories_v2
+
+# The working set. Kept small: one evaluation drives every one of these to
+# completion, at ~20-25 s each, and the TVLQR search needs ~60 evaluations.
+selected:
+  - floor_1_00049   # STRAIGHT, 14.2 m -- the flat case; identity already does 0.11 m
+  - floor_6_00042   # labelled S-CURVE, 18.3 m -- really an L; TVLQR's worst case (1.55 m)
+  - floor_6_00023   # CORNER, 19.7 m -- identity's worst case (ends 3.9 m out)
+
+# Candidates spotted in the gallery but not yet measured. floor_6_00042 is a
+# weak S-curve (one bend); these are the genuinely serpentine ones, and swapping
+# one in is the obvious way to test the corrector on a real S.
+candidates:
+  - floor_6_00028   # S-CURVE, 17.4 m -- clean double bend, the most S-like of the set
+  - floor_6_00024   # S-CURVE, 15.7 m -- long S with a strong second turn
+  - floor_6_00047   # S-CURVE, 20.4 m -- zigzag, three sign changes
+  - floor_6_00056   # S-CURVE, 11.1 m -- tight V, sharpest reversal available
+  - floor_6_00031   # CORNER, 17.2 m -- true U-turn, far harder than floor_6_00023

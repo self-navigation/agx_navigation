@@ -21,3 +21,7 @@ figures/
 compare_data/
 sweep_data/
 tools/attention_mcp/.venv/
+
+# Fetched measurement data (see Justfile fetch-* recipes)
+traj_data/
+tune_data/

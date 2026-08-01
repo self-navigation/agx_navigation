@@ -361,6 +361,202 @@ Non-obvious facts about that box, all of which cost time to work out:
   instance, and `TORCH_THREADS` is deliberately 1. Parallel envs would need
   per-instance `GZ_PARTITION`/`ROS_DOMAIN_ID` plumbing that does not exist yet.
 
+## Current work: making the corrector work
+
+**This section is a living log — append to it, or rewrite the parts it
+contradicts, whenever a run or an experiment establishes something new.** It is
+the standing context for what is being worked on right now; the rest of this
+file describes the system, which changes far more slowly. Date each claim, and
+delete a claim outright when it is superseded rather than leaving both versions.
+
+The single active goal is getting the runtime corrector to hold a frozen PMP
+trajectory under slip. Nothing else is in progress.
+
+### Terrain patches are inherited across processes (found 2026-08-01)
+
+`GazeboBridge._remove_terrain` only removed patches that *its own process*
+spawned, and the sim deliberately outlives any one process. So a trainer that
+exited mid-episode left its patches in the world, and the next
+`compare_correctors` inherited them. Two distinct failures, not one:
+
+- a leftover `rl_ground` from a `--ground-friction` run is a low-friction slab
+  under the entire trajectory — a different plant than the run intends;
+- `create` on an existing name *fails*, so an inherited `rl_patch_0` also
+  displaces the patch this run meant to spawn.
+
+Fixed: the bridge now sweeps `rl_ground` and `rl_patch_0..7` by name at
+construction. At most 4 patches ever exist (`n_range=(1,3)` at every call site,
+plus `rl_ground`); the rest is headroom.
+
+**The 2026-07-30 three-way comparison table is not trustworthy** — it was
+measured with a trainer's patches almost certainly still in the world. Same
+correctors, same trajectories, clean world, 2026-08-01 (max|e_cross| / final_err):
+
+| trajectory | shape | identity | tvlqr | 2026-07-30 identity |
+| --- | --- | --- | --- | --- |
+| floor_1_00049 | STRAIGHT | 0.28 / 0.48 | 0.01 / 0.02 | 0.62 / 4.88 |
+| floor_6_00042 | S-CURVE | 0.22 / 0.19 | 1.55 / 1.08 | 6.83 / 6.86 |
+| floor_6_00023 | CORNER | 1.21 / 3.45 | 0.23 / 0.05 | 19.45 / 17.18 |
+
+On a clean world **TVLQR loses to identity on the S-curve**, which the
+contaminated table hid. "TVLQR beats identity on every shape" is retracted.
+
+### The 20260730 training run did not learn a usable policy
+
+1.5M steps, 9h41m, 8864 episodes, **2 successes**. `failure_rate 0.88`. Two
+diagnostics matter more than the step count:
+
+- **`ent_coef` ran away to 3.31.** SAC's auto-tuned entropy coefficient belongs
+  well below 1; at 3.31 the entropy bonus dominates the return and the optimal
+  policy under the *effective* objective is near-random. `actor_loss 4.46e3` is
+  mostly that term.
+- **`critic_loss` is back to 1.23e4.** The Huber reward fix had brought it to
+  58.5. Huber bounds the *slope*, not the return: over a 200-step episode with
+  no corridor termination the accumulated linear tail still diverges.
+
+The 16-checkpoint sweep (2026-08-01, `figures/checkpoints_max_cross.png` and
+`figures/*_checkpoints.png`) settles it: **no RL checkpoint beats the identity
+baseline on any of the three shapes, at any point in training.** There is no
+trend — max|e_cross| wanders between roughly 0.3 and 6.6 m — and the best
+checkpoint is **800k** (0.59 / 0.91 / 1.06 m on straight / S-curve / corner),
+after which it degrades: by 1.5M the S-curve is back to 4.65 m. Training past
+~800k made the policy worse, which is what an `ent_coef` of 3.31 predicts.
+More steps is not the fix; the entropy target and the unbounded return are.
+
+Three-way comparison at the best (800k) checkpoint, clean world
+(max|e_cross| / final_err, m) — `figures/*_compare.png`:
+
+| trajectory | shape | identity | tvlqr | rl (800k) |
+| --- | --- | --- | --- | --- |
+| floor_1_00049 | STRAIGHT | 0.11 / 0.49 | **0.01 / 0.02** | 0.66 / 0.25 |
+| floor_6_00042 | S-CURVE | **0.20 / 0.18** | 1.55 / 0.52 | 0.96 / 0.43 |
+| floor_6_00023 | CORNER | 1.51 / 3.90 | **0.23 / 0.05** | 1.04 / 1.46 |
+
+So on a clean world: TVLQR is excellent on the straight and the corner and
+**bad on the S-curve** (it oscillates — visible as loops in the path panel);
+identity is the best S-curve tracker and only fails at the corner, where it ends
+3.9 m out; RL is never best at anything.
+
+Note identity re-measured as 0.11 / 0.20 / 1.51 here against 0.28 / 0.22 / 1.21
+in the sweep an hour earlier — same seed, same terrain, deterministic stepping.
+That residual run-to-run spread is the still-unexplained offline-mode variance
+(see [[rl-corrector-diagnosis]]); it is small enough not to affect any
+conclusion above, but do not read two-decimal differences as signal.
+
+### TVLQR gain tuning (built 2026-08-01)
+
+`agx_planning/tuning/` searches `(q_cross, r_omega)` by Nelder-Mead against real
+Gazebo rollouts. `just tune-tvlqr` (detached, ~75 s per evaluation, ~70 min for
+60), then `just fetch-tune && just plot-tune`.
+
+- `simplex.py`, `objective.py`, `cache.py` are **pure and unit-tested** — no ROS,
+  no Gazebo, no torch, same rule as the RL pure modules. 25 tests, and they are
+  aimed at one thing: proving the search *minimizes*. A tuner that maximizes
+  produces an identical-looking log and hands back the worst gains it found.
+- **`--max-evals` bounds candidate GAIN PAIRS, never rollout length.** Every
+  evaluation drives every selected trajectory start-to-goal.
+- **The trajectory set is fixed, never sampled**, so candidates are always
+  compared on identical work. A rollout that *fails* makes the whole evaluation
+  invalid (`inf`), never a mean over the survivors: the trajectories differ
+  hugely in difficulty, so averaging whatever finished rewards gains that crash
+  the hard rollouts.
+- **Resumable at zero cost.** Nelder-Mead is deterministic given its objective,
+  so a resumed run replays the JSONL cache to reconstruct the search and
+  re-measures nothing. The cache is keyed on the trajectory list + seed and
+  refuses to resume onto a different problem.
+- **`--max-evals 0` (the default) runs to convergence**, since the search has
+  nights available and a converged answer beats a predictable finish time.
+  Three guards make unbounded mode safe: a 15-minute per-evaluation timeout (a
+  healthy one is ~75 s), an abort after 5 consecutive failures, and —
+- **failures are never cached.** This one was learned the hard way: killing the
+  tuner mid-evaluation invalidated the bridge's rclpy context, after which every
+  rollout failed in 2 ms. 56 bogus `inf` evaluations were written in three
+  seconds, and had they been memoized, every future resume would have replayed
+  them as real measurements. `inf` means "the sim broke", almost never "these
+  gains are bad". Failed records are still written (with `_failed: true`) for
+  diagnosis, but never returned from the cache.
+- Search runs in **log10** of both gains: a step is a ratio, and no move can
+  propose a negative gain.
+- Every evaluation records its **per-trajectory** errors, not just the aggregate,
+  so the landscape can be re-analysed per shape without re-driving anything.
+
+Baseline at the current `q_cross=10 / r_omega=0.25`: **0.487 m** mean
+max|e_cross| over the three-trajectory set (0.243 straight / 0.224 S-curve /
+0.993 corner), measured 2026-08-01 by the tuner itself.
+
+**Unexplained, flagged not fixed:** that same run scores TVLQR at 0.224 m on
+floor_6_00042 where `just compare` scored 1.549 m an hour earlier — same gains,
+same seed, same code path. It is the offline-mode variance again but far larger
+than the identity-leg spread. The tuner is *internally* consistent (one process,
+one code path, fixed seed), which is what the search needs, but **do not compare
+a tuned number against a `compare` number** until this is understood.
+
+### Choosing evaluation trajectories
+
+`config/eval_trajectories.yaml` holds the working set and a candidate list.
+`just gallery` renders all 100 plans (`figures/trajectory_gallery.png`), each
+rotated onto its principal axis so shape is comparable at a glance.
+
+**The automatic labels mislead.** `classify_plans.py` calls 58 of 100 CORNER, but
+in the gallery most of those are visually straight lines: the descriptor is
+tripped by the in-place reorientation the PMP planner puts at the *start* of a
+plan — a large heading change over no distance. Trust the picture. Likewise
+`floor_6_00042`, used as "the S-curve" in every comparison so far, is really an
+L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
+`00024`, `00047` (zigzag), `00056` (tight V). A true U-turn: `floor_6_00031`.
+
+### Ideas queued, roughly in order of expected value
+
+1. **Fix SAC's entropy runaway before any retrain.** `ent_coef` reached 3.31.
+   Either pin it (`ent_coef=0.05` instead of `"auto"`) or set an explicit
+   `target_entropy` — the default `-dim(A)` is far too permissive for a 4-D
+   residual whose useful range is tiny. This is the single highest-value change:
+   every hour of the 20260730 run after ~800k steps made the policy worse.
+2. **Bound the per-episode return.** Huber bounded the reward's slope, not the
+   accumulated return over 200 non-terminating steps, and `critic_loss` still
+   reached 1.2e4. Options: normalize the return, cap per-step cost outright, or
+   reinstate termination with a large-but-finite terminal penalty (which is not
+   the same as the 0.5 m corridor that caused the original no-recovery problem).
+3. **Re-measure everything on a genuine S-curve** (`floor_6_00028`) now the
+   gallery shows the current one is not. Cheap; changes what "TVLQR oscillates
+   on curved plans" is even claiming.
+4. **Explain the run-to-run variance properly.** It is now blocking: it is the
+   difference between 0.22 m and 1.55 m for identical inputs, which is larger
+   than most effects being measured. The untried candidate remains accumulated
+   sim-clock floating point in `GazeboBridge._wait_clock_advance`. A cheap first
+   experiment: drive one trajectory 10x in one process and 10x in ten processes,
+   and see which spread is larger.
+5. **Widen the tuning search to the full Q/R diagonal** (`q_along`, `q_heading`,
+   `r_v`) once the 2-D search proves the machinery. Nelder-Mead handles 5-D, but
+   the evaluation budget grows and the variance in (4) sets the noise floor on
+   what can be resolved.
+6. **Give the RL residual a fair fight**: train it *on top of* tuned TVLQR rather
+   than on top of identity, so the policy learns the residual that a good linear
+   controller cannot supply, instead of re-deriving feedback from scratch. This
+   is also the version most defensible in a write-up — the advisor's requirement
+   is that RL be part of the system, not that it beat everything alone.
+7. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
+   6 m). Still unexplained, still excluded, still a planner bug rather than a
+   control one.
+
+### Measurement facts worth not rediscovering
+
+- `compare_correctors` builds the bridge with `deterministic=True` — the world
+  is paused and multi-stepped, so results do **not** depend on CPU load, and a
+  `gz sim -g` viewer cannot perturb them. (`make rl-sim` itself is headless
+  server-only, so there is no 3D view unless a GUI client is attached.)
+- The identity and TVLQR baselines are checkpoint-independent. A checkpoint
+  sweep that re-measures them per checkpoint spends two-thirds of its runtime
+  re-deriving the same two numbers; measure them once and run `--correctors rl`
+  for the rest. 15 checkpoints ≈ 35 min, ~20-25 s per episode.
+- The VM's desktop can be screenshotted without any GUI interaction:
+  `ssh <host> 'DISPLAY=:0 import -window root /tmp/x.png'` (ImageMagick, already
+  installed; 1920x1080 virtual framebuffer). This is how the final training
+  stats block above was found — it was on screen but not in the log tail.
+- `tools/plot_checkpoint_paths.py` draws the checkpoint *paths* in a colour
+  ramp, next to `tools/plot_checkpoints.py` which reduces each to one scalar.
+  Past ~8 overlaid paths the lines stop being individually traceable.
+
 ## Conventions
 
 - Non-obvious design decisions are documented in long module docstrings (the PMP

@@ -240,6 +240,16 @@ class GazeboBridge:
 
         # Names of terrain patches we spawned, so we can remove them next reset.
         self._terrain_models: List[str] = []
+        # ...but that list only knows about THIS process. A previous process --
+        # a trainer that was Ctrl-C'd, or one that exited mid-episode -- leaves
+        # its patches in the running world, and the sim outlives any single
+        # process by design (one Gazebo, many runs). Inheriting them silently
+        # changes the plant: a leftover `rl_ground` from a --ground-friction run
+        # is one low-friction slab under the whole trajectory, and it made an
+        # entire corrector comparison unreproducible before it was noticed.
+        # Names are fixed by terrain.py, so sweep them by name on startup rather
+        # than querying the scene -- the removes are best-effort anyway.
+        self._sweep_stale_terrain()
 
         # Teleport-confirm failures in a row. A single failure is usually just the
         # flaky pose read-back (the teleport itself executes), so we proceed; a
@@ -549,6 +559,24 @@ class GazeboBridge:
             # so it is removed next reset either way.
             self._gz.request(self._svc_create, req, EntityFactory, Boolean, self._ack_ms)
             self._terrain_models.append(name)
+
+    # Upper bound on `rl_patch_N` indices to sweep. along_path_terrain_sampler
+    # spawns at most n_range[1] (3) and ground_friction_sampler adds `rl_ground`;
+    # 8 leaves room for a wider n_range without another silent inheritance bug,
+    # while keeping the worst case (every request timing out at _ack_ms) under a
+    # second of startup cost.
+    _STALE_PATCH_LIMIT = 8
+
+    def _sweep_stale_terrain(self) -> None:
+        """Remove terrain patches left in the world by an earlier process."""
+        stale = ["rl_ground"] + [f"rl_patch_{i}" for i in range(self._STALE_PATCH_LIMIT)]
+        for name in stale:
+            req = Entity()
+            req.name = name
+            req.type = Entity.MODEL
+            # Most of these do not exist; a remove of a missing model is a
+            # harmless negative ack, same best-effort contract as _remove_terrain.
+            self._gz.request(self._svc_remove, req, Entity, Boolean, self._ack_ms)
 
     def _remove_terrain(self) -> None:
         for name in self._terrain_models:
