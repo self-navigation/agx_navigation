@@ -10,13 +10,23 @@
 # HOW TO PICK
 # -----------
 #   .venv/bin/python tools/plot_trajectory_gallery.py traj_data --out figures
-# renders every plan in figures/trajectory_gallery.png, rotated onto its
-# principal axis so shape is comparable at a glance, then write the IDs here.
+# renders every plan across figures/trajectory_gallery_pNN.png, rotated onto its
+# principal axis and sorted by turning PER METRE, so the interesting plans are on
+# page 1. 24 per sheet: at 100 to a sheet each cell was too small to tell a
+# gentle S from a straight line, which is how an L came to be the "S-curve".
 #
-# CAUTION on the automatic labels: classify_plans.py calls 58 of these 100
-# CORNER, but most of those are visually straight -- the descriptor is tripped by
-# the in-place reorientation the PMP planner puts at the start of a plan, which
-# is a large heading change over no distance. Trust the picture over the label.
+# CAUTION on the automatic labels: the descriptors are tripped by the in-place
+# reorientation the PMP planner puts at the start of a plan -- a large heading
+# change over no distance. The gallery now discards the leading pivot before
+# measuring (trim_pivot), which moved the counts from 58 CORNER / 1 STRAIGHT to
+# 20 CORNER / 41 STRAIGHT. classify_plans.py still reports the raw descriptors
+# and so still over-calls CORNER. Trust the picture over either.
+#
+# WHAT THE LIBRARY ACTUALLY CONTAINS (2026-08-02, looked at rather than counted):
+# roughly 20 plans with real shape, all on page 1; page 2 is already dropping to
+# near-straight, and pages 3-5 are straight lines. So the set below is close to
+# everything interesting that exists -- generating more plans is the only way to
+# widen it further.
 #
 # Changing this list invalidates a tuning cache (tune_tvlqr keys its cache on the
 # trajectory names), so an edit means starting that search fresh, by design.
@@ -24,19 +34,41 @@
 # Directory the names resolve against on the VM.
 trajectory_dir: /home/programmer/pmp_trajectories_v2
 
-# The working set. Kept small: one evaluation drives every one of these to
-# completion, at ~20-25 s each, and the TVLQR search needs ~60 evaluations.
+# The working set: one plan per SHAPE ARCHETYPE, chosen by looking at page 1.
+#
+# It grew from 3 to 7 on 2026-08-02 because a rollout now costs ~5 s rather than
+# ~20-25 s -- the world used to keep free-running between steps (see CLAUDE.md),
+# so most of that time was unrequested physics. Seven trajectories is ~35 s per
+# evaluation, cheaper than the old three.
+#
+# The point of spanning shapes is that TVLQR's failure mode is oscillation on
+# curvature, and its strength is straight-line and single-corner tracking. A set
+# without reversals cannot see the failure; a set without straights cannot see a
+# candidate that wins on corners by ruining the easy cases.
 selected:
-  - floor_1_00049   # STRAIGHT, 14.2 m -- the flat case; identity already does 0.11 m
-  - floor_6_00042   # labelled S-CURVE, 18.3 m -- really an L; TVLQR's worst case (1.55 m)
-  - floor_6_00023   # CORNER, 19.7 m -- identity's worst case (ends 3.9 m out)
+  - floor_1_00049   # STRAIGHT, 14.2 m -- the easy case; identity already does 0.11 m
+  - floor_6_00023   # CORNER, 19.5 m -- long run into one hook; identity ends 3.9 m out
+  - floor_6_00018   # S, 15.7 m -- a genuine double bend, the cleanest S in the library
+  - floor_6_00047   # ZIGZAG, 20.1 m -- repeated reversals; the anti-oscillation case
+  - floor_6_00056   # TIGHT V, 10.9 m -- sharpest single reversal available
+  - floor_6_00031   # U-TURN, 16.9 m -- full 180; the hardest shape here
+  - floor_6_00025   # LOOP, 13.2 m -- closed circuit, sustained one-way turning
 
-# Candidates spotted in the gallery but not yet measured. floor_6_00042 is a
-# weak S-curve (one bend); these are the genuinely serpentine ones, and swapping
-# one in is the obvious way to test the corrector on a real S.
+# Kept out of `selected` deliberately.
+excluded:
+  - floor_6_00042   # the historical "S-curve" -- actually an L with one rounded
+                    # bend. Every pre-2026-08-02 comparison used it, but those
+                    # numbers are invalid anyway (free-running world), so there
+                    # is no continuity left to preserve by keeping it.
+  - floor_1_00050   # degenerate PMP plan: max_turn 3.14 rad/step over 6 m, and
+                    # top of the turn/m ranking because of it. A planner bug,
+                    # still unexplained; do not tune a controller against it.
+
+# Shapes seen on page 1 but not selected, as alternates if one of the above
+# turns out to be unreachable or pathological.
 candidates:
-  - floor_6_00028   # S-CURVE, 17.4 m -- clean double bend, the most S-like of the set
-  - floor_6_00024   # S-CURVE, 15.7 m -- long S with a strong second turn
-  - floor_6_00047   # S-CURVE, 20.4 m -- zigzag, three sign changes
-  - floor_6_00056   # S-CURVE, 11.1 m -- tight V, sharpest reversal available
-  - floor_6_00031   # CORNER, 17.2 m -- true U-turn, far harder than floor_6_00023
+  - floor_6_00028   # S, 17.2 m -- shallower double bend than 00018
+  - floor_6_00024   # S, 15.5 m -- long S, strong second turn
+  - floor_6_00009   # HAIRPIN, 11.2 m -- deep U, tighter than 00031
+  - floor_6_00045   # V, 18.6 m -- wide V (page 2)
+  - floor_6_00005   # ZIGZAG, 18.4 m -- multiple shallow bends

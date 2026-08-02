@@ -64,6 +64,31 @@ def resample(pts, step=0.15):
     return out
 
 
+def trim_pivot(raw, min_travel=0.30):
+    """Drop the in-place reorientation the PMP planner puts at the start.
+
+    A plan typically begins by spinning on the spot to face the path: a large
+    heading change over ~no distance. Every shape descriptor is computed from
+    heading deltas, so that pivot dominates them -- which is why the automatic
+    labels called 58 of 100 plans CORNER when the gallery shows most of them are
+    visually straight lines. Discarding the leading samples until the robot has
+    actually travelled `min_travel` measures the shape of the PATH rather than
+    the shape of the pirouette.
+
+    Selection/display only, like the rotation: the .npz is untouched and a
+    trajectory is replayed in full. This is deliberately NOT mirrored into
+    classify_plans.py, which reports the raw descriptors.
+    """
+    acc = 0.0
+    for i in range(1, len(raw)):
+        acc += math.hypot(raw[i][0] - raw[i - 1][0], raw[i][1] - raw[i - 1][1])
+        if acc >= min_travel:
+            # Keep the true start point so the drawn path still begins where the
+            # robot did; only the descriptor window moves.
+            return raw[i - 1:]
+    return raw
+
+
 def descriptors(raw):
     """Shape descriptors -- kept numerically identical to tools/classify_plans.py.
 
@@ -141,11 +166,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("traj_dir", help="directory of recorded .npz plans")
     ap.add_argument("--out", default="figures")
-    ap.add_argument("--cols", type=int, default=10)
+    ap.add_argument("--cols", type=int, default=6)
     ap.add_argument("--name", default="trajectory_gallery")
-    ap.add_argument("--sort", default="shape", choices=("shape", "name"),
-                    help="'shape' groups the sheet by class, so picking one of "
-                         "each archetype is a matter of reading a block")
+    ap.add_argument("--per-page", type=int, default=24,
+                    help="plans per PNG. One sheet of 100 shrinks each cell to "
+                         "the point where a gentle S and a straight line are "
+                         "indistinguishable, which is how the current eval set "
+                         "came to include an L labelled S-CURVE. 0 = one sheet.")
+    ap.add_argument("--sort", default="curvature",
+                    choices=("curvature", "shape", "name"),
+                    help="'curvature' puts the most interesting plans on page 1 "
+                         "(most total turning per metre); 'shape' groups by class")
+    ap.add_argument("--raw-descriptors", action="store_true",
+                    help="do not trim the leading in-place pivot before "
+                         "measuring shape (see trim_pivot)")
     ap.add_argument("--no-rotate", action="store_true",
                     help="draw in the map frame instead of the principal axis")
     args = ap.parse_args()
@@ -155,7 +189,9 @@ def main():
     entries = []
     for path in sorted(glob.glob(os.path.join(args.traj_dir, "*.npz"))):
         poses = np.load(path)["poses"]
-        d = descriptors([(p[0], p[1]) for p in poses])
+        raw = [(p[0], p[1]) for p in poses]
+        window = raw if args.raw_descriptors else trim_pivot(raw)
+        d = descriptors(window)
         if d is None:
             continue
         entries.append((os.path.basename(path)[:-4], poses[:, :2], d, label(d)))
@@ -167,41 +203,60 @@ def main():
         order = {k: i for i, k in enumerate(
             ["STRAIGHT", "S-CURVE", "CORNER", "curved", "gentle"])}
         entries.sort(key=lambda e: (order.get(e[3], 9), -e[2]["total_abs"]))
+    elif args.sort == "curvature":
+        # Turning PER METRE, not total: a long plan accumulates turning just by
+        # being long, and the interesting cases are the ones that turn a lot in
+        # a short distance -- which is also what stresses a corrector.
+        entries.sort(key=lambda e: -(e[2]["total_abs"] / max(e[2]["L"], 1e-6)))
 
+    per_page = args.per_page if args.per_page > 0 else len(entries)
+    n_pages = math.ceil(len(entries) / per_page)
     cols = args.cols
-    rows = math.ceil(len(entries) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(2.0 * cols, 2.25 * rows))
-    axes = np.atleast_2d(axes)
 
-    for ax in axes.ravel():
-        ax.set_axis_off()
+    for page in range(n_pages):
+        chunk = entries[page * per_page:(page + 1) * per_page]
+        rows = math.ceil(len(chunk) / cols)
+        fig, axes = plt.subplots(rows, cols, figsize=(2.6 * cols, 2.9 * rows),
+                                 squeeze=False)
+        for ax in axes.ravel():
+            ax.set_axis_off()
 
-    for i, (name, xy, d, shape) in enumerate(entries):
-        ax = axes[i // cols][i % cols]
-        p = np.asarray(xy, float) if args.no_rotate else canonical(xy)
-        col = SHAPE_COLORS.get(shape, "#8a8985")
-        ax.plot(p[:, 0], p[:, 1], "-", color=col, lw=1.6)
-        ax.plot(p[0, 0], p[0, 1], "o", color=col, ms=4)
-        ax.plot(p[-1, 0], p[-1, 1], "*", color=col, ms=9)
-        # Equal aspect per cell: a corner must not be flattened into a bend.
-        ax.set_aspect("equal", adjustable="datalim")
-        ax.set_title(f"{name}\n{shape}  {d['L']:.1f} m", fontsize=6.5, color=col,
-                     pad=2)
-        ax.set_axis_off()
+        for i, (name, xy, d, shape) in enumerate(chunk):
+            ax = axes[i // cols][i % cols]
+            p = np.asarray(xy, float) if args.no_rotate else canonical(xy)
+            col = SHAPE_COLORS.get(shape, "#8a8985")
+            ax.plot(p[:, 0], p[:, 1], "-", color=col, lw=1.8)
+            ax.plot(p[0, 0], p[0, 1], "o", color=col, ms=5)
+            ax.plot(p[-1, 0], p[-1, 1], "*", color=col, ms=11)
+            # Equal aspect per cell: a corner must not be flattened into a bend.
+            ax.set_aspect("equal", adjustable="datalim")
+            ax.set_title(
+                f"{name}\n{shape}  {d['L']:.1f} m  "
+                f"turn/m {d['total_abs'] / max(d['L'], 1e-6):.2f}",
+                fontsize=7.5, color=col, pad=3)
+            ax.set_axis_off()
 
-    fig.suptitle(
-        f"{len(entries)} recorded PMP plans — rotated to principal axis, "
-        "equal aspect per cell (● start, ★ goal)", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.985))
-    out = os.path.join(args.out, f"{args.name}.png")
-    fig.savefig(out, dpi=130)
-    plt.close(fig)
-    print(f"wrote {out}  ({len(entries)} plans)")
+        suffix = "" if n_pages == 1 else f"_p{page + 1:02d}"
+        fig.suptitle(
+            f"PMP plans {page * per_page + 1}-{page * per_page + len(chunk)} "
+            f"of {len(entries)}, sorted by {args.sort} — rotated to principal "
+            "axis, equal aspect per cell (● start, ★ goal)", fontsize=12)
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        out = os.path.join(args.out, f"{args.name}{suffix}.png")
+        fig.savefig(out, dpi=130)
+        plt.close(fig)
+        print(f"wrote {out}  ({len(chunk)} plans)")
 
     counts = {}
     for _, _, _, s in entries:
         counts[s] = counts.get(s, 0) + 1
     print("  " + "  ".join(f"{k}:{v}" for k, v in sorted(counts.items())))
+
+    print("\nmost turning per metre (candidate hard cases):")
+    for name, _, d, shape in entries[:12]:
+        print("  %-18s %-9s %5.1f m  turn/m %.2f  net_turn %+.2f  signs %d"
+              % (name, shape, d["L"], d["total_abs"] / max(d["L"], 1e-6),
+                 d["net_turn"], d["sign_changes"]))
 
 
 if __name__ == "__main__":

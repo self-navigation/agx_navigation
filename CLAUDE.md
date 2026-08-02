@@ -712,9 +712,12 @@ run, and identical behaviour proves `slip1/slip2` are decorative.
    reached 1.2e4. Options: normalize the return, cap per-step cost outright, or
    reinstate termination with a large-but-finite terminal penalty (which is not
    the same as the 0.5 m corridor that caused the original no-recovery problem).
-3. **Re-measure everything on a genuine S-curve** (`floor_6_00028`) now the
-   gallery shows the current one is not. Cheap; changes what "TVLQR oscillates
-   on curved plans" is even claiming.
+3. ~~Re-measure everything on a genuine S-curve.~~ **DONE 2026-08-02:** the eval
+   set is now **seven shape-distinct plans** (`config/eval_trajectories.yaml`) —
+   straight, corner, S, zigzag, tight V, U-turn, loop. It grew from three
+   because a rollout now costs ~5 s instead of ~20-25 s (the world was
+   free-running between steps). `floor_6_00042`, the "S-curve" that was really
+   an L, is dropped. Still to do: actually re-measure on it.
 4. ~~Explain the run-to-run variance properly.~~ **SOLVED 2026-08-02, see
    "The run-to-run variance was an 8 mm reset error amplified by patch edges".**
 5. **Widen the tuning search to the full Q/R diagonal** (`q_along`, `q_heading`,
@@ -742,7 +745,20 @@ run, and identical behaviour proves `slip1/slip2` are decorative.
    meshes independently. The one thing that must be got right first:
    `just check-sim` currently refuses to launch if *any* Gazebo lives, and it has
    to become per-partition without losing its teeth.
-8. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
+8. **Generate interesting trajectories by construction, instead of hoping for
+   them** (user's idea, 2026-08-02). The 100 recorded plans came from random
+   goals, and it shows: ~20 have any shape at all, all on page 1 of the gallery,
+   and pages 3-5 are straight lines. So the evaluation set is capped by what the
+   library happens to contain. Proposed instead: sample start/goal pairs from the
+   baked map, run a cheap A* (or the FM2 field itself) to *predict* the route
+   without paying for a PMP solve, score each route for tortuosity — turning per
+   metre, number of curvature sign changes, reversals — and keep only the
+   high-scoring pairs to run through the real planner. Screening is cheap and the
+   PMP solve is the expensive part, so this inverts the current ratio. Two things
+   to get right: the A* route must be a fair proxy for what PMP actually produces
+   (worth validating on the existing 100 before trusting it), and the score must
+   ignore the leading in-place pivot for the same reason `trim_pivot` does.
+9. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
    6 m). Still unexplained, still excluded, still a planner bug rather than a
    control one.
 
