@@ -247,7 +247,19 @@ class GazeboBridge:
         self._gz = gz_transport.Node()
         self._pose_xyth: Optional[Tuple[float, float, float]] = None
         self._pose_z: Optional[float] = None
+        self._pose_quat: Optional[Tuple[float, float, float, float]] = None
+        self._pose_stamp: Optional[float] = None
+        # Steps that proceeded on a pose older than the step they were meant to
+        # observe. Should be 0; a nonzero count means the rollout fed the
+        # controller stale state and is not comparable with another.
+        self.stale_pose_steps = 0
         self._entity_names: set = set()
+        self._terrain_poses: dict = {}
+        # --- state trace (see enable_trace) ---
+        self._trace_fh = None
+        self._trace_writer = None
+        self._trace_row = 0
+        self._trace_phase = "init"
         self._gz.subscribe(Pose_V, self._topic_pose, self._on_pose)
 
         # --- rclpy: command out + twist in ---
@@ -313,7 +325,7 @@ class GazeboBridge:
         # deterministic step gate) so step 0 is valid.
         self._wait_ready(spin_warmup_s)
         if self.deterministic:
-            self._world_control(pause=True)
+            self._ensure_paused()
 
     # ------------------------------------------------------------------
     # gz callbacks / helpers
@@ -338,7 +350,21 @@ class GazeboBridge:
         # Snapshot every top-level name in this message, so terrain spawning can
         # be verified instead of assumed (see _apply_terrain).
         self._entity_names = {p.name for p in msg.pose}
+        # Sim time this pose describes. THE STEP GATE DEPENDS ON THIS: pose/info
+        # arrives on a gz-transport thread while the step gate spins rclpy, so
+        # without a stamp there is no way to tell a post-step pose from the
+        # pre-step one still sitting in the cache. See _advance.
+        self._pose_stamp = msg.header.stamp.sec + msg.header.stamp.nsec * 1e-9
         for p in msg.pose:
+            # Terrain poses, kept for the trace: a patch that lands a millimetre
+            # off, or at a different yaw, is a different plant even though the
+            # name-presence check in _apply_terrain passes.
+            if p.name.startswith("rl_"):
+                q = p.orientation
+                self._terrain_poses[p.name] = (
+                    p.position.x, p.position.y, p.position.z,
+                    q.x, q.y, q.z, q.w,
+                )
             if p.name == self.model:
                 q = p.orientation
                 self._pose_xyth = (
@@ -349,7 +375,10 @@ class GazeboBridge:
                 # readout of whether the robot has finished falling from
                 # reset_z. Kept for reset diagnostics only.
                 self._pose_z = p.position.z
-                return
+                # Full orientation, for the trace only: the planning yaw hides
+                # roll/pitch, and a rollout that diverges by tipping onto a patch
+                # edge shows it in pitch several steps before it shows in x/y.
+                self._pose_quat = (q.x, q.y, q.z, q.w)
 
     def _spin(self, duration_s: float) -> None:
         """Spin rclpy for a wall-clock duration (delivers cmd flush + /odom)."""
@@ -395,6 +424,19 @@ class GazeboBridge:
     def _world_control(self, pause: Optional[bool] = None, multi_step: int = 0,
                        ack_ms: Optional[int] = None) -> None:
         req = WorldControl()
+        if multi_step > 0 and pause is None and self.deterministic:
+            # THE `pause` FIELD IS NOT OPTIONAL ON THE WIRE. WorldControl.pause is
+            # a plain proto3 bool, so leaving it unset sends `pause: false`, and
+            # gz applies it unconditionally alongside the step. Every multi_step
+            # we issued therefore ALSO un-paused the world: it ran the n ticks we
+            # asked for and then FREE-RAN until the next call, for however long
+            # the CPU gave it. Measured 2026-08-02: control steps advancing
+            # 0.42 s of sim time instead of control_dt=0.1, wall-clock-dependent
+            # and different every run, with lost_steps and stale_pose_steps both
+            # reporting 0 because nothing was being dropped -- extra physics was
+            # being run. Deterministic mode must re-assert the pause on every
+            # step; this is the whole basis of "same commands -> same rollout".
+            pause = True
         if pause is not None:
             req.pause = pause
         if multi_step > 0:
@@ -486,9 +528,92 @@ class GazeboBridge:
             # rollout to a crash; measure_determinism reads these.
             if not ok:
                 self.lost_steps += 1
+            # The clock gate proves the WORLD advanced; it does not prove we can
+            # SEE the result. Ground-truth pose arrives over gz transport on its
+            # own thread, while the gate above spins rclpy -- so /clock routinely
+            # reaches the target while _pose_xyth still holds the pre-step pose.
+            # _read_state then hands the controller a stale pose, the controller
+            # computes a command for a position the robot has already left, and
+            # two identical rollouts diverge. Measured 2026-08-02: x/y/yaw
+            # bit-identical for two steps, then one run's step-2 state was
+            # literally its step-1 state, and the runs ended 0.53 m apart.
+            # world_steps agreed exactly throughout -- the physics was never the
+            # problem; the readout was.
+            if t0 is not None:
+                if not self._wait_pose_advance(
+                        t0 + n * self.physics_step,
+                        deadline_s=max(0.2, 10.0 * dt)):
+                    self.stale_pose_steps += 1
             self.total_steps += 1
         else:
             self._spin(dt)
+
+    # How long to watch the sim clock to decide the world really stopped, and how
+    # many pause requests to spend before giving up. The world publishes /clock
+    # every tick while running, so a free-running world betrays itself in well
+    # under 100 ms even at rtf 1; 0.25 s is generous.
+    _pause_check_s = 0.25
+    _pause_attempts = 5
+
+    def _ensure_paused(self) -> None:
+        """Pause the world and VERIFY it stopped, retrying if it did not.
+
+        WHY THIS IS NOT PARANOIA. Every world-control call is best-effort: the
+        ack is unreliable, so the code has always fired pause and moved on. When
+        that request is dropped the world keeps FREE-RUNNING, and deterministic
+        mode silently becomes something much worse than non-deterministic --
+        multi_step still advances the world, but so does real time, so each
+        control step covers however much sim time the CPU happened to deliver.
+        Measured 2026-08-02: control steps advancing 0.42 s of sim time instead
+        of control_dt=0.1, tracking error 8-20 m instead of ~2, and no counter
+        anywhere reporting a problem (lost_steps and stale_pose_steps were both
+        0 -- the world was not dropping steps, it was doing extra ones).
+
+        The sim clock is the honest test: a paused world stops publishing it.
+        """
+        for attempt in range(self._pause_attempts):
+            self._world_control(pause=True)
+            before = self._node.sim_time
+            end = time.monotonic() + self._pause_check_s
+            while time.monotonic() < end:
+                self._exec.spin_once(timeout_sec=0.01)
+            after = self._node.sim_time
+            if before is None or after is None or after <= before + 1e-9:
+                if attempt:
+                    self._node.get_logger().warn(
+                        "world needed %d pause attempts before it stopped"
+                        % (attempt + 1))
+                return
+            self._node.get_logger().warn(
+                "pause request %d did not take effect (clock advanced %.3f s); "
+                "retrying" % (attempt + 1, after - before))
+        raise RuntimeError(
+            "could not pause world %r: the sim clock keeps advancing after %d "
+            "pause requests. Deterministic stepping is meaningless against a "
+            "free-running world -- every rollout would simulate a different "
+            "amount of time. Is a second process (a GUI, another trainer) "
+            "un-pausing it?" % (self.world, self._pause_attempts))
+
+    def _wait_pose_advance(self, target_sim_t: float, deadline_s: float) -> bool:
+        """Block until the cached ground-truth pose is stamped at/after `target`.
+
+        The pose callback fires on the gz-transport thread, so watching the value
+        would seem to be enough -- but this must still SPIN rclpy while it waits.
+        A plain sleep() here starves /clock and /odom (single-threaded executor,
+        same thread), so the next step's clock baseline is stale and the twist
+        handed to the controller is older than the pose: measured 2026-08-02, a
+        sleeping version of this loop drove tracking error from ~2.5 m to ~20 m.
+        """
+        # Half a physics tick of slack, same rationale as the clock gate.
+        target = target_sim_t - 0.5 * self.physics_step
+        end = time.monotonic() + deadline_s
+        while time.monotonic() < end:
+            stamp = self._pose_stamp
+            if stamp is not None and stamp >= target:
+                self._exec.spin_once(timeout_sec=0.0)   # drain twist to match
+                return True
+            self._exec.spin_once(timeout_sec=0.001)
+        return False
 
     def _wait_clock_advance(self, t0: Optional[float], sim_dt: float,
                             deadline_s: float) -> bool:
@@ -516,11 +641,89 @@ class GazeboBridge:
         return False
 
     # ------------------------------------------------------------------
+    # State trace (reproducibility instrumentation)
+    # ------------------------------------------------------------------
+
+    # Every scalar the world can hand back about the robot, plus the terrain
+    # digest. The point is to find the FIRST step at which two supposedly
+    # identical rollouts differ: an end-of-rollout metric only says that they
+    # did, and by then the cause is 200 steps upstream. Ordering matters only in
+    # that it must be stable across runs, so diff_trace can compare positionally.
+    TRACE_COLUMNS = (
+        "row", "phase", "sim_time", "world_steps", "lost_steps",
+        "stale_pose_steps", "pose_stamp",
+        "cmd0", "cmd1", "cmd2", "cmd3",
+        "x", "y", "z", "yaw", "qx", "qy", "qz", "qw",
+        "v", "omega", "w0", "w1", "w2", "w3",
+        "imu_gz", "imu_ax", "imu_ay", "terrain",
+    )
+
+    def enable_trace(self, path: str) -> None:
+        """Write one row per recorded snapshot to `path` (CSV).
+
+        Rows are appended by step() and at each phase of reset(), so a trace
+        covers the reset as well as the rollout -- the reset is where a
+        divergence is most likely to be BORN even though it only becomes visible
+        later. Compare two traces with tools/diff_trace.py.
+        """
+        import csv
+        if self._trace_fh is not None:      # re-armed per rollout
+            self._trace_fh.close()
+        self._trace_fh = open(path, "w", newline="")
+        self._trace_writer = csv.writer(self._trace_fh)
+        self._trace_writer.writerow(self.TRACE_COLUMNS)
+        self._trace_row = 0
+
+    def _terrain_digest(self) -> str:
+        """Every rl_* entity pose, rounded to 1e-6, as one stable string."""
+        return "|".join(
+            "%s:%s" % (name, ",".join("%.6f" % c for c in pose))
+            for name, pose in sorted(self._terrain_poses.items())
+        )
+
+    def _trace(self, phase: str, wheels=None) -> None:
+        if self._trace_writer is None:
+            return
+        # Drain callbacks so the snapshot reflects the world as of now, not as of
+        # whenever the last spin happened to run.
+        self._exec.spin_once(timeout_sec=0.0)
+        p = self._pose_xyth or (float("nan"),) * 3
+        q = self._pose_quat or (float("nan"),) * 4
+        w = self._node.wheel_speeds or [float("nan")] * 4
+        imu = self._node.imu or (float("nan"),) * 3
+        cmd = list(wheels) if wheels is not None else [float("nan")] * 4
+        self._trace_writer.writerow(
+            [self._trace_row, phase,
+             "%.6f" % (self._node.sim_time if self._node.sim_time is not None
+                       else float("nan")),
+             self.total_steps, self.lost_steps, self.stale_pose_steps,
+             "%.6f" % (self._pose_stamp if self._pose_stamp is not None
+                       else float("nan"))]
+            + ["%.9g" % float(c) for c in cmd]
+            + ["%.9g" % float(v) for v in (p[0], p[1],
+                                           self._pose_z if self._pose_z is not None
+                                           else float("nan"), p[2])]
+            + ["%.9g" % float(c) for c in q]
+            + ["%.9g" % float(v) for v in (self._node.v, self._node.omega)]
+            + ["%.9g" % float(v) for v in w]
+            + ["%.9g" % float(v) for v in imu]
+            + [self._terrain_digest()]
+        )
+        self._trace_row += 1
+
+    # ------------------------------------------------------------------
     # Bridge contract
     # ------------------------------------------------------------------
 
     def reset(self, start_pose, terrain=None) -> StateReading:
         x, y, th = (float(v) for v in start_pose)
+        # Re-verify once per episode, not just at construction: a GUI client
+        # attaching, or any other process touching /world/<w>/control, un-pauses
+        # the world, and from then on every rollout is measured against a
+        # different plant with nothing in the logs to say so.
+        if self.deterministic:
+            self._ensure_paused()
+        self._trace("reset_enter")
 
         # 1. Halt the wheels so the teleport doesn't carry old motion through.
         self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
@@ -528,6 +731,7 @@ class GazeboBridge:
 
         # 2. Swap terrain (Phase 3); no-op when terrain is None.
         self._apply_terrain(terrain, near=(x, y))
+        self._trace("reset_terrain")
 
         # 3. Teleport to the episode start (slightly raised, then settle down).
         #    The gz set_pose service EXECUTES reliably even when its ack/read-back
@@ -536,12 +740,14 @@ class GazeboBridge:
         #    a long streak of failures (sim dead / wrong model) is fatal.
         self.reset_ticks = 0
         confirmed = self._set_pose(x, y, self.reset_z, th)
+        self._trace("reset_teleport")
 
         # 4. Settle: zero command for a few steps so residual twist damps out
         #    (set_pose moves the body but does not zero its velocity).
         for _ in range(self.settle_steps):
             self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
             self._advance(self.cfg.control_dt)
+            self._trace("reset_settle", [0.0] * 4)
 
         st = self._read_state()
 
@@ -570,6 +776,7 @@ class GazeboBridge:
             for _ in range(self.settle_steps):
                 self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
                 self._advance(self.cfg.control_dt)
+                self._trace("reset_refine", [0.0] * 4)
             st = self._read_state()
         self.reset_offset = math.hypot(st.pose[0] - x, st.pose[1] - y)
 
@@ -599,7 +806,9 @@ class GazeboBridge:
     def step(self, wheels, dt: float) -> StateReading:
         self._node.publish_wheels(wheels)
         self._advance(dt)
-        return self._read_state()
+        st = self._read_state()
+        self._trace("step", wheels)
+        return st
 
     def close(self) -> None:
         try:
@@ -613,6 +822,10 @@ class GazeboBridge:
                 self._set_physics(real_time_factor=self._DEFAULT_RTF,
                                   real_time_update_rate=self._DEFAULT_UPDATE_RATE)
         finally:
+            if self._trace_fh is not None:
+                self._trace_fh.close()
+                self._trace_fh = None
+                self._trace_writer = None
             self._remove_terrain()
             self._exec.remove_node(self._node)
             self._node.destroy_node()

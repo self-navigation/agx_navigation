@@ -523,6 +523,57 @@ plan — a large heading change over no distance. Trust the picture. Likewise
 L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
 `00024`, `00047` (zigzag), `00056` (tight V). A true U-turn: `floor_6_00031`.
 
+### Deterministic mode was never actually paused (found 2026-08-02, evening)
+
+**This supersedes every measurement in this file, including the terrain-spawn
+result below.** `WorldControl.pause` is a plain proto3 bool, so a request that
+sets only `multi_step` sends `pause: false` — and gz applies it. Every step we
+issued therefore stepped the world `n` ticks *and un-paused it*, leaving it
+FREE-RUNNING until the next call, for however long the CPU gave it.
+
+So "deterministic mode" was running an unbounded, wall-clock-dependent amount of
+extra physics per control step. Symptom, once the trace made it visible: control
+steps advancing **0.42 s of sim time instead of `control_dt` = 0.1**. Nothing
+reported a problem — `lost_steps` and `stale_pose_steps` were both 0, correctly:
+the world was not dropping steps, it was doing *extra* ones.
+
+Fixed in `_world_control`: deterministic mode re-asserts `pause=True` on every
+multi_step. Plus `_ensure_paused()`, which pauses and then **verifies the sim
+clock stopped**, retrying and finally raising — the old code fired a best-effort
+pause at construction and never checked, and the ack is unreliable.
+
+**Result on floor_6_00042, 5 rollouts: max|e_cross| spread 0.0013 m**
+(1.9539-1.9552), from 0.375 m before this and 6.70 m before the terrain fix.
+
+What remains, from the trace diffs (`tuning/trace_diff.py`):
+- xy separation stays under 1e-3 m for ~150 of 245 steps, then grows to
+  0.18-0.63 m over the last ~80. `final_err` still spreads 0.50-1.11 m.
+- The seed is the **reset's vertical state**: z differs by ~2e-5 m between
+  resets and the IMU by ~0.02, because the settle runs a fixed number of steps
+  rather than converging. x/y/yaw are bit-identical.
+- Whatever amplifies at step ~150 is not yet identified.
+
+### Instrumentation: per-step state traces
+
+`GazeboBridge.enable_trace(path)` writes one CSV row per control step and per
+reset phase: full pose (incl. z and quaternion), twist, wheel speeds, IMU, the
+command that produced the step, sim clock, step counters, and a digest of every
+`rl_*` entity pose. `variance_probe --trace-dir` writes one per rollout.
+
+`tuning/trace_diff.py` (pure, unit-tested) reports the FIRST step two rollouts
+differ at and which column moved first — the distinction that matters:
+`cmd*` moving while state is identical means **our controller** is the
+non-determinism; state moving under an identical command means physics; a
+`world_steps`/`lost_steps` difference means a step was dropped, not physics at
+all. It also timestamps when the xy separation crosses each order of magnitude,
+which is how "flat for 150 steps then grows" was distinguished from chaos.
+Cumulative counters are rebased per rollout — the world is deliberately not
+restarted between runs, so comparing `sim_time` raw reports a fake 250-step
+divergence on every pair.
+
+`tuning/trace_dump.py` prints selected rows of one trace, for when a run is bad
+in isolation rather than merely different from another.
+
 ### The run-to-run variance was an 8 mm reset error amplified by patch edges (solved 2026-08-02)
 
 The blocking mystery — TVLQR scoring 0.22 m and 1.55 m on identical inputs — is
@@ -671,7 +722,9 @@ run, and identical behaviour proves `slip1/slip2` are decorative.
 
 - `compare_correctors` builds the bridge with `deterministic=True` — the world
   is paused and multi-stepped, so results do **not** depend on CPU load, and a
-  `gz sim -g` viewer cannot perturb them. (`make rl-sim` itself is headless
+  `gz sim -g` viewer cannot perturb them. **This was false until 2026-08-02
+  evening** (the pause was being cleared by every step request, see above), so
+  results measured before that fix DID depend on CPU load. (`make rl-sim` itself is headless
   server-only, so there is no 3D view unless a GUI client is attached.)
 - The identity and TVLQR baselines are checkpoint-independent. A checkpoint
   sweep that re-measures them per checkpoint spends two-thirds of its runtime

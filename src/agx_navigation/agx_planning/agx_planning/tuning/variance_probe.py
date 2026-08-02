@@ -116,6 +116,10 @@ def main():
                     help="drive on bare ground -- isolates the bridge's own "
                          "reproducibility from chaos seeded by patch edges")
     ap.add_argument("--out", required=True, help="JSONL, appended to")
+    ap.add_argument("--trace-dir",
+                    help="write a per-rollout state trace CSV here "
+                         "(<trace-dir>/<pid>_<index>.csv); compare two with "
+                         "python3 -m agx_planning.tuning.trace_diff")
     args = ap.parse_args()
 
     name = os.path.basename(args.trajectory)[:-4]
@@ -133,6 +137,11 @@ def main():
         with open(args.out, "a") as fh:
             for i in range(args.repeats):
                 t0 = time.monotonic()
+                if args.trace_dir:
+                    os.makedirs(args.trace_dir, exist_ok=True)
+                    trace_path = os.path.join(args.trace_dir,
+                                              f"{name}_{pid}_{i:02d}.csv")
+                    bridge.enable_trace(trace_path)
                 try:
                     rec = drive(bridge, cfg, tvcfg, nom, args.seed,
                                 use_terrain=not args.no_terrain)
