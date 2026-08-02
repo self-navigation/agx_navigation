@@ -131,7 +131,15 @@ def run_trajectories(bridge, cfg, traj_paths, q_cross, r_omega, seed, log=print)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--trajectories", nargs="+", required=True)
+    ap.add_argument("--trajectories", nargs="+",
+                    help="explicit .npz paths; omit to use --trajectory-config")
+    ap.add_argument("--trajectory-config",
+                    help="config/eval_trajectories.yaml -- reads `selected` and "
+                         "resolves it against `trajectory_dir`. PREFER THIS: the "
+                         "Justfile recipe used to carry its own hard-coded copy "
+                         "of the list, which silently went stale the moment the "
+                         "eval set changed, so a run could be tuned against a "
+                         "different set than every document claimed.")
     ap.add_argument("--cache", default=os.path.expanduser("~/tvlqr_tune.jsonl"))
     ap.add_argument("--max-evals", type=int, default=0,
                     help="candidate GAIN PAIRS to try; 0 = run until the simplex "
@@ -152,7 +160,30 @@ def main():
     ap.add_argument("--out", default=os.path.expanduser("~/tvlqr_tuned.json"))
     args = ap.parse_args()
 
-    names = [os.path.basename(p)[:-4] for p in args.trajectories]
+    trajectories = args.trajectories
+    if args.trajectory_config:
+        if trajectories:
+            ap.error("pass --trajectories or --trajectory-config, not both")
+        import yaml
+        with open(args.trajectory_config) as fh:
+            tc = yaml.safe_load(fh)
+        selected = tc.get("selected") or []
+        if not selected:
+            ap.error(f"{args.trajectory_config} lists no `selected` trajectories")
+        tdir = tc["trajectory_dir"]
+        trajectories = [os.path.join(tdir, f"{n}.npz") for n in selected]
+    if not trajectories:
+        ap.error("need --trajectories or --trajectory-config")
+
+    missing = [p for p in trajectories if not os.path.exists(p)]
+    if missing:
+        # Fail here rather than 40 minutes in: a missing trajectory makes every
+        # evaluation inf (all-or-nothing aggregate), so the search would burn the
+        # night reflecting away from a vertex that was never measurable.
+        raise SystemExit("trajectories not found:\n  " + "\n  ".join(missing))
+
+    names = [os.path.basename(p)[:-4] for p in trajectories]
+    print(f"[tune] {len(names)} trajectories: {', '.join(names)}")
 
     cfg = RLCorrectorConfig(use_costates=False, corridor_epsilon=1e9,
                             max_heading_err=1e9)
@@ -187,7 +218,7 @@ def main():
         t_eval = time.monotonic()
         try:
             with _Deadline(args.eval_timeout):
-                per = run_trajectories(bridge, cfg, args.trajectories,
+                per = run_trajectories(bridge, cfg, trajectories,
                                        q_cross, r_omega, args.seed)
         except EvalTimeout as exc:
             print(f"        !! {exc}", flush=True)
