@@ -161,3 +161,15 @@ def test_growth_profile_timestamps_each_order_of_magnitude(tmp_path):
     assert g["crossings"][1e-1] == 3
     assert g["crossings"][1.0] is None
     assert g["final_separation"] == pytest.approx(0.5)
+
+
+def test_column_onsets_order_separates_command_path_from_solver(tmp_path):
+    """The ordering is the diagnosis: a wheel speed that moves before the pose
+    means the command reached the plant differently, not that physics differ."""
+    a_rows = [_row(w0=1, x=0), _row(w0=1, x=0), _row(w0=1, x=0)]
+    b_rows = [_row(w0=1, x=0), _row(w0=2, x=0), _row(w0=2, x=5)]
+    on = trace_diff.compare(_write(tmp_path, "a.csv", a_rows),
+                            _write(tmp_path, "b.csv", b_rows))["onsets"]
+    assert on["w0"] == 1
+    assert on["x"] == 2
+    assert on["y"] is None

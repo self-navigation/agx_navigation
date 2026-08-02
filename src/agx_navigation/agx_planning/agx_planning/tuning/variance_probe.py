@@ -123,7 +123,13 @@ def main():
     args = ap.parse_args()
 
     name = os.path.basename(args.trajectory)[:-4]
-    cfg = RLCorrectorConfig(use_costates=False, corridor_epsilon=1e9,
+    # use_wheel_speeds subscribes /joint_states. TVLQR does not read them, so
+    # this changes no control decision -- it is on so the trace can show whether
+    # a commanded wheel speed actually took effect on the step it was issued for
+    # (the ROS-publish / gz-step race). Harmless here; it would NOT be harmless
+    # for an RL policy, where it changes the observation layout.
+    cfg = RLCorrectorConfig(use_costates=False, use_wheel_speeds=True,
+                            corridor_epsilon=1e9,
                             max_heading_err=1e9)
     tvcfg = tvlqr_mod.TVLQRConfig(enabled=True, q_cross=args.q_cross,
                                   r_omega=args.r_omega)

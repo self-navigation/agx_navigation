@@ -147,7 +147,32 @@ def compare(path_a: str, path_b: str, eps: float = 1e-9) -> Dict:
         "initial_state_diffs": init_diffs,
         "first_divergence": first_divergence(sa, sb, eps),
         "growth": growth_profile(sa, sb),
+        "onsets": column_onsets(sa, sb, eps),
     }
+
+
+def column_onsets(a: Sequence[Dict[str, str]], b: Sequence[Dict[str, str]],
+                  eps: float = 1e-9) -> Dict[str, Optional[int]]:
+    """First step each column differs at, per column.
+
+    `first_divergence` says only which column moved first overall, and a noisy
+    side-channel (the IMU) masks the ordering of everything else. The ORDER
+    across columns is the diagnosis: wheel speeds moving before the pose means
+    the commanded speed reached the plant differently -- our ROS publish racing
+    the gz step -- while the pose moving first under identical wheel speeds
+    means the solver itself.
+    """
+    onsets: Dict[str, Optional[int]] = {}
+    for i, (ra, rb) in enumerate(zip(a, b)):
+        for col in ra:
+            if col == "row" or col in onsets:
+                continue
+            if _differs(col, ra[col], rb.get(col, ""), eps) is not None:
+                onsets[col] = i
+    for col in (a[0] if a else {}):
+        onsets.setdefault(col, None)
+    onsets.pop("row", None)
+    return onsets
 
 
 # Thresholds the pose separation is timestamped against, in metres/radians.
@@ -227,6 +252,12 @@ def main() -> None:
         elif state_moved and not cmd_moved:
             print("  -> the STATE diverged under an identical command:")
             print("     genuine physics/solver non-determinism.")
+
+    print("\nfirst differing step, per column (earliest first):")
+    ordered = sorted(res["onsets"].items(),
+                     key=lambda kv: (kv[1] is None, kv[1]))
+    for col, at in ordered:
+        print("  %-18s %s" % (col, "never" if at is None else "step %d" % at))
 
     g = res["growth"]
     print("\nxy separation growth:")

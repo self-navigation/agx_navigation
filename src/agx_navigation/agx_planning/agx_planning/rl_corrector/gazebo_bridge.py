@@ -195,6 +195,11 @@ class GazeboBridge:
         # below the patch-edge scale that was amplifying the error.
         reset_place_tol: float = 0.001,
         reset_refine_iters: int = 4,
+        # Vertical settle: keep stepping a stationary robot until its height
+        # stops changing by more than this per control step. 1e-7 m is ~200x
+        # below the ~2e-5 m run-to-run z spread the fixed settle was leaving.
+        reset_settle_z_tol: float = 1e-7,
+        reset_max_settle_iters: int = 60,
         service_timeout_ms: int = 3000,
         step_ack_ms: int = 10,
         spin_warmup_s: float = 10.0,
@@ -209,6 +214,10 @@ class GazeboBridge:
         self.settle_steps = int(settle_steps)
         self.reset_place_tol = float(reset_place_tol)
         self.reset_refine_iters = int(reset_refine_iters)
+        self.reset_settle_z_tol = float(reset_settle_z_tol)
+        self.reset_max_settle_iters = int(reset_max_settle_iters)
+        self.reset_settle_iters = 0
+        self.reset_z_settled: Optional[float] = None
         # Distance the last reset actually settled from the requested pose --
         # read it to verify reproducibility instead of inferring it from spread.
         self.reset_offset = 0.0
@@ -475,6 +484,9 @@ class GazeboBridge:
         req.orientation.y = 0.0
         req.orientation.z = math.sin(yaw / 2.0)
         req.orientation.w = math.cos(yaw / 2.0)
+        if self.deterministic:
+            return self._set_pose_stepped(req, x, y, tol, tries)
+
         for _ in range(tries):
             self._gz.request(self._svc_set_pose, req, Pose, Boolean, self._ack_ms)
             # Confirm via pose/info. CRITICAL in deterministic mode: the sim is
@@ -498,6 +510,48 @@ class GazeboBridge:
                 p = self._pose_xyth
                 if p is not None and math.hypot(p[0] - x, p[1] - y) < tol:
                     return True
+        return False
+
+    # Physics ticks spent settling after a teleport, in deterministic mode.
+    # FIXED, not "however many fit in 0.5 s of wall clock" -- see below.
+    _confirm_ticks = 20
+
+    def _set_pose_stepped(self, req, x: float, y: float, tol: float,
+                          tries: int) -> bool:
+        """Deterministic teleport: a FIXED number of physics ticks, every time.
+
+        The wall-clock-paced version of this loop stepped physics until a 0.5 s
+        deadline or the pose came within tol, so the number of ticks the robot
+        spent falling and settling depended on machine timing -- observed 12 to
+        31 across five back-to-back rollouts (`reset_ticks`). Those are real
+        physics ticks, so the episode's true initial state differed run to run,
+        and the runs with the low counts were the ones whose final error stood
+        out. It was previously written off as self-correcting because each retry
+        yanks the body back to target; that is true of x/y and false of the
+        vertical and contact state, which is precisely the seed everything else
+        amplifies.
+
+        Spinning rclpy does NOT step the world, so waiting on the wall clock for
+        a message is harmless here; only the tick count has to be fixed.
+        """
+        for _ in range(tries):
+            self._gz.request(self._svc_set_pose, req, Pose, Boolean, self._ack_ms)
+            stamp0 = self._pose_stamp
+            for _ in range(self._confirm_ticks):
+                self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
+                self.reset_ticks += 1
+                self._exec.spin_once(timeout_sec=0.0)
+            # Let the pose catch up to the ticks just taken, without stepping.
+            end = time.monotonic() + 0.5
+            while time.monotonic() < end:
+                if stamp0 is None or (self._pose_stamp is not None
+                                      and self._pose_stamp > stamp0):
+                    break
+                self._exec.spin_once(timeout_sec=0.005)
+            p = self._pose_xyth
+            if p is not None and math.hypot(p[0] - x, p[1] - y) < tol:
+                return True
+            # Only a genuine miss costs another (still fixed-size) round.
         return False
 
     def _advance(self, dt: float) -> None:
@@ -779,6 +833,31 @@ class GazeboBridge:
                 self._trace("reset_refine", [0.0] * 4)
             st = self._read_state()
         self.reset_offset = math.hypot(st.pose[0] - x, st.pose[1] - y)
+
+        # 6. Settle the VERTICAL state until it stops moving.
+        #
+        #    x/y/yaw come back bit-identical across resets, but z did not: the
+        #    fixed-count settle above leaves the robot still micro-bouncing on
+        #    its suspension by ~2e-5 m, differing run to run, and the IMU by
+        #    ~0.02. That is the only remaining difference between two rollouts
+        #    that are otherwise identical inputs, so it is the seed for whatever
+        #    they eventually diverge by. Converge on it instead of hoping five
+        #    steps was enough. Bounded, and it exits on the first stable pair, so
+        #    a robot that has already settled pays one extra step.
+        self.reset_settle_iters = 0
+        z_prev = self._pose_z
+        for _ in range(self.reset_max_settle_iters):
+            self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
+            self._advance(self.cfg.control_dt)
+            self.reset_settle_iters += 1
+            self._trace("reset_zsettle", [0.0] * 4)
+            z_now = self._pose_z
+            if (z_prev is not None and z_now is not None
+                    and abs(z_now - z_prev) <= self.reset_settle_z_tol):
+                break
+            z_prev = z_now
+        self.reset_z_settled = self._pose_z
+        st = self._read_state()
 
         # Re-check against the settled ground-truth pose: this both rescues a
         # teleport whose mid-flight confirm raced the residual velocity, and

@@ -545,13 +545,41 @@ pause at construction and never checked, and the ack is unreliable.
 **Result on floor_6_00042, 5 rollouts: max|e_cross| spread 0.0013 m**
 (1.9539-1.9552), from 0.375 m before this and 6.70 m before the terrain fix.
 
-What remains, from the trace diffs (`tuning/trace_diff.py`):
-- xy separation stays under 1e-3 m for ~150 of 245 steps, then grows to
-  0.18-0.63 m over the last ~80. `final_err` still spreads 0.50-1.11 m.
-- The seed is the **reset's vertical state**: z differs by ~2e-5 m between
-  resets and the IMU by ~0.02, because the settle runs a fixed number of steps
-  rather than converging. x/y/yaw are bit-identical.
-- Whatever amplifies at step ~150 is not yet identified.
+Two more seeds were then closed, both wall-clock-paced work that fed real
+physics ticks:
+
+- **The teleport confirm loop ran for 0.5 s of WALL time**, so the robot got
+  12-31 physics ticks to fall and settle depending on machine timing
+  (`reset_ticks`). Now a fixed 20 (`_set_pose_stepped`). It had been written off
+  as self-correcting because each retry yanks the body back — true of x/y, false
+  of the vertical and contact state.
+- **The reset settle ran a fixed 5 steps** and left the robot micro-bouncing by
+  ~2e-5 m in z. Now converges (`reset_settle_z_tol`), leaving ~1e-6.
+
+### Where the reproducibility floor actually is (2026-08-02, 10 rollouts)
+
+| metric | mean | sd | spread |
+| --- | --- | --- | --- |
+| **max\|e_cross\|** | 1.9551 | **0.0002** | 0.0007 |
+| rms_cross | 0.6214 | 0.0154 | 0.0503 |
+| final_err | 0.5877 | **0.2633** | 0.8360 |
+
+**`max|e_cross|` — the tuner's objective — is now reproducible to four decimals,
+so single-sample ranking is finally legitimate.** The 0.487 → 0.183 m effect the
+first tuning run claimed is three orders of magnitude above this noise floor.
+
+**`final_err` is NOT reproducible and must not be used as an objective**, or must
+be averaged over repeats. Why, from the per-column onsets: with everything else
+fixed, the remaining seed is ~1e-13 in the wheels' residual speed (they settle to
+~1e-9 rad/s, not to zero), and it is amplified at the **turn reversal around step
+165**, where `omega` crosses zero (+1.37 → 0.02 → -1.29) and the skid-steer's
+lateral friction switches direction. A contact-mode switch at float-level
+asymmetry: genuine chaos, not a bug, and not worth chasing further.
+
+Ruled out along the way, so don't re-propose: the ROS-publish-vs-gz-step race
+(wheel speeds diverge at step 2, *after* the pose at step 1 — the command path is
+a consequence, not a cause), and any terrain difference (`terrain`, `sim_time`
+and `world_steps` now never differ between rollouts).
 
 ### Instrumentation: per-step state traces
 
