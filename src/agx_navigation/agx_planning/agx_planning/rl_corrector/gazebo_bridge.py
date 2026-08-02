@@ -181,9 +181,20 @@ class GazeboBridge:
         physics_step: float = 0.01,
         deterministic: bool = False,
         unthrottle: bool = False,
-        reset_z: float = 0.20,
+        # Measured settled height of the scout_mini's model origin on flat floor
+        # (2026-08-02, reset_probe: z = 0.1806 on every one of 12 resets). Placing
+        # AT it rather than above it means the robot barely falls, so it barely
+        # slides -- which is where the reset's positional spread came from. Slip
+        # patches are 1 mm decals, so this is right over a patch too.
+        reset_z: float = 0.1806,
         settle_steps: int = 5,
         reset_tol: float = 0.15,
+        # How close the settled pose must be to the requested one before the
+        # rollout is allowed to start, and how many re-place attempts to spend
+        # getting there. 1 mm is ~8x tighter than the un-refined reset and well
+        # below the patch-edge scale that was amplifying the error.
+        reset_place_tol: float = 0.001,
+        reset_refine_iters: int = 4,
         service_timeout_ms: int = 3000,
         step_ack_ms: int = 10,
         spin_warmup_s: float = 10.0,
@@ -196,6 +207,13 @@ class GazeboBridge:
         self.unthrottle = bool(unthrottle)
         self.reset_z = float(reset_z)
         self.settle_steps = int(settle_steps)
+        self.reset_place_tol = float(reset_place_tol)
+        self.reset_refine_iters = int(reset_refine_iters)
+        # Distance the last reset actually settled from the requested pose --
+        # read it to verify reproducibility instead of inferring it from spread.
+        self.reset_offset = 0.0
+        # Patch names the last _apply_terrain asked for but could not verify.
+        self.terrain_missing: List[str] = []
         # Lenient margin for "did the teleport land?" checked against the settled
         # pose (vs the strict in-flight confirm tol in _set_pose).
         self.reset_tol = float(reset_tol)
@@ -228,6 +246,8 @@ class GazeboBridge:
         # --- gz transport: ground-truth pose + world services ---
         self._gz = gz_transport.Node()
         self._pose_xyth: Optional[Tuple[float, float, float]] = None
+        self._pose_z: Optional[float] = None
+        self._entity_names: set = set()
         self._gz.subscribe(Pose_V, self._topic_pose, self._on_pose)
 
         # --- rclpy: command out + twist in ---
@@ -237,6 +257,18 @@ class GazeboBridge:
                                  use_imu=cfg.use_imu)
         self._exec = SingleThreadedExecutor()
         self._exec.add_node(self._node)
+
+        # --- determinism instrumentation ---------------------------------
+        # Deterministic stepping guarantees "same initial state + same commands
+        # -> same trajectory". It does NOT guarantee we re-establish the same
+        # initial state, nor that every requested step actually happened. These
+        # count the two ways that promise leaks, so a rollout can report whether
+        # it was reproducible instead of leaving it to be inferred from spread.
+        self.lost_steps = 0        # _advance gave up waiting for the sim clock
+        self.total_steps = 0
+        self.reset_ticks = 0       # physics ticks burned in the last reset's
+                                   # confirm loop -- wall-clock-paced, so a
+                                   # varying count means a varying start state
 
         # Names of terrain patches we spawned, so we can remove them next reset.
         self._terrain_models: List[str] = []
@@ -287,12 +319,25 @@ class GazeboBridge:
     # gz callbacks / helpers
     # ------------------------------------------------------------------
 
+    def _entities_present(self, names) -> set:
+        """Which of `names` currently exist in the world, per pose/info.
+
+        pose/info enumerates every entity each time the world advances, so it
+        doubles as the only cheap way to ASK the sim what is actually there --
+        the create/remove services only ever report what they were asked to do.
+        """
+        seen = self._entity_names
+        return {n for n in names if n in seen}
+
     def _on_pose(self, msg: Pose_V) -> None:
         """Cache the robot's ground-truth world pose from pose/info.
 
         pose/info lists every entity (ground/sun/links/visuals); the top-level
         model pose has name == model_name. Match the model exactly.
         """
+        # Snapshot every top-level name in this message, so terrain spawning can
+        # be verified instead of assumed (see _apply_terrain).
+        self._entity_names = {p.name for p in msg.pose}
         for p in msg.pose:
             if p.name == self.model:
                 q = p.orientation
@@ -300,6 +345,10 @@ class GazeboBridge:
                     p.position.x, p.position.y,
                     _yaw_from_quat(q.x, q.y, q.z, q.w),
                 )
+                # z is not part of the planning pose, but it is the direct
+                # readout of whether the robot has finished falling from
+                # reset_z. Kept for reset diagnostics only.
+                self._pose_z = p.position.z
                 return
 
     def _spin(self, duration_s: float) -> None:
@@ -398,6 +447,11 @@ class GazeboBridge:
             while time.monotonic() < deadline:
                 if self.deterministic:
                     self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
+                    # Counted because this loop is paced by the WALL clock while
+                    # stepping physics: how many ticks the robot gets to fall and
+                    # settle from reset_z depends on machine timing, so the
+                    # episode's true initial state varies run to run.
+                    self.reset_ticks += 1
                 self._exec.spin_once(timeout_sec=0.02)
                 p = self._pose_xyth
                 if p is not None and math.hypot(p[0] - x, p[1] - y) < tol:
@@ -421,15 +475,28 @@ class GazeboBridge:
             # how much sim time actually elapsed; wait for the full dt. Spinning
             # rclpy meanwhile keeps the /odom twist fresh. Bounded so a genuinely
             # dropped step can't hang the loop.
-            self._wait_clock_advance(t0, n * self.physics_step,
-                                     deadline_s=max(0.2, 10.0 * dt))
+            ok = self._wait_clock_advance(t0, n * self.physics_step,
+                                          deadline_s=max(0.2, 10.0 * dt))
+            # A False here means the world did NOT advance the full dt before the
+            # wall-clock deadline, and we carried on regardless -- the episode
+            # silently lost physics time while the control index moved on. That is
+            # a hidden, run-dependent input, not noise: it is why two "identical"
+            # rollouts diverge under deterministic stepping. Counted rather than
+            # raised, because the caller may legitimately prefer a degraded
+            # rollout to a crash; measure_determinism reads these.
+            if not ok:
+                self.lost_steps += 1
+            self.total_steps += 1
         else:
             self._spin(dt)
 
     def _wait_clock_advance(self, t0: Optional[float], sim_dt: float,
-                            deadline_s: float) -> None:
-        """Spin rclpy until the sim clock has advanced by `sim_dt` past `t0`, or
-        `deadline_s` of wall time elapses (then proceed with the latest state)."""
+                            deadline_s: float) -> bool:
+        """Spin rclpy until the sim clock has advanced by `sim_dt` past `t0`.
+
+        Returns True if it advanced, False if `deadline_s` of WALL time elapsed
+        first -- in which case the caller proceeds with an under-advanced world.
+        """
         # Half a tick of slack so float jitter / a clock sample landing mid-step
         # doesn't force an extra wait.
         target = None if t0 is None else t0 + sim_dt - 0.5 * self.physics_step
@@ -442,10 +509,11 @@ class GazeboBridge:
                 # to a one-shot drain so we don't busy-wait the whole deadline.
                 if t is not None:
                     self._exec.spin_once(timeout_sec=0.0)
-                    return
+                    return True
             elif t is not None and t >= target:
                 self._exec.spin_once(timeout_sec=0.0)  # one more drain for twist
-                return
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Bridge contract
@@ -466,6 +534,7 @@ class GazeboBridge:
         #    is flaky (see the ack-quirk note), so an unconfirmed teleport almost
         #    always still landed -- we settle and re-check rather than crash. Only
         #    a long streak of failures (sim dead / wrong model) is fatal.
+        self.reset_ticks = 0
         confirmed = self._set_pose(x, y, self.reset_z, th)
 
         # 4. Settle: zero command for a few steps so residual twist damps out
@@ -475,6 +544,34 @@ class GazeboBridge:
             self._advance(self.cfg.control_dt)
 
         st = self._read_state()
+
+        # 5. Re-place and re-settle until the settled pose stops moving.
+        #
+        #    WHY THIS EXISTS. Steps 3-4 leave the robot up to ~8 mm from target:
+        #    it is dropped from reset_z onto the floor and slides slightly as the
+        #    contacts resolve, by an amount that depends on the wall-clock-paced
+        #    number of ticks the confirm loop happened to take. 8 mm sounds
+        #    negligible and is not: with slip patches on the path it decides
+        #    whether a wheel catches a patch EDGE, a discontinuous change in
+        #    friction under that wheel. That is how ten "identical" rollouts on
+        #    2026-08-02 produced four results at 0.223 m and the rest scattered
+        #    from 1.5 to 6.9 m -- reproducible modes, not smooth noise.
+        #
+        #    The sim itself is deterministic, so identical initial states DO give
+        #    identical rollouts; the fix is simply to make the initial state
+        #    actually identical. Placing at the settled height (see reset_z)
+        #    removes most of the fall, and this loop polishes what remains.
+        #    Converges in 1-2 passes; the bound is only there so a robot wedged
+        #    against geometry cannot spin here forever.
+        for _ in range(self.reset_refine_iters):
+            if math.hypot(st.pose[0] - x, st.pose[1] - y) <= self.reset_place_tol:
+                break
+            self._set_pose(x, y, self.reset_z, th)
+            for _ in range(self.settle_steps):
+                self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
+                self._advance(self.cfg.control_dt)
+            st = self._read_state()
+        self.reset_offset = math.hypot(st.pose[0] - x, st.pose[1] - y)
 
         # Re-check against the settled ground-truth pose: this both rescues a
         # teleport whose mid-flight confirm raced the residual velocity, and
@@ -538,15 +635,94 @@ class GazeboBridge:
             imu=self._node.imu if self.cfg.use_imu else None,
         )
 
+    def _settle_entity_changes(self, ticks: int = 2) -> None:
+        """Let queued entity creations/removals actually take effect.
+
+        gz-sim applies entity changes at the next world STEP, and in
+        deterministic mode the world is PAUSED -- so a remove requested here has
+        not happened yet when the next request goes out. Stepping is the only
+        thing that commits it. Cheap: 2 physics ticks, not control steps.
+        """
+        if self.deterministic:
+            for _ in range(ticks):
+                self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
+        self._exec.spin_once(timeout_sec=0.02)
+
+    def _wait_entities(self, names, max_ticks: int) -> bool:
+        """Step the world until every name in `names` appears in pose/info.
+
+        Returns True once they are all present, False if `max_ticks` ran out.
+        Stepping is what commits a pending creation, and pose/info republishes
+        per tick, so this both drives and observes the same process.
+        """
+        for _ in range(max_ticks):
+            self._exec.spin_once(timeout_sec=0.01)
+            if not set(names) - self._entities_present(names):
+                return True
+            if self.deterministic:
+                self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
+            else:
+                self._spin(0.02)
+        self._exec.spin_once(timeout_sec=0.05)
+        return not (set(names) - self._entities_present(names))
+
+    def _wait_entities_gone(self, names, max_ticks: int) -> bool:
+        """Step until none of `names` remains in pose/info (mirror of _wait_entities)."""
+        for _ in range(max_ticks):
+            self._exec.spin_once(timeout_sec=0.01)
+            if not self._entities_present(names):
+                return True
+            if self.deterministic:
+                self._world_control(multi_step=1, ack_ms=self._step_ack_ms)
+            else:
+                self._spin(0.02)
+        self._exec.spin_once(timeout_sec=0.05)
+        return not self._entities_present(names)
+
     def _apply_terrain(self, terrain, near) -> None:
         """Remove last episode's patches and spawn this episode's. `terrain` is a
-        list of patch dicts (see spawn_surface_patches schema) or None."""
+        list of patch dicts (see spawn_surface_patches schema) or None.
+
+        THE ORDERING HERE IS LOAD-BEARING. `create` on a name that still exists
+        FAILS, and removals only commit on a world step (which never happens on
+        its own while the world is paused). The original code removed and
+        immediately re-created the same names, so whether the patches existed at
+        all came down to wall-clock service timing: on 2026-08-02 roughly 4 of 10
+        "identical" rollouts silently ran on BARE GROUND, scoring 0.2247 m --
+        indistinguishable from --no-terrain -- while the rest scored 1.5-6.9 m.
+        That, not chaos and not the reset, was the run-to-run variance.
+        """
         self._remove_terrain()
         if not terrain:
+            # Still step: the removals above must commit, or the NEXT episode
+            # inherits them and its own create fails instead.
+            self._settle_entity_changes()
             return
         from .terrain import patch_sdf  # lazy: keeps gz-only deps off the hot path
+        by_name = {}
         for idx, patch in enumerate(terrain):
             name = patch.get("name") or f"rl_patch_{idx}"
+            by_name[name] = (patch, idx)
+        wanted = list(by_name)
+
+        # Commit the removals before re-using the same names: a create against a
+        # name that still exists is the one failure mode that is genuinely fatal
+        # rather than merely slow.
+        self._wait_entities_gone(wanted, self._terrain_remove_ticks)
+
+        # Issue every create ONCE, then wait for the world to actually show them.
+        #
+        # Do NOT re-issue on a missing name. With the world paused the create
+        # blocks for the whole ack timeout and returns FALSE, yet the entity is
+        # created anyway and shows up some ticks later (measured 2026-08-02,
+        # tuning/spawn_diag.py). So a "missing" patch is almost always a patch
+        # in flight -- and re-creating it then genuinely fails, because by that
+        # point the name exists. The retry that seemed obvious made it worse.
+        #
+        # The ack is useless here in both directions, so it is not consulted;
+        # pose/info is the only honest answer to "is it there".
+        for name in wanted:
+            patch, _idx = by_name[name]
             sdf = patch_sdf(patch, name)
             req = EntityFactory()
             req.sdf = sdf
@@ -554,17 +730,41 @@ class GazeboBridge:
             req.pose.position.x = float(patch.get("x", near[0]))
             req.pose.position.y = float(patch.get("y", near[1]))
             req.pose.position.z = float(patch.get("z", 0.001))
-            # Best-effort + track regardless: like set_pose/control the create
-            # executes even when the ack is a false negative, so record the name
-            # so it is removed next reset either way.
-            self._gz.request(self._svc_create, req, EntityFactory, Boolean, self._ack_ms)
-            self._terrain_models.append(name)
+            self._gz.request(self._svc_create, req, EntityFactory, Boolean,
+                             self._ack_ms)
+            if name not in self._terrain_models:
+                self._terrain_models.append(name)
+
+        # Step until every patch is visible. This is the whole point: a patch
+        # that lands a few steps INTO the rollout changes the plant mid-episode,
+        # by a different amount each run -- which is exactly the run-to-run
+        # spread we have been chasing. The rollout must not start until the
+        # ground it is measured on is fully in place.
+        self._wait_entities(wanted, self._terrain_spawn_ticks)
+        self.terrain_missing = sorted(set(wanted) - self._entities_present(wanted))
+        if self.terrain_missing:
+            raise RuntimeError(
+                "terrain patches failed to spawn: %s (asked for %s). The rollout "
+                "would run on different ground than intended and must not be "
+                "compared with others. This used to happen silently and was the "
+                "source of the 0.22-vs-6.9 m run-to-run spread."
+                % (self.terrain_missing, wanted))
 
     # Upper bound on `rl_patch_N` indices to sweep. along_path_terrain_sampler
     # spawns at most n_range[1] (3) and ground_friction_sampler adds `rl_ground`;
     # 8 leaves room for a wider n_range without another silent inheritance bug,
     # while keeping the worst case (every request timing out at _ack_ms) under a
     # second of startup cost.
+    # Attempts to get every requested patch to actually appear. A create is
+    # rejected while a same-named entity still exists and removals commit only on
+    # a world step, so the first attempt fails ~half the time.
+    # Ticks to spend waiting for a requested patch to actually appear. With the
+    # world paused a create's ack times out (~800 ms) while the entity still
+    # lands a few ticks later, so this is the real bound that matters.
+    _terrain_spawn_ticks = 60
+    # Ticks to spend waiting for removals to disappear before re-using the names.
+    _terrain_remove_ticks = 60
+
     _STALE_PATCH_LIMIT = 8
 
     def _sweep_stale_terrain(self) -> None:

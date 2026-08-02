@@ -523,6 +523,104 @@ plan — a large heading change over no distance. Trust the picture. Likewise
 L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
 `00024`, `00047` (zigzag), `00056` (tight V). A true U-turn: `floor_6_00031`.
 
+### The run-to-run variance was an 8 mm reset error amplified by patch edges (solved 2026-08-02)
+
+The blocking mystery — TVLQR scoring 0.22 m and 1.55 m on identical inputs — is
+resolved, and it was **not** a bug in the stepping. Evidence, in the order it
+landed (`tuning/variance_probe.py`, `tuning/reset_probe.py`):
+
+- **It is not process reuse.** 10 rollouts in one process spread 6.70 m; 10 in
+  ten processes spread 3.86 m. Comparable, with **no trend against rollout
+  index** (Spearman rho = -0.14). The accumulated-sim-clock-float hypothesis in
+  `_wait_clock_advance` is **wrong** — delete it as a candidate.
+- **The physics is perfectly deterministic.** Four of those ten rollouts
+  returned 0.223 m agreeing to three decimals, the rest landing on distinct
+  reproducible values (1.5, 1.7, 4.7, 6.9). Discrete modes, not smooth noise.
+- **`reset()` is clean, including from motion.** `reset_probe` resets after
+  idle / forward / spin / reverse: `v` and `omega` come back **exactly 0.00000**
+  every time, heading to 0.00000, `lost_steps` 0. Residual velocity was never
+  the problem. (`reset_ticks` does vary 1..67 because the `_set_pose` confirm
+  loop is wall-clock-paced, but it is self-correcting — each retry yanks the
+  body back — so it is harmless.)
+- **What remained was ~8 mm of positional spread**, from the robot sliding as it
+  fell from `reset_z=0.20` onto its settled height. Tightening this to **exactly
+  0.000 m** (see below) changed the spread not at all — so the reset was *not*
+  the cause, and the "8 mm amplified by patch edges" theory is **retracted**.
+- **THE ACTUAL CAUSE: patches were silently not spawning.** With the world
+  paused, `/world/<w>/create` blocks for the whole ack timeout and returns
+  **False** — while creating the entity anyway, some ticks later
+  (`tuning/spawn_diag.py` proves this: ack False, entity present afterwards).
+  `_apply_terrain` requested a create and started driving immediately, so
+  whether an episode had its patches came down to service timing. Roughly
+  **4-5 of every 10 rollouts ran on BARE GROUND**, scoring ~0.2247 m —
+  identical to `--no-terrain`, which is exactly the "clean mode" that made the
+  data look bimodal. The rest scored 1.5-6.9 m. Two different plants, pooled.
+
+**Fixes**, all in `GazeboBridge`:
+- `_wait_entities` / `_wait_entities_gone` step the world until pose/info
+  actually shows the patches present (or gone) before the rollout starts.
+  pose/info is the only honest answer — the ack is useless in both directions.
+- Do **not** re-issue a create for a "missing" patch: it is almost always in
+  flight, and re-creating then genuinely fails because the name now exists. An
+  obvious-looking retry loop made things worse before this was understood.
+- `terrain_missing` records any patch that never appeared, and a rollout with
+  one raises rather than being quietly recorded as a sample.
+- Reset tightening (kept, though it was not the bug): `reset_z` = measured
+  settled height 0.1806 m plus a re-place/re-settle loop
+  (`reset_place_tol=0.001`), giving x/y/theta spread of exactly 0.00000 across
+  resets from idle/forward/spin/reverse. `lost_steps` counts steps where the
+  world did not advance before the wall-clock deadline (observed: 0).
+
+**Result on floor_6_00042, 8 rollouts:** spread **0.375 m** (1.71-2.08), down
+from 6.70 m, with zero failures and no bare-ground mode. Not yet perfect —
+0.375 m is still above what several queued experiments want to resolve — but
+the plant is now the same one every run.
+
+**Consequences for past results.** Any single-rollout comparison made before
+this is suspect, including the 2026-08-02 three-way table and — most of all —
+the converged tuning run: 132 evaluations ranked on one noisy sample each, at a
+noise level (metres) far above the claimed 0.487 → 0.183 m improvement. **The
+tuned gains `q_cross=7.22 / r_omega=0.369` are not supported by that run** and
+must be re-derived. Re-measure with the fixed reset before trusting anything.
+
+### The patch friction values are unvalidated, and half of them are black ice
+
+**Nobody has ever checked these against reality** — they were picked on a laptop,
+at a much slower real-time factor, by eye, to make the robot visibly slip. Asked
+about twice before and lost both times; hence this section. Current `PROFILES`
+(`src/rudn-ordjo-building/rudn_ordjo_building/surface_patches.py`) vs. real
+rubber-on-surface coefficients:
+
+| profile | mu | real-world equivalent |
+| --- | --- | --- |
+| `rough` | 2.5 | above dry rubber on concrete — effectively "cannot slip" |
+| `directional_x/y` | 1.0 / 0.15 | grips one axis, slides the other |
+| `slippery` | 0.2 | wet smooth tile / oily floor — **realistic** |
+| `icy` | 0.05 | polished or wet black ice — real, but not an indoor floor |
+
+For reference: dry concrete 0.7-1.0, wet concrete 0.5-0.7, tyre on ice 0.1-0.15.
+
+`along_path_terrain_sampler` draws uniformly from
+`["slippery", "icy", "directional_x", "directional_y"]`, so **half of every patch
+set is at or below tyre-on-ice friction**. That is an adversarial worst case, not
+a representative indoor floor — describe it that way in any write-up.
+
+**The deployment target is rubber tyres on university linoleum and tile**, and
+the advisor specifically wants a comparison on **ice and sand**. So the wanted
+change (not yet made, because it would invalidate comparison with everything
+measured so far):
+
+- add a realistic `linoleum` / `wet_tile` (mu ~= 0.35) and make it the common case;
+- add a `sand` profile (high mu but low shear strength — needs thought, since a
+  Coulomb mu alone does not model granular flow);
+- re-weight the sampler so `icy` is the rare adversarial case, not 25% of draws.
+
+Also still unanswered and cheap: `slip1`/`slip2` sit in a `<friction><ode>` block
+while gz-sim runs **DARTSIM**, which likely ignores ODE's force-dependent-slip
+parameters — meaning `mu` may be the only knob ever connected. The `icy_noslip`
+profile exists solely to test this: drive across `icy` and `icy_noslip` in one
+run, and identical behaviour proves `slip1/slip2` are decorative.
+
 ### Ideas queued, roughly in order of expected value
 
 1. **Fix SAC's entropy runaway before any retrain.** `ent_coef` reached 3.31.
@@ -538,12 +636,8 @@ L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
 3. **Re-measure everything on a genuine S-curve** (`floor_6_00028`) now the
    gallery shows the current one is not. Cheap; changes what "TVLQR oscillates
    on curved plans" is even claiming.
-4. **Explain the run-to-run variance properly.** It is now blocking: it is the
-   difference between 0.22 m and 1.55 m for identical inputs, which is larger
-   than most effects being measured. The untried candidate remains accumulated
-   sim-clock floating point in `GazeboBridge._wait_clock_advance`. A cheap first
-   experiment: drive one trajectory 10x in one process and 10x in ten processes,
-   and see which spread is larger.
+4. ~~Explain the run-to-run variance properly.~~ **SOLVED 2026-08-02, see
+   "The run-to-run variance was an 8 mm reset error amplified by patch edges".**
 5. **Widen the tuning search to the full Q/R diagonal** (`q_along`, `q_heading`,
    `r_v`) once the 2-D search proves the machinery. Nelder-Mead handles 5-D, but
    the evaluation budget grows and the variance in (4) sets the noise floor on
@@ -553,7 +647,23 @@ L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
    controller cannot supply, instead of re-deriving feedback from scratch. This
    is also the version most defensible in a write-up — the advisor's requirement
    is that RL be part of the system, not that it beat everything alone.
-7. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
+7. **Parallel sims via namespacing** (agreed 2026-08-02, after the corrector
+   work). Two env vars are all it takes: `GZ_PARTITION` isolates Gazebo
+   transport — a partition collision is exactly the "both spawn a scout_mini and
+   the robot disintegrates" failure above — and `ROS_DOMAIN_ID` isolates DDS. No
+   launch-file surgery, no topic remapping. **Unset must keep today's behaviour
+   exactly**, so make the parallel path opt-in via an explicit `WORKER` variable.
+   Payoff is twofold: RL training is ~linear in workers (SAC is off-policy and
+   sample-hungry), and repeated measurements — now known to be *mandatory*, see
+   the variance section — are embarrassingly parallel, so repeats become nearly
+   free instead of a 5x slowdown. The VM is CPU-bound here, not GPU-bound (a
+   ~30-D obs, 4-D action MLP barely touches the V100, and `TORCH_THREADS` is 1),
+   and cores/RAM on the VM are adjustable while the single GPU is not — so size
+   it as `cores ~= workers + 2`, watching RAM since each Gazebo loads the world
+   meshes independently. The one thing that must be got right first:
+   `just check-sim` currently refuses to launch if *any* Gazebo lives, and it has
+   to become per-partition without losing its teeth.
+8. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
    6 m). Still unexplained, still excluded, still a planner bug rather than a
    control one.
 

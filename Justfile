@@ -351,6 +351,31 @@ tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl' trajs='/home/prog
 tune-log:
     -{{_ssh}} 'tail -40 /tmp/tune_tvlqr.log'
 
+# Separate the run-to-run variance into within-process drift vs. per-process
+# noise: drive ONE trajectory n times inside a single process, then n times in n
+# fresh processes, with everything else held fixed (same gains, same terrain
+# seed, deterministic stepping). Whichever arm spreads wider names the cause --
+# and they want opposite fixes, so this has to be settled before any tuning or
+# corrector comparison means anything. ~25 s per rollout, so n=10 is ~10 min.
+variance-probe n='10' traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.npz': sync
+    {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
+        tmux kill-window -t {{session}}:var 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n var \
+        "cd {{remote}} && bash {{remote}}/tools/run_variance_probe.sh {{n}} {{traj}} \
+         2>&1 | tee /tmp/variance_probe.log; sleep 86400"'
+    @echo "started in tmux window '{{session}}:var' -- follow with:  just variance-log"
+
+variance-log:
+    -{{_ssh}} 'tail -40 /tmp/variance_probe.log'
+
+analyze-variance src="tune_data/variance_probe.jsonl":
+    python3 tools/analyze_variance.py {{src}}
+
+fetch-variance dest="tune_data":
+    mkdir -p {{dest}}
+    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/home/programmer/variance_probe.jsonl {{dest}}/
+
 # Pull the evaluation cache back so the landscape can be drawn locally.
 fetch-tune dest='tune_data':
     mkdir -p {{dest}}
@@ -373,3 +398,13 @@ fetch-trajectories dest='traj_data':
 
 gallery src='traj_data' out='figures':
     .venv/bin/python tools/plot_trajectory_gallery.py {{src}} --out {{out}}
+
+# Interactive single-step console against the running sim: step one physics tick
+# at a time and watch WHEN entity changes actually commit. Built to chase the
+# residual patch nondeterminism that batch rollouts cannot show. Attach a GUI
+# with `just gui` and watch on Moonlight while driving this.
+sim-console traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.npz': sync
+    {{_ssh}} -t 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
+        && source install/setup.bash \
+        && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
+        python3 -m agx_planning.tuning.sim_console --trajectory {{traj}}'
