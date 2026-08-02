@@ -484,6 +484,24 @@ Baseline at the current `q_cross=10 / r_omega=0.25`: **0.487 m** mean
 max|e_cross| over the three-trajectory set (0.243 straight / 0.224 S-curve /
 0.993 corner), measured 2026-08-01 by the tuner itself.
 
+**First converged run (2026-08-02, 132 evaluations, ~2.3 h):**
+`q_cross=7.22`, `r_omega=0.369` → **0.183 m**, from 0.487 m.
+`figures/tvlqr_tune_landscape.png`, history in `tune_data/tvlqr_tune.jsonl`.
+
+**Do not adopt those gains on this evidence alone.** The per-trajectory panel
+shows `floor_6_00042` swinging between ~0.2 m and 7 m *throughout* the run at
+near-identical gains — the run-to-run variance is much larger than the claimed
+improvement. Taking the minimum over 132 noisy draws selects partly for a lucky
+draw (winner's curse), so 0.183 m is biased low and the true value at those
+gains is likely worse. What the run does support is that the *region* around
+q≈7, r≈0.37 is better than the default, since the simplex clustered there.
+
+Before adopting: re-measure the tuned gains and the defaults ~5x each and
+compare distributions, not single numbers (~12 min). More generally, until the
+variance in the "ideas queued" list is understood, **any tuning result needs
+repeat measurements**, and a search that ranks candidates on one sample each is
+resolving noise as often as signal.
+
 **Unexplained, flagged not fixed:** that same run scores TVLQR at 0.224 m on
 floor_6_00042 where `just compare` scored 1.549 m an hour earlier — same gains,
 same seed, same code path. It is the offline-mode variance again but far larger
