@@ -334,7 +334,11 @@ plot-checkpoints src='sweep_data' out='figures' metric='max_cross':
 # loses at most the evaluation in flight. Delete the cache to start over --
 # editing the trajectory list does the same thing, on purpose (the cache is
 # keyed on it and refuses to resume onto a different problem).
-tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl' trajs='/home/programmer/pmp_trajectories_v2/floor_1_00049.npz /home/programmer/pmp_trajectories_v2/floor_6_00042.npz /home/programmer/pmp_trajectories_v2/floor_6_00023.npz': sync
+# Trajectories come from config/eval_trajectories.yaml, NOT from a copy of the
+# list here: this recipe used to carry its own hard-coded three, which went stale
+# the moment the eval set changed, so the run would have been tuned against a
+# different set than every document described.
+tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:tune 2>/dev/null; \
         tmux new-window -d -t {{session}} -n tune \
@@ -342,7 +346,8 @@ tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl' trajs='/home/prog
          && source install/setup.bash \
          && PYTHONPATH=src/agx_navigation/agx_planning:\$PYTHONPATH \
          python3 -m agx_planning.tuning.tune_tvlqr \
-             --trajectories {{trajs}} --max-evals {{evals}} \
+             --trajectory-config {{remote}}/config/eval_trajectories.yaml \
+             --max-evals {{evals}} \
              --cache {{cache}} --out /home/programmer/tvlqr_tuned.json \
              2>&1 | tee /tmp/tune_tvlqr.log"'
     @echo "tuning started in tmux window '{{session}}:tune' -- follow it with:  just tune-log"
