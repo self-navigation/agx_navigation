@@ -25,3 +25,19 @@ tools/attention_mcp/.venv/
 # Fetched measurement data (see Justfile fetch-* recipes)
 traj_data/
 tune_data/
+compare_data_new/
+sweep_clean/
+
+# TensorBoard event files pulled off the server (~4 MB per run, regenerable by
+# re-fetching from ~/runs_<label>/tb/).
+tb_data/
+
+# Figures rendered by the tools/plot_*.py scripts. Same rule as figures/: every
+# one of these regenerates from the data directories above, so the TOOL is the
+# artefact worth versioning, not its output.
+figures_new/
+
+# Advisor-facing write-ups. Deliberately out of git: they are a snapshot of what
+# was reported on one date, they duplicate facts that belong in CLAUDE.md, and
+# they would otherwise rot into a second source of truth that disagrees with it.
+reports/

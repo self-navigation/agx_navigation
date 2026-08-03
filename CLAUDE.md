@@ -564,9 +564,11 @@ physics ticks:
 | rms_cross | 0.6214 | 0.0154 | 0.0503 |
 | final_err | 0.5877 | **0.2633** | 0.8360 |
 
-**`max|e_cross|` — the tuner's objective — is now reproducible to four decimals,
-so single-sample ranking is finally legitimate.** The 0.487 → 0.183 m effect the
-first tuning run claimed is three orders of magnitude above this noise floor.
+**`max|e_cross|` — the tuner's objective — is reproducible to four decimals ON
+THIS TRAJECTORY.** That was read as "single-sample ranking is finally
+legitimate", and **that generalisation is wrong** — see "The 0.0002 m noise floor
+does not transfer" below. `floor_6_00042` has since been dropped from the eval
+set, so this figure now describes a trajectory nothing is measured on.
 
 **`final_err` is NOT reproducible and must not be used as an objective**, or must
 be averaged over repeats. Why, from the per-column onsets: with everything else
@@ -580,6 +582,109 @@ Ruled out along the way, so don't re-propose: the ROS-publish-vs-gz-step race
 (wheel speeds diverge at step 2, *after* the pose at step 1 — the command path is
 a consequence, not a cause), and any terrain difference (`terrain`, `sim_time`
 and `world_steps` now never differ between rollouts).
+
+### The 0.0002 m noise floor does not transfer (found 2026-08-03)
+
+The overnight tuning run on the **7-trajectory** set (138 evals, 1.3 h, results in
+`tune_data/`) reported `q_cross=9.996 / r_omega=1.252` → **0.9412 m** from a
+1.1405 m baseline. **Do not adopt it.** Reading the full JSONL rather than the
+reported optimum:
+
+- the simplex **stopped moving at eval 49** and then re-evaluated ONE gain pair
+  **71 times** (68 distinct pairs over 131 valid evals; the rest are that point);
+- those 71 repeats — identical gains, trajectories and seed — span
+  **0.9412-1.3052 m**, sd **0.0886**, mean **1.0468**.
+
+So the reported best is the **minimum of 71 noisy draws**, biased low by
+winner's curse, and the claimed 0.199 m improvement is smaller than the 0.364 m
+spread it was selected from. Nelder-Mead cannot converge on a noisy objective —
+it shrinks and re-samples forever, which is exactly what the log shows.
+
+**The root error is the generalisation, not the tuner.** The 0.0002 m floor was
+measured on `floor_6_00042` alone — since dropped for being the wrong shape — and
+assumed to carry to the seven-shape set that replaced it. It does not: noise
+there is ~400x higher, because the harder shapes contain turn reversals and a
+turn reversal is the chaotic amplifier already documented above.
+
+Per-trajectory sd across the run, which is where the noise actually lives:
+
+| trajectory | shape | sd | spread |
+| --- | --- | --- | --- |
+| floor_6_00018 | S | 0.026 | 0.33 |
+| floor_6_00031 | U-TURN | 0.148 | 1.51 |
+| floor_6_00023 | CORNER | 0.187 | 0.89 |
+| floor_6_00047 | ZIGZAG | 0.215 | 1.68 |
+| floor_6_00025 | LOOP | 0.280 | 1.43 |
+| floor_1_00049 | STRAIGHT | 0.501 | 1.50 |
+| floor_6_00056 | TIGHT V | 0.582 | 2.80 |
+
+**Consequence: single-sample ranking is not valid on this eval set.** Any tuning
+result needs repeats and a comparison of distributions. This raises the priority
+of parallel sims (queue item 7) — repeats are now mandatory and embarrassingly
+parallel. `tools/plot_tune_variance.py` draws this; `figures_new/`.
+
+### Clean three-way comparison (2026-08-03) — the first trustworthy one
+
+Seven shapes, fixed bridge, terrain on, RL at the 800k checkpoint.
+`tools/plot_corrector_summary.py`, data in `compare_data_new/`
+(max|e_cross| / final_err, m):
+
+| trajectory | shape | identity | tvlqr | rl (800k) |
+| --- | --- | --- | --- | --- |
+| floor_1_00049 | STRAIGHT | **0.11**/0.47 | 0.38/0.21 | 0.65/0.68 |
+| floor_6_00023 | CORNER | 1.19/3.49 | 1.36/3.14 | **1.16**/2.63 |
+| floor_6_00018 | S-CURVE | 4.22/5.42 | **1.06**/0.99 | 1.47/1.60 |
+| floor_6_00047 | ZIGZAG | 5.16/5.38 | **1.41**/1.12 | 2.87/2.87 |
+| floor_6_00056 | TIGHT V | 3.01/3.01 | **1.15**/1.22 | 3.69/4.61 |
+| floor_6_00031 | U-TURN | 5.53/6.30 | 1.40/0.25 | **1.39**/1.43 |
+| floor_6_00025 | LOOP | 5.47/5.56 | **1.63**/0.78 | 3.33/3.34 |
+| **mean** | | **3.53** | **1.20** | **2.08** |
+
+**TVLQR at the DEFAULT gains cuts worst-case deviation by 66% over open loop**,
+and wins 5 of 7 shapes. Two retractions follow:
+
+- **"TVLQR oscillates on S-curves" is dead.** It is the *best* corrector on the
+  genuine S (1.06 vs identity's 4.22). The claim came from `floor_6_00042`,
+  which was an L.
+- **"No RL checkpoint beats identity on anything" is dead** — but only just, and
+  only at the best checkpoints. RL(800k) beats identity on 6 of 7 shapes here.
+  **That checkpoint is not representative**; see the clean sweep below.
+
+### The clean checkpoint sweep kills the "RL was learning" reading (2026-08-03)
+
+20 checkpoints of `runs_20260730` (stride 15, every 75k steps) re-measured on the
+repaired bridge, `--correctors rl` only since identity/TVLQR are
+checkpoint-independent. `tools/plot_checkpoints_clean.py`, data in `sweep_clean/`.
+
+| | value |
+| --- | --- |
+| mean over 20 checkpoints | **3.475 m** (identity is 3.527) |
+| sd across checkpoints | 0.716 |
+| range | 2.030 (@980k) - 4.579 (@305k) |
+| Pearson r vs training step | **0.111 — no trend** |
+| beat identity (3.527) | **8 of 20** |
+| beat TVLQR (1.198) | **0 of 20** |
+
+**There is no learning trend on the real task**, and the typical checkpoint is
+level with open loop. The 800k checkpoint used in the comparison table above
+(2.08 m) sits in one of only three good pockets (755k/830k/980k) — it was picked
+because the *old contaminated* sweep called it best, so quoting it as "the RL
+result" is the same winner's-curse error as the tuning run. Quote it as **best
+checkpoint**, never as typical.
+
+**The checkpoint-to-checkpoint swing is real, not measurement noise.** Adjacent
+checkpoints 75k steps apart differ by ~2 m, against a measurement sd of ~0.09 m
+on this eval set. So the policy genuinely lurches between saves — exactly what
+`ent_coef=3.31` predicts, since a near-random policy makes every save a different
+random draw.
+
+**Retract the TB reading.** `rollout/terminal_abs_e_cross` falls 3.9 → 1.6 m
+across training, which looks like the policy learning the task while the
+optimiser diverged. It is not: that metric was logged **by the mis-stepped
+environment**, so it reports progress at a task that was not the task. The clean
+sweep is the out-of-band check and it shows no trend. The optimiser panels
+(`ent_coef`, `critic_loss`) remain valid — they describe SAC, not the plant.
+`tools/plot_training_diagnostics.py` now says so on the figure itself.
 
 ### Instrumentation: per-step state traces
 
