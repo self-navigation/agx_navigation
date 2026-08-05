@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# ProxyCommand for the `agx` ssh host: pick whichever route to the GPU VM is
+# currently alive, preferring the direct one.
+#
+# There are two routes to the SAME machine:
+#   direct  programmer@172.26.13.37            (needs the lab VPN)
+#   jump    programmer@192.168.71.113  via  llm_test2@kron.botik.ru:2202
+#
+# The VPN drops whenever the laptop lid closes and takes ~15 minutes to come
+# back, so the correct route changes several times a day. Nobody should have to
+# remember which one is live -- that is this script's whole job.
+#
+# It is a ProxyCommand, so it runs inside connection setup and therefore works
+# identically for ssh, scp, rsync -e ssh, git and every Justfile recipe. stdout
+# IS the encrypted channel: every diagnostic must go to stderr.
+#
+# The probe is a TCP connect to port 22, not a ping. A host can answer ICMP
+# while sshd is unreachable, and the VPN's half-up states do exactly that.
+#
+# Cache: the answer is stored in /tmp for $AGX_ROUTE_TTL seconds (default 60),
+# so a burst of recipes pays for one probe. Bust it with `just route-check`,
+# `rm -f /tmp/agx-route.$UID`, or by forcing $AGX_ROUTE.
+#
+# Env:
+#   AGX_ROUTE=direct|jump   skip the probe entirely and use this route
+#   AGX_ROUTE_TTL=<seconds> cache lifetime (default 60)
+#   AGX_ROUTE_VERBOSE=1     announce the chosen route on stderr
+set -uo pipefail
+
+DIRECT_HOST=172.26.13.37
+DIRECT_PORT=22
+JUMP_PROXY=llm_test2@kron.botik.ru
+JUMP_PROXY_PORT=22
+JUMP_TARGET=192.168.71.113
+# 2202, NOT 22: in the documented `ssh -J llm_test2@kron.botik.ru -p2202
+# programmer@192.168.71.113`, -p applies to the FINAL host. kron itself is on 22.
+JUMP_TARGET_PORT=2202
+
+PROBE_TIMEOUT=${AGX_ROUTE_PROBE_TIMEOUT:-2}
+TTL=${AGX_ROUTE_TTL:-60}
+CACHE=/tmp/agx-route.$(id -u)
+
+note() { [ -n "${AGX_ROUTE_VERBOSE:-}" ] && echo "agx-route: $*" >&2; return 0; }
+
+connect_direct() {
+    note "route=direct ($DIRECT_HOST)"
+    exec nc "$DIRECT_HOST" "$DIRECT_PORT"
+}
+
+connect_jump() {
+    note "route=jump ($JUMP_PROXY -> $JUMP_TARGET)"
+    exec ssh -p "$JUMP_PROXY_PORT" \
+        -o ConnectTimeout=10 \
+        -W "$JUMP_TARGET:$JUMP_TARGET_PORT" \
+        "$JUMP_PROXY"
+}
+
+# Both probes MUST have stdin closed. stdin here is the encrypted data channel
+# of the ssh session we are proxying for; a probe that inherits it eats the
+# parent's handshake bytes and the connection dies with "Bad packet length".
+probe_direct() {
+    timeout "$PROBE_TIMEOUT" \
+        bash -c "exec 3<>/dev/tcp/$DIRECT_HOST/$DIRECT_PORT" </dev/null 2>/dev/null
+}
+
+# --- forced route -----------------------------------------------------------
+case "${AGX_ROUTE:-auto}" in
+    direct) connect_direct ;;
+    jump)   connect_jump ;;
+    auto)   ;;
+    *)      echo "agx-route: AGX_ROUTE must be direct|jump|auto, got '$AGX_ROUTE'" >&2
+            exit 2 ;;
+esac
+
+# --- cached answer ----------------------------------------------------------
+if [ -f "$CACHE" ] && [ "$TTL" -gt 0 ]; then
+    age=$(( $(date +%s) - $(stat -c %Y "$CACHE" 2>/dev/null || echo 0) ))
+    if [ "$age" -lt "$TTL" ]; then
+        case "$(cat "$CACHE" 2>/dev/null)" in
+            direct) note "cache hit (${age}s old)"; connect_direct ;;
+            jump)   note "cache hit (${age}s old)"; connect_jump ;;
+        esac
+    fi
+fi
+
+# --- probe ------------------------------------------------------------------
+if probe_direct; then
+    echo direct > "$CACHE"
+    connect_direct
+fi
+note "direct route down, trying the jump host"
+
+# The jump route is only "up" if the whole two-hop path works, so probe it with
+# the real thing rather than a TCP connect to kron alone.
+if ssh -n -o BatchMode=yes -o ConnectTimeout=10 \
+       -p "$JUMP_PROXY_PORT" "$JUMP_PROXY" \
+       "timeout 5 bash -c 'exec 3<>/dev/tcp/$JUMP_TARGET/$JUMP_TARGET_PORT'" \
+       </dev/null >/dev/null 2>&1; then
+    echo jump > "$CACHE"
+    connect_jump
+fi
+
+rm -f "$CACHE"
+cat >&2 <<EOF
+agx-route: NEITHER ROUTE TO THE GPU VM IS AVAILABLE.
+
+  direct  $DIRECT_HOST:$DIRECT_PORT      -- no TCP connect within ${PROBE_TIMEOUT}s
+  jump    $JUMP_PROXY:$JUMP_PROXY_PORT -> $JUMP_TARGET  -- could not reach the target
+
+The direct route needs the lab VPN, which drops on lid-close and takes about
+15 minutes to reconnect; if the laptop woke up recently, waiting is the fix.
+Check the jump host by hand with:
+
+  ssh -p $JUMP_PROXY_PORT $JUMP_PROXY true
+
+Not retrying -- failing now beats hanging on a dead link.
+EOF
+exit 1
