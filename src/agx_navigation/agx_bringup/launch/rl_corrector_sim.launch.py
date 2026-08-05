@@ -42,8 +42,11 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     headless = LaunchConfiguration("headless")
 
+    # rl_corrector.world runs uncapped, which is right for training but floods
+    # /imu/data at ~3 kHz -- see rl_corrector_rt.world's header. Tools that drive
+    # the robot and measure the response (slip_ident) want world:=rl_corrector_rt.world.
     world_path = PathJoinSubstitution(
-        [FindPackageShare("rudn_ordjo_building"), "worlds", "rl_corrector.world"]
+        [FindPackageShare("rudn_ordjo_building"), "worlds", LaunchConfiguration("world")]
     )
 
     set_gz_resource_path = SetEnvironmentVariable(
@@ -167,6 +170,7 @@ def generate_launch_description():
         # Off by default here: this launch exists for training/validation, where the
         # rendering sensors are unused overhead. Set sim_sensors:=true to inspect them.
         DeclareLaunchArgument("sim_sensors", default_value="false"),
+        DeclareLaunchArgument("world", default_value="rl_corrector.world"),
         set_gz_resource_path,
         set_gz_plugin_path,
         gz_server_headed,

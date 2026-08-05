@@ -4,14 +4,18 @@
 # these recipes only *drive* it over ssh on the training VM. New commands go
 # here rather than in the Makefile.
 #
-# Two routes to the same box. Direct (default):
-#     just sync
-# Via the jump host, from outside the lab network:
-#     just host='programmer@192.168.71.113' \
-#          ssh_opts='-J llm_test2@kron.botik.ru -p2202' sync
+# There are two routes to the same box -- direct over the lab VPN, and via a
+# jump host -- and which one works changes several times a day, because the VPN
+# drops on lid-close and takes ~15 minutes to come back. NOTHING HERE CHOOSES
+# BETWEEN THEM: every recipe talks to the host alias `agx`, whose ProxyCommand
+# (tools/agx-route) probes both and prefers direct. See ssh_config.
+#
+# So there is no route override to remember. To force one anyway, for testing:
+#     AGX_ROUTE=jump just sync
+# and `just route-check` reports which route is live and refreshes the cache.
 
-host     := "programmer@172.26.13.37"
-ssh_opts := ""
+host     := "agx"
+ssh_opts := "-F " + justfile_directory() / "ssh_config"
 remote   := "/home/programmer/agx_navigation"
 
 # tmux window names on the server; `sim` and `train` are long-lived.
@@ -40,6 +44,45 @@ remote-build: sync
 # Interactive shell on the server, already in the workspace.
 remote-shell:
     {{_ssh}} -t 'cd {{remote}} && exec bash -l'
+
+# ---------------------------------------------------------------- routing
+
+# Which route is live right now, and refresh the cached answer.
+#
+# Also the way to BUST the cache: agx-route memoizes its probe for 60s
+# (AGX_ROUTE_TTL), so a burst of recipes pays for one probe rather than one per
+# connection; this deletes that memo and re-probes.
+route-check:
+    @rm -f /tmp/agx-route.$(id -u)
+    @AGX_ROUTE_VERBOSE=1 {{_ssh}} 'echo "reached $(hostname) as $(whoami)"'
+    @echo "cached route: $(cat /tmp/agx-route.$(id -u) 2>/dev/null || echo none)"
+
+# One-time: make `ssh agx` / `scp x agx:` / `rsync agx:...` work with NO flags,
+# by Including this repo's ssh_config from ~/.ssh/config. The Justfile passes
+# -F explicitly and does not need this; interactive use does.
+#
+# Idempotent, and it rewrites the ProxyCommand path to wherever this clone
+# actually lives, so it is correct on a machine that checked the repo out
+# somewhere else.
+ssh-setup:
+    @sed -i 's|ProxyCommand .*/tools/agx-route|ProxyCommand {{justfile_directory()}}/tools/agx-route|' \
+        {{justfile_directory()}}/ssh_config
+    @mkdir -p ~/.ssh
+    @touch ~/.ssh/config
+    @grep -qF 'Include {{justfile_directory()}}/ssh_config' ~/.ssh/config \
+        || sed -i '1i Include {{justfile_directory()}}/ssh_config' ~/.ssh/config
+    @echo "~/.ssh/config now includes {{justfile_directory()}}/ssh_config"
+    @echo "try:  ssh agx hostname"
+
+# Run one command on the VM, optionally detached (long training/measurement
+# runs). Detaching matters: a backgrounded remote command holds the ssh channel
+# open for minutes unless all three streams are redirected -- tools/agx-run
+# does that and prints the logfile to poll.
+remote-run cmd:
+    tools/agx-run {{quote(cmd)}}
+
+remote-detach cmd:
+    tools/agx-run --detach {{quote(cmd)}}
 
 # ---------------------------------------------------------------- sim guard
 
@@ -89,12 +132,31 @@ kill-sim:
 
 # Two sims share Gazebo's transport partition and resets silently break, so:
 # Start the headless RL sim in a detached tmux window. Only ever run ONE.
-remote-sim: sync check-sim
+#
+# `world` selects the physics rate: the default runs uncapped (~33x, what
+# training wants), rl_corrector_rt.world runs at 1x. Anything that DRIVES the
+# robot and MEASURES the response needs 1x -- at 33x the IMU publishes at ~3 kHz
+# and a normal subscriber drops almost all of it. See `just remote-chi`.
+remote-sim world='rl_corrector.world': sync check-sim
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:sim 2>/dev/null; \
         tmux new-window -d -t {{session}} -n sim \
-        "cd {{remote}} && make rl-sim HEADLESS=true USE_GPU_RENDER_ACCELERATION=false 2>&1 | tee /tmp/rl-sim.log"'
-    @echo "sim starting -- follow it with:  just remote-log sim"
+        "cd {{remote}} && make rl-sim HEADLESS=true USE_GPU_RENDER_ACCELERATION=false WORLD={{world}} 2>&1 | tee /tmp/rl-sim.log"'
+    @echo "sim ({{world}}) starting -- follow it with:  just remote-log sim"
+
+# Identify slip_chi against whatever sim is currently up. REQUIRES the real-time
+# world (`just remote-sim rl_corrector_rt.world`) -- slip_ident integrates the
+# gyro on message timestamps and cannot keep up with the uncapped world's ~3 kHz
+# IMU; it aborts with "No usable arcs" rather than reporting a wrong chi.
+#
+# chi is a property of the SURFACE, not the chassis, so re-run this whenever the
+# ground friction changes. On the real robot use cmd_mode:=twist (the physical
+# Scout takes no wheel-level command); that measures chassis_gain_omega, which is
+# chi folded together with the firmware conversion -- not the same number.
+remote-chi:
+    {{_ssh}} 'cd {{remote}} && source /opt/ros/jazzy/setup.bash && source install/setup.bash && \
+        ros2 run agx_planning slip_ident --ros-args -p use_sim_time:=true \
+        -p cmd_mode:=wheels -p imu_topic:=/imu/data -p odom_topic:=/odom 2>&1 | tail -40'
 
 # Needs `remote-sim` up for every phase except p0 (kinematic, no Gazebo).
 # Run a training phase in tmux, e.g. `just remote-train p1`.

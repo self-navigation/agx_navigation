@@ -1,152 +1,228 @@
-# Handover — 2026-08-03, evening session
+# Handover — 2026-08-05
 
 ## TL;DR
 
-The overnight tuning run finished and **its result must not be adopted** — it
-resolved noise, not signal. Separately, the first *trustworthy* three-way
-comparison now exists and TVLQR looks genuinely good. RL is back to inconclusive
-after a clean re-measurement contradicted the training curves.
+Yesterday's "make the floor realistic" change (world ground `mu` 1.0 → 0.45) did
+not make the floor realistic. **It deleted the skid-steer's steering mechanism**,
+and everything measured against it describes a robot that cannot turn. Chasing
+that down consumed the session and produced a much better understanding of the
+plant than the tuning run it displaced would have.
 
-One concrete experiment is queued and it is the highest-value thing to do next:
-**zero the wheel velocities exactly at reset** (see "Do this first").
+Separately, the RL architecture changed direction after the advisor's reply:
+**RL becomes a rough re-planner on top of the frozen PMP path, not a per-wheel
+tracking residual.** That is a strictly better fit for the project and it makes
+the learning problem supervised rather than SAC.
 
-## Do this first: the bit-identical reset experiment
+Nothing is committed. A ground-`mu` sweep is in flight (see "In flight").
 
-Everything downstream — tuning, checkpoint ranking, parallel sims — hinges on
-whether a rollout can be made exactly reproducible. Current belief chain:
+## How today unfolded, in order
 
-- deterministic stepping is now honest (fixed last night, verified);
-- but the **initial condition is not bit-identical**: wheels settle to ~1e-9
-  rad/s rather than exactly 0, and `reset_settle_z_tol` converges position, not
-  wheel speed;
-- that ~1e-13 asymmetry is amplified at turn reversals (omega crosses zero,
-  skid-steer lateral friction switches direction), which is why the hard shapes
-  are noisy and the straight-ish one was not.
+Recording the reasoning, not just the conclusions, so the timeline is
+reconstructable.
 
-CLAUDE.md previously called this "genuine chaos, not worth chasing". **That was
-written about `final_err` and over-generalised.** Chaos amplifies a seed; it does
-not create one. If the seed is removed the rollout should be bit-identical.
+**1. The mu=0.45 blowup.** The first Bayesian-optimization evaluation on the new
+plant returned **20.6148 m** where the previous plant gave 1.1706 m. Killed it
+rather than spending 2 h measuring a broken plant.
 
-So: after the settle loop in `GazeboBridge._reset`, explicitly set every wheel
-joint velocity to exactly 0.0 (gz `set state` / joint velocity reset, not a
-command — the controller latches) and re-verify. Then re-run
-`tuning/variance_probe.py` on `floor_6_00056` (TIGHT V, sd 0.582 — the worst
-offender) and `floor_6_00047` (ZIGZAG, sd 0.215).
+**2. Diagnostic: is it the corrector or the plan?** Ran `compare_correctors` with
+`identity` and `tvlqr` on two shapes, **no terrain patches at all**:
 
-**If it works**, single-sample ranking becomes legitimate again, the tuner can be
-re-run as-is, and parallel sims stop being mandatory (still nice for training).
-**If it does not**, the variance is genuinely irreducible, repeats become
-compulsory, and parallel sims (queue item 7) move to the top. Either way this is
-~1 h and it decides the shape of the next week — do not start another tuning run
-before knowing the answer.
-
-## The overnight tuning run: do not adopt its gains
-
-Reported `q_cross=9.996 / r_omega=1.252` → 0.9412 m from a 1.1405 m baseline.
-138 evals, 1.3 h. Data pulled to `tune_data/tvlqr_tune.jsonl`.
-
-Reading the full JSONL rather than the reported optimum:
-
-- the simplex **stopped moving at eval 49** and then re-evaluated ONE gain pair
-  **71 times**;
-- those 71 repeats — identical gains, trajectories, seed — span
-  **0.9412–1.3052 m**, sd 0.0886, mean 1.0468.
-
-The reported best is the **minimum of 71 noisy draws**. The claimed 0.199 m gain
-is smaller than the 0.364 m spread it was selected from. Nelder-Mead cannot
-converge on a noisy objective — it shrinks and re-samples forever, which is
-exactly what the log shows after eval 49.
-
-**Root cause is a generalisation, not a tuner bug.** The 0.0002 m noise floor was
-measured on `floor_6_00042` alone — since dropped from the eval set for being an
-L — and assumed to carry to the 7-shape set. It does not; noise there is ~400x
-higher. Per-trajectory sd is in CLAUDE.md.
-
-Figure: `figures_new/tvlqr_tune_variance.png` via `tools/plot_tune_variance.py`.
-
-## First clean three-way comparison (this is the good news)
-
-Seven shapes, repaired bridge, terrain on, RL at the 800k checkpoint.
-`compare_data_new/`, figure `figures_new/corrector_summary.png` via
-`tools/plot_corrector_summary.py`. Mean max|e_cross|:
-
-| corrector | mean | note |
+| trajectory | identity | tvlqr |
 | --- | --- | --- |
-| identity | 3.53 m | |
-| **TVLQR** | **1.20 m** | −66%, best on 5 of 7 shapes, DEFAULT gains |
-| RL (800k) | 2.08 m | best checkpoint, NOT typical — see below |
+| floor_1_00049 (straight) | 0.53 / 0.54 | 0.59 / 0.86 |
+| floor_6_00023 (corner) | 27.25 / 27.95 | 30.31 / 30.92 |
 
-Two old claims die: **"TVLQR oscillates on S-curves"** (it is the best corrector
-on the genuine S, 1.06 m vs identity's 4.22 m — the claim came from the L) and
-**"no RL checkpoint beats identity"**.
+Open loop fails as badly as TVLQR, with zero patches. So it is **not** a
+corrector failure and **not** the patch distribution — the nominal PMP plan is
+unfollowable. Straight fine, corner catastrophic ⇒ it is the yaw model.
 
-## RL: re-measured clean, and it is inconclusive again
+**3. First hypothesis (partly wrong, recorded because it shaped the next step):**
+`slip_chi` is the Mandow effective-track factor and the scrub it models is
+generated by lateral friction, so chi is a function of `mu`. The plans were baked
+with chi=1.373 measured on a grippier floor; a wrong chi is a multiplicative
+error on commanded yaw that compounds along an arc — no error on a straight,
+unbounded error round a corner. Right shape, wrong mechanism.
 
-20 checkpoints of `runs_20260730` (stride 15) re-measured on the repaired bridge,
-`--correctors rl` only. `sweep_clean/`, figure
-`figures_new/rl_checkpoints_clean.png`.
+**4. Measuring chi hit a harness bug first.** `slip_ident` aborted with "no IMU"
+(its `imu_topic` default is `/imu`, the real topic is `/imu/data`; its own usage
+line has it right). Fixed that, then it aborted with `No usable arcs` and a gyro
+reading ~800x too small. Cause: `make rl-sim` runs uncapped (~33x), putting
+`/imu/data` at **3295 Hz**, and a normal subscriber drops nearly all of it. It
+failed loudly instead of reporting a wrong chi, which is the correct behaviour.
+Built `rl_corrector_rt.world` (1x realtime, `real_time_update_rate=100`) plus a
+`world:=` launch arg, `WORLD=` Make variable and `just remote-sim <world>` param.
+Runtime `set_physics` is the tempting shortcut and it zeroes gravity — the
+world file header says so.
 
-| | |
-| --- | --- |
-| mean over 20 checkpoints | 3.475 m (identity 3.527) |
-| Pearson r vs training step | **0.111 — no trend** |
-| beat identity | 8 of 20 |
-| beat TVLQR | **0 of 20** |
-| range | 2.030 (@980k) – 4.579 (@305k) |
+**5. The measurement, and the control that made it mean something.**
 
-**The 800k checkpoint is a lucky pocket, not typical** — it was selected by the
-*old contaminated* sweep, so quoting it as "the RL result" repeats the same
-winner's-curse error as the tuning run.
+| ground `mu` | chi | yaw gain | usable arcs |
+| --- | --- | --- | --- |
+| 1.0 | **1.3727** | 0.73 | 8 / 8 |
+| 0.45 | **18.69** | 0.054 | 1 / 8 |
 
-**Retracted mid-session:** `rollout/terminal_abs_e_cross` falls 3.9 → 1.6 m in
-TensorBoard, which reads as the policy learning while the optimiser diverged. It
-does not survive — that metric was logged **by the mis-stepped environment**. The
-clean sweep is the out-of-band check and shows no trend. The optimiser panels
-(`ent_coef` → 3.31, `critic_loss` → 1.2e4) remain valid; they describe SAC, not
-the plant. `tools/plot_training_diagnostics.py` says so on the figure now.
+The mu=1.0 row reproduces `PlannerConfig.slip_chi = 1.373` to four figures with a
+0.028 spread across radii — so the harness is sound and the rows are comparable.
+At 0.45 the robot achieves **5% of commanded yaw rate**; seven of eight arcs were
+rejected as unmeasurable because there was almost no rotation to divide by.
 
-Checkpoint-to-checkpoint swings are ~2 m against ~0.09 m measurement noise, so
-the policy genuinely lurches between saves — consistent with `ent_coef=3.31`.
-Caveat: that 0.09 m is TVLQR's repeat sd used as a proxy; **RL's own measurement
-noise has never been measured.** Worth one probe if anyone leans on that number.
+**6. The actual mechanism.** `wheel.xacro` gives each wheel `mu1=200.0` (rolling)
+and `mu2=0.7` (lateral) — a 285:1 anisotropy that *is* skid-steering, since the
+robot yaws by gripping longitudinally while scrubbing sideways. Gazebo combines
+two surfaces by taking the smaller coefficient, so ground 1.0 left the pair at
+~1.0/0.7 with the ratio intact, while an **isotropic** 0.45 caps both at 0.45 and
+collapses the ratio to 1:1. Lowering an isotropic ground plane does not make the
+floor slippery; it removes the mechanism.
 
-## New tooling (all offline, venv matplotlib, no ROS dep)
+**7. The implication that outruns the bug.** Patches are ground entities, so a
+patch is necessarily isotropic. Every profile in `surface_patches.py` sits below
+the wheel's 0.7 — linoleum 0.45, wet_tile 0.30, slippery 0.20, icy 0.05 — so
+**every slip patch ever driven over has been collapsing the anisotropy to 1:1**,
+simulating "loses steering" rather than "slides". That reframes a lot of past
+corrector behaviour and makes the `icy`/`icy_noslip` (`slip1`/`slip2` under
+DARTSIM) question a side issue by comparison.
 
-| tool | figure |
-| --- | --- |
-| `tools/plot_corrector_summary.py` | grouped bars + mean, whole eval set in one figure |
-| `tools/plot_tune_variance.py` | search order + repeat distribution at the collapsed point |
-| `tools/plot_training_diagnostics.py` | 6-panel SAC diagnostics from the TB event file |
-| `tools/plot_checkpoints_clean.py` | RL error vs training step, baselines as reference lines |
+## In flight: the ground-`mu` → chi calibration curve
 
-`tools/plot_training_diagnostics.py` needs `tensorboard` in the venv (installed).
-TB events pulled to `tb_data/`.
+`tools/sweep_ground_mu.sh` (started ~12:13, ~2 min/point, 7 points) measures chi
+at `mu` in {1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45}, writing `sweep_data/
+ground_mu_chi.csv` and per-point logs. The script's header carries the full
+rationale.
 
-## State of the VM
+**Falsifiable prediction:** lateral is capped by the wheel's own 0.7 for any
+ground `mu >= 0.7`, so chi should sit flat near 1.37 down to 0.7 and rise sharply
+below it — **a knee at 0.7**. If chi instead degrades smoothly from 1.0, the
+min-combination model is wrong and the usable range is something else.
 
-One `gz sim` (the long-lived rl-sim, headless), tmux session `rl` with 2 windows.
-No compare/sweep/tuner running. `just check-sim` before launching anything.
+It leaves the world file at the last value swept (0.45). **Set it deliberately
+afterwards.**
 
-The direct VPN route is back up, so plain `just <recipe>` works again — the jump
-host (`just host='programmer@192.168.71.113' ssh_opts='-J llm_test2@kron.botik.ru
--p2202' …`) is no longer needed.
+## What the curve decides
 
-## Reporting artefacts (not code — safe to delete once sent)
+If the knee is at 0.7, then **no isotropic ground below 0.7 can represent a
+surface without breaking steering**, and since patches must be ground entities,
+that bounds what a patch can express at all. The principled fix is then to give
+the wheel a *realistic* anisotropy instead of the 285:1 hack — something like
+`mu1=1.0 / mu2=0.5` for rubber on linoleum, a ratio of 2:1 — verify the robot
+still steers, and let patches scale from there. That is a re-baseline, but the
+version that survives contact with a real robot.
 
-- `otchyot.md` — exhaustive 41-item reference version, kept for fact lookup
-- `otchyot_chat.md` — the conversational post sequence actually sent to the
-  advisor on 2026-08-03, 6 messages with figure attachment points
+Then: re-plan the eval trajectories on a plant that steers, re-measure the three
+correctors, and only then resume gain tuning.
 
-Both are in Russian. The advisor has been sent: the corrector summary, two path
-overlays, the RL training diagnostics, the clean checkpoint sweep, and the tuning
-variance figure.
+## Architecture: RL as a rough re-planner, not a residual
+
+The advisor's reply was *"RL нужен … надо прикрутить его, как **грубый
+планировщик**. Пока 2 зоны — лед и песок"* — RL at the **planning** layer, for
+dynamically appearing problem zones, with exactly two zone types. The user's
+sharpening of it is the key idea: **the policy's job is to reproduce the PMP plan
+that brings the robot back on track.**
+
+That makes it **amortized optimization with PMP as the teacher**, so it is
+supervised, not SAC:
+
+```
+sample (nominal plan, deviation state, local chi)
+    -> run the real PMP solver -> optimal re-join trajectory
+    -> regress
+```
+
+Which kills, one for one, every open RL problem: no exploration ⇒ no `ent_coef`
+runaway (queue item 1); no bootstrapped value ⇒ no `critic_loss` divergence (item
+2); no reward shaping; each label is an exact optimum rather than a noisy return;
+and **data generation needs no Gazebo at all**, so it is CPU-parallel. Gazebo
+returns only for validation, on the existing eval set and comparison harness.
+
+Runtime layering, which preserves the project's philosophy (one expensive optimal
+solve offline, cheap corrections online — nothing online is an optimizer):
+
+| layer | rate | cost | job |
+| --- | --- | --- | --- |
+| PMP | once/goal, offline | seconds | optimal plan on the **nominal** surface |
+| RL re-planner | ~2–5 Hz | one MLP forward pass | reference has become infeasible ⇒ emit a short re-join |
+| TVLQR | 50 Hz | precomputed gains | track whichever reference is active |
+
+The split is real rather than nominal: TVLQR handles small deviations around a
+*feasible* reference, which is what LQR is optimal at; when a zone makes the
+reference infeasible no gain matrix helps and the *reference* must change, which
+is structurally outside TVLQR's reach. PMP is the right thing to call there and
+is a ~20 s BVP solve, so the policy is precisely its fast approximation.
+
+Side benefits: a planner emits waypoints, so the **4-wheel-vs-twist deployability
+problem disappears** (this supersedes the 2026-08-04 "keep the 4-wheel residual"
+decision); RL no longer has to beat TVLQR to justify itself; and the existing
+residual work becomes a documented negative result, which is usable material for
+the intro the advisor asked for.
+
+Open items on this: the PMP solver needs a "re-join from an arbitrary state onto
+the nominal path" boundary condition (a BC change, not a new solver), and its
+per-solve cost over a 2–3 s horizon needs measuring early since it sets the data
+budget. **Worth one clarifying line to the advisor** ("a planner over the frozen
+PMP path, or replacing PMP?") before committing to the rewrite.
+
+## Handling chi when it is not constant
+
+Decided today, and the user confirmed reactive is acceptable ("that matches our
+original idea"):
+
+1. **The planner keeps one nominal chi** — correct by definition, since "nominal"
+   means the surface it was measured on. Today's bug is that the constant was
+   measured on the wrong surface, not that it is a constant.
+2. **chi becomes a measured signal online** in the correction layers:
+   `chi_hat = omega_ideal(from wheel commands) / omega_measured(gyro)`, i.e.
+   `slip_ident`'s computation run recursively. Feed it to TVLQR (its
+   linearization uses `track_eff = track * chi`) and to the policy as an input.
+   **Observability caveat:** undefined when `omega ≈ 0` — you cannot measure yaw
+   loss driving straight — so it needs a validity gate that holds the last value.
+   Free side effect: this is exactly what the known-wrong `wheel_odometry` yaw
+   integration and the EKF bias are missing.
+3. **Reactive by construction.** You learn the ice is slippery by sliding on it.
+   Pre-emptive routing needs perception (a camera recognising ice) and is out of
+   scope.
+
+## Measuring chi on the real robot
+
+Yes, and it is the intended use of `slip_ident` — it references the **gyro**, so
+nothing about the method is sim-specific (`calibrator.py` cannot substitute: it
+compares commands against `/odom` and both sides share the missing slip term).
+Two things to get right, both now in CLAUDE.md:
+
+- **`cmd_mode:=wheels` is sim-only.** On the real Scout use `cmd_mode:=twist`,
+  which yields `chassis_gain_omega` — chi folded together with the firmware's
+  conversion. Do not paste that into `PlannerConfig.slip_chi`.
+- Drive **arcs at several radii**, both directions. Spins are load-dependent and
+  reported separately; do not fit chi to them.
+
+**This is how the sim gets an empirical anchor.** Measuring `mu` directly is
+awkward; measuring chi is not. Drive the real robot on linoleum, on the ice
+mock-up and on sand, then tune each sim profile until the *sim's* chi matches.
+Chi, not mu, is the quantity to match — it is what the model consumes.
+
+## State
+
+- **VM:** one headless `gz sim` on `rl_corrector_rt.world`, tmux session `rl`.
+  The sweep restarts it per point. `just check-sim` before launching anything.
+- **`rl_corrector.world` still carries `mu=0.45`** and must be reverted before any
+  training or comparison run touches it.
+- **`rl_corrector_rt.world`'s header claims friction parity** with a file it no
+  longer matches — fix once the value is chosen, rather than churning it twice.
+- **Nothing is committed**, including inside the `rudn-ordjo-building` submodule.
+  158 unit tests pass.
+- Abandoned caches on the VM: `tvlqr_tune_v2.jsonl` (killed Nelder-Mead run),
+  `tvlqr_tune_v3.jsonl` (killed BO run, 1 evaluation). Both measured plants we
+  have since abandoned; do not resume onto them.
 
 ## Queue changes
 
-- Item 4 ("explain the run-to-run variance") is **reopened** — the 2026-08-02
-  answer was correct about the patch-spawn bug but the remaining variance on the
-  hard shapes is unexplained-in-practice until the bit-identical reset experiment
-  above resolves it.
-- Item 7 (parallel sims) is **conditional** on that experiment failing.
-- Items 1 and 2 (entropy runaway, bounded return) are unchanged and still the
-  prerequisites for any retrain.
+- **New, blocking everything:** resolve the friction-anisotropy model. Nothing
+  measured on a robot that cannot steer means anything.
+- **Item 6 (give RL a fair fight) is superseded** by the re-planner architecture
+  above — the point is no longer to stack RL on tuned TVLQR at the same layer.
+- **The 2026-08-04 "keep the 4-wheel residual" decision is superseded** for the
+  same reason.
+- Items 1 and 2 (entropy runaway, bounded return) become **moot** if the
+  supervised formulation is adopted.
+- Item 7 (parallel sims) drops further: supervised data generation needs no
+  Gazebo, so the parallel case is now only RL fine-tuning, if any.
+- `sand` still unbuilt, and now clearly blocked on the anisotropy question rather
+  than on `slip1`/`slip2`.

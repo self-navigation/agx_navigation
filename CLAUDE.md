@@ -323,6 +323,53 @@ Tesla V100 passed through. The [Justfile](Justfile) holds the remote workflow �
 new commands go there rather than in the Makefile, which stays the source of truth
 for building and running; the recipes only drive `make` over ssh.
 
+### Reaching the VM: never choose a route by hand
+
+There are two routes to the **same** machine — direct over the lab VPN
+(`172.26.13.37`) and via a jump host (`llm_test2@kron.botik.ru` → `192.168.71.113`,
+port 2202 on the *target*, not on kron). The VPN drops whenever the laptop lid
+closes and takes ~15 minutes to come back, so which route works changes several
+times a day. **Nothing should ever hardcode one.**
+
+`ssh_config` defines a single host alias `agx` whose `ProxyCommand`
+([tools/agx-route](tools/agx-route)) probes both and prefers direct. Because it
+is a ProxyCommand it sits inside connection setup, so `ssh`, `scp`, `rsync -e
+ssh`, `git` and every Justfile recipe are routed identically.
+
+```bash
+just <recipe>                  # already routed — nothing to override
+ssh -F ssh_config agx          # works straight from a fresh clone
+just ssh-setup                 # one-time: then plain `ssh agx`, `scp x agx:` work
+just route-check               # which route is live; also busts the cache
+AGX_ROUTE=jump just sync       # force a route (testing only)
+tools/agx-run --detach 'make rl-train …'   # long run, returns immediately
+tools/agx-run --tail /tmp/x.log            # poll it
+```
+
+The probe is a **TCP connect to port 22**, not a ping: the VPN's half-up states
+answer ICMP while sshd is unreachable. The answer is cached in
+`/tmp/agx-route.$UID` for 60 s (`AGX_ROUTE_TTL`), so a burst of recipes pays for
+one probe — direct adds ~10 ms, the jump route ~1 s. If **neither** route works
+the ProxyCommand exits non-zero with both failures spelled out rather than
+hanging or silently falling back.
+
+Two things that bit during implementation and will bite again:
+
+- **A ProxyCommand's stdout is the encrypted channel and its stdin is the
+  peer's.** Every diagnostic must go to stderr, and every probe must be run with
+  `</dev/null` — a probe `ssh` that inherits stdin eats the parent's handshake
+  bytes, and the connection dies with `Bad packet length`.
+- `tools/agx-run --detach` exists because `ssh host 'setsid nohup … &'` holds the
+  channel open for minutes after the remote process detaches: ssh waits for the
+  streams the child inherited. `-f` plus redirecting all three fixes it (verified:
+  returns in 0.19 s against a 12 s remote command). The mirror-image trap is that
+  `ssh host 'cmd | tail'` prints nothing until exit, so a healthy long run looks
+  frozen — detach, then `--tail` the log.
+
+A PreToolUse hook ([.claude/hooks/agx-route-guard.sh](.claude/hooks/agx-route-guard.sh))
+catches any Bash command that hardcodes an IP or the jump host and points it back
+at `agx`. It only greps the command string — no probe, no latency.
+
 ```bash
 just sync / remote-build      # rsync the working tree up, build there
 just check-sim / kill-sim     # guard: refuse to start a 2nd Gazebo / clear it
@@ -337,12 +384,11 @@ just fetch-runs               # pull fixture run CSVs into gitignored run_data/
 
 Non-obvious facts about that box, all of which cost time to work out:
 
-- **Detach long runs and poll a log file.** `ssh host 'cmd | tail'` shows nothing
-  until the command exits, so a working run looks frozen; and interrupting the
-  local ssh does not kill the remote processes, which then fight the next launch
-  (`pgrep -af` before relaunching). Use
-  `setsid nohup script </dev/null >/tmp/x.log 2>&1 &`, then read `/tmp/x.log`.
-  A fixture run is ~90 s: ~10 s discovery, ~20 s planning, ~15-60 s driving.
+- **Detach long runs and poll a log file** — `tools/agx-run --detach` does this
+  correctly, see "Reaching the VM" above. Interrupting the local ssh does *not*
+  kill the remote processes, which then fight the next launch (`pgrep -af`
+  before relaunching). A fixture run is ~90 s: ~10 s discovery, ~20 s planning,
+  ~15-60 s driving.
 - **`packages.osrfoundation.org` is throttled to ~6 KB/s** from the VM (other
   mirrors run at ~800 KB/s), so `apt install gz-harmonic` stalls indefinitely.
   Workaround: `apt-get install --print-uris`, fetch the osrfoundation `.deb`s from
@@ -686,6 +732,144 @@ sweep is the out-of-band check and it shows no trend. The optimiser panels
 (`ent_coef`, `critic_loss`) remain valid — they describe SAC, not the plant.
 `tools/plot_training_diagnostics.py` now says so on the figure itself.
 
+### The wheel-velocity residual was NOT the seed (2026-08-04)
+
+The handover's "do this first" experiment is done and the answer is **no**. Two
+arms on `floor_6_00056` (TIGHT V, the worst offender), 5 rollouts each,
+everything else fixed: A = today's reset, B = `--reset-world` (a full gz
+`WorldControl.reset.all`, the only mechanism that zeroes JOINT velocities).
+`tools/run_reset_world_probe.sh`, `GazeboBridge(reset_world=True)`,
+`variance_probe --reset-world`.
+
+**The premise was wrong on its own terms.** The wheels do not settle to ~1e-9
+rad/s — `trace_diff --eps 0` shows them already agreeing to **1e-16..1e-19**
+between rollouts in the BASELINE arm, i.e. to the last bits of a double. There
+was no 1e-9 wheel-speed seed to remove. (The 1e-9 figure came from a single
+absolute reading, not from a difference between two rollouts.)
+
+**What actually differs at t=0, in both arms, is the IMU** — `imu_ax`, `imu_ay`,
+`imu_gz` differ by **0.01-0.04**, which is twelve to fifteen orders of magnitude
+above every other column (pose 1e-12, quaternion 1e-13, wheels 1e-17). That is
+not physics: the IMU arrives as an async ROS message and `_read_state` takes
+whatever the latest one is, so which physics tick it was sampled on depends on
+ROS timing. It is the **stale-pose readout bug of 2026-08-02 again, in the IMU
+channel** — and the pose channel got a `_wait_pose_advance` gate that the IMU
+never got.
+
+This matters unevenly, so do not over-read it: TVLQR does not consume the IMU,
+so it cannot be *this* that moves TVLQR's commands. But `use_imu` is in the RL
+observation layout, so **every RL measurement ever taken has had a
+timing-dependent 0.04 jitter injected straight into the policy input.** That is
+a live candidate for RL's unexplained measurement noise, which the handover
+notes has never been measured.
+
+World reset did buy about three decades of initial-state agreement (pose
+mismatch 1e-9 → 1e-12) and the two comparable rollouts diverged visibly later
+(xy separation reaching 1e-3 m at step 111 vs step 83; final separation 0.39 m
+vs 3.41 m). **Three decades is not enough** — chaotic amplification at the turn
+reversal spends them in ~30 steps. Bit-identity is the only thing that would
+have worked, and a world reset does not deliver it.
+
+**`reset_world=True` DESTROYS THE ROBOT — do not use it.** A gz
+`WorldControl.reset.all` drops every entity spawned at runtime, and the
+`scout_mini` is spawned at runtime by the launch. So the reset deleted the robot
+out from under the running sim: from the third episode on `set_pose` stopped
+landing (6.92 m from target, `reset_ticks` at the full 400, `v0=+0.25`) and
+rollouts 2-4 scored an identical 5.5773 — a reproducible *broken* mode, not a
+measurement. Some time later the ROS side collapsed entirely, leaving an
+orphaned `gz sim` with only `/rosout` and `/parameter_events` alive, and
+`_wait_ready` failing on all three streams at once. Only the first two rollouts
+of arm B are valid data, and the fix after using it is `just kill-sim` +
+`just remote-sim`, not debugging the bridge. The flag is left off by default and
+should probably be deleted; it is kept only so this note has something to point
+at.
+
+**Consequences.** Item 4 stays open but the wheel-velocity hypothesis is closed.
+Single-sample ranking on the hard shapes remains illegitimate, so **repeats stay
+mandatory and parallel sims (queue item 7) are now unblocked and top of the
+queue** — that was the handover's stated "if it does not work" branch. Do not
+re-run the tuner before that lands.
+
+Next lead, cheap and worth doing before anything expensive: gate the IMU read
+the way the pose read is gated, then re-run this probe. It will not make
+rollouts bit-identical (the pose/quaternion mismatch at 1e-12 survives), but it
+removes the one initial-state difference that is 12 orders of magnitude larger
+than the rest, and it is the only known contaminant of the RL observation.
+
+### Realistic friction, IMU gating, and repeats (2026-08-04)
+
+Three changes landed together. **They re-baseline everything: no number measured
+before 2026-08-04 is comparable with one measured after**, because the plant
+(friction distribution) changed deliberately.
+
+**1. The patch friction distribution is now a floor, not an ice rink.** Added
+`linoleum` (mu 0.45, the actual deployment surface) and `wet_tile` (0.30) to
+`PROFILES`, plus `DEFAULT_PATCH_WEIGHTS` — the samplers no longer draw
+uniformly. Was: uniform over `[slippery, icy, directional_x, directional_y]`, so
+**half of every patch set was at or below tyre-on-ice friction** and a quarter of
+episodes ran on black ice end to end. Now ~60% at mu >= 0.30 and 10% ice, so the
+hard surfaces are the exception they are in reality. `ground_friction_sampler`
+is weighted too and **excludes the directional profiles** — a whole floor that
+grips one axis and slides the other has no physical analogue. Rationale: gains
+tuned against black ice are over-aggressive on linoleum, and the deployment
+target is rubber on university linoleum and tile. Tests in
+`test_terrain_weights.py`; a profile with no weight raises rather than silently
+never being drawn. Still to do: a `sand` profile (the advisor wants ice *and*
+sand, and Coulomb mu alone does not model granular flow).
+
+**The world's own ground is still `mu=1.0`** (concrete-like) in
+`rl_corrector.world`. If deployment is linoleum everywhere, the nominal
+no-patch plant is grippier than reality and every gain inherits that bias. Not
+changed yet — it is a bigger re-baseline and wants a decision.
+
+**2. The IMU read is gated** (`_wait_imu_advance`), matching the pose gate that
+has existed since 2026-08-02. Motivation is in "The wheel-velocity residual was
+NOT the seed" above: the un-gated IMU was the largest difference between two
+otherwise-identical rollouts, by twelve orders of magnitude, and it feeds the RL
+observation. `stale_imu_steps` counts giving up, and the gate is only paid when
+`use_imu` is on, so TVLQR tuning costs nothing for it. **The goal is not
+determinism** — the real robot's IMU is noisy and laggy and the policy must
+tolerate that. The goal is that the sim's sensor error be a knob we choose
+(inject a deliberate latency/noise model in the env, matched to the measured
+real IMU) rather than an artifact of VM CPU load with no real-world counterpart.
+The deliberate sensor model is **not written yet**; when it is, it must live in
+the bridge/env and leave the obs layout untouched, or the policy stops being
+deployable.
+
+**3. The tuner averages repeats.** `tune_tvlqr --repeats 3` (default) drives the
+whole trajectory set n times per candidate and reduces per trajectory via
+`objective.reduce_repeats`. Measured on the 26 real repeats in the old log:
+
+| estimator | sd of the estimate | cost/eval |
+| --- | --- | --- |
+| single sample | 0.0933 | 35 s |
+| median-of-3 | 0.0692 | 105 s |
+| **mean-of-3** | **0.0547** | 105 s |
+| mean-of-5 | 0.0413 | 175 s |
+
+**The median LOSES, which was not the prediction.** The aggregate already
+averages over 7 trajectories, of which at most two are contaminated per repeat,
+so the outlier is diluted 7-fold before the estimator sees it while the median
+pays its variance penalty in full. It is plain sqrt(n) averaging. Use mean-of-3
+to search, mean-of-5 to validate a winner. The cache key now includes
+`repeats`, `reduce` and `patch_weights`, so an old cache cannot be replayed into
+a run whose numbers mean something different.
+
+Still outstanding for the tuner: Nelder-Mead reports the **minimum observed
+draw**, which is the winner's-curse machine that produced both bad results. With
+sd 0.055 that bias is much smaller, but the structural fix is a noise-aware
+optimizer (Bayesian optimization with a nugget term, reporting the posterior-mean
+optimum). Not yet done.
+
+**Parallel sims are NOT a prerequisite** any more, contrary to the 2026-08-03
+handover: mean-of-3 is ~105 s/eval serially, so a converged run is ~2 h. They
+remain the right answer for RL *training* throughput.
+
+**RL action space, decided 2026-08-04:** keep the 4-wheel residual. The physical
+Scout takes only `(v, omega)` and computes wheel efforts in firmware, so a 4-D
+residual cannot deploy as-is — that is accepted as an implementation detail that
+could be changed (firmware), and **TVLQR is what any real-world demo runs**.
+
 ### Instrumentation: per-step state traces
 
 `GazeboBridge.enable_trace(path)` writes one CSV row per control step and per
@@ -804,6 +988,98 @@ while gz-sim runs **DARTSIM**, which likely ignores ODE's force-dependent-slip
 parameters — meaning `mu` may be the only knob ever connected. The `icy_noslip`
 profile exists solely to test this: drive across `icy` and `icy_noslip` in one
 run, and identical behaviour proves `slip1/slip2` are decorative.
+
+### `slip_chi` is a function of the SURFACE, and that is the live bug (2026-08-05)
+
+Dropping the world ground from `mu=1.0` to `0.45` made the default-gain tuning
+objective jump from 1.1706 m to **20.6148 m**. A no-patch diagnostic
+(`/tmp/mu_diag`, bare linoleum, zero terrain) shows it is **not** a corrector
+failure and **not** the patch distribution:
+
+| trajectory | identity | tvlqr |
+| --- | --- | --- |
+| floor_1_00049 (straight) | 0.53 / 0.54 | 0.59 / 0.86 |
+| floor_6_00023 (corner) | **27.25 / 27.95** | **30.31 / 30.92** |
+
+Open loop diverges as badly as TVLQR, so the **nominal PMP plan is unfollowable
+on a realistic floor**. The straight is fine and the corner is not, which points
+straight at the yaw model.
+
+**Measured cause (same day, `slip_ident` on the real-time world):** it is not a
+mis-tuned chi, it is that **an isotropic low-friction ground deletes the tyre
+model's anisotropy, which IS the steering mechanism.**
+
+| ground `mu` | chi | yaw gain | usable arcs |
+| --- | --- | --- | --- |
+| 1.0 | **1.3727** | 0.73 | 8 / 8 |
+| 0.45 | **18.69** | 0.054 | 1 / 8 |
+
+The 1.0 row reproduces `PlannerConfig.slip_chi = 1.373` to four figures with an
+0.028 spread across radii, so the measurement chain is sound and the two rows are
+comparable. At 0.45 the robot achieves **5% of commanded yaw rate** — it barely
+rotates at all, which is why seven of eight arcs were rejected as unmeasurable.
+
+Why: [wheel.xacro](src/scout_ros2/scout_description/urdf/wheel.xacro#L63) gives
+each wheel `mu1=200.0` (rolling) and `mu2=0.7` (lateral) — a 285:1 anisotropy
+that is the whole basis of skid-steering, since a skid-steer yaws by gripping
+longitudinally while scrubbing sideways. Gazebo combines the two contacting
+surfaces by taking the smaller coefficient, so a ground of 1.0 left the pair at
+~1.0 rolling / 0.7 lateral and the ratio intact. An **isotropic** ground of 0.45
+caps both at 0.45, collapsing the ratio to 1:1 and removing the mechanism.
+
+So "make the floor realistic" cannot be done by lowering an isotropic ground
+plane. The anisotropy that matters is in the **wheel** frame (rolling vs lateral)
+and only the wheel can express it; a ground `fdir1` is world-fixed, which is
+exactly why the `directional_x/y` patch profiles are unphysical. And per-zone
+friction has to live in the ground, because patches are ground entities. That
+tension is unresolved and is the thing to solve before any re-baselining.
+
+**What still stands:** chi is genuinely a property of the SURFACE (1.37 vs 18.7 is
+that fact at its most extreme), so it cannot be a constant on a floor with
+ice/sand zones — it is not constant *within one trajectory*. That remains a
+modelling gap rather than a tuning problem, and the structural reason a frozen PMP
+plan cannot handle zones.
+
+**Do not re-adopt `mu=0.45` on the ground plane.** `rl_corrector.world` still
+carries it as of this writing and every measurement taken against it describes a
+robot that cannot steer.
+
+### Measuring `slip_chi` on the real robot (method, 2026-08-05)
+
+**Yes, chi is measurable by driving the real robot, and this is the intended use
+of `slip_ident`.** It references the **gyro**, which owes nothing to the wheels,
+so nothing about the method is sim-specific. `calibrator.py` cannot substitute:
+it compares commands against `/odom`, and both sides share the missing slip term.
+
+Two things to get right on hardware:
+
+- **`cmd_mode:=wheels` is sim-only.** The physical Scout takes only `(v, omega)`
+  and computes wheel efforts in firmware, so on the robot you run
+  `cmd_mode:=twist`, which yields `chassis_gain_omega` — chi folded together with
+  the firmware's own twist→wheel conversion. That composite is the right quantity
+  on hardware, because the wheel-level command is not reachable anyway. The tool
+  prints which of the two it measured; do not paste a twist-mode number into
+  `PlannerConfig.slip_chi`.
+- Drive **arcs at several radii**, both directions, on the surface in question.
+  A spin scrubs all four contact patches and is strongly load-dependent —
+  `slip_ident` reports spins separately and says not to fit chi to them.
+
+**This closes the sim-to-real loop on the one parameter the planner consumes.**
+The patch friction values have been unvalidated for weeks (see above) and
+measuring `mu` directly is awkward; measuring **chi** is not. So: drive the real
+robot on linoleum, on the ice mock-up and on sand, get chi per surface, then tune
+each sim profile's `mu` until the *sim's* chi matches the measured one. Chi, not
+mu, is the quantity to match — it is what the model actually uses.
+
+**`slip_ident` cannot run against an unthrottled sim (found 2026-08-05).**
+`make rl-sim` runs uncapped (~33x), which puts `/imu/data` at **3295 Hz**; with
+`depth=10` on a single-threaded executor the node drops almost every sample and
+the integrated gyro yaw comes out ~800x too small. It fails loudly (`gyro
+measured only +0.0034 rad`, then `No usable arcs`) rather than reporting a wrong
+chi, which is the correct behaviour, but it means **chi must be measured against a
+real-time-throttled world**. Also note the node's `imu_topic` default is `/imu`
+while the actual topic is `/imu/data` — its own usage line has it right, the
+default does not.
 
 ### Ideas queued, roughly in order of expected value
 
