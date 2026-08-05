@@ -82,33 +82,71 @@ simulating "loses steering" rather than "slides". That reframes a lot of past
 corrector behaviour and makes the `icy`/`icy_noslip` (`slip1`/`slip2` under
 DARTSIM) question a side issue by comparison.
 
-## In flight: the ground-`mu` → chi calibration curve
+## The ground-`mu` → chi curve (done)
 
-`tools/sweep_ground_mu.sh` (started ~12:13, ~2 min/point, 7 points) measures chi
-at `mu` in {1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45}, writing `sweep_data/
-ground_mu_chi.csv` and per-point logs. The script's header carries the full
-rationale.
+`tools/sweep_ground_mu.sh`, `sweep_data/ground_mu_chi.csv`:
 
-**Falsifiable prediction:** lateral is capped by the wheel's own 0.7 for any
-ground `mu >= 0.7`, so chi should sit flat near 1.37 down to 0.7 and rise sharply
-below it — **a knee at 0.7**. If chi instead degrades smoothly from 1.0, the
-min-combination model is wrong and the usable range is something else.
+| ground `mu` | chi | yaw gain | arcs | spread |
+| --- | --- | --- | --- | --- |
+| 1.0 | 1.3718 | 0.729 | 6 | 0.030 |
+| 0.9 | 1.3879 | 0.721 | 6 | 0.051 |
+| 0.8 | 1.4438 | 0.694 | 6 | 0.129 |
+| **0.7** | **10.147** | **0.100** | 2 | 2.672 |
+| 0.6 | 11.760 | 0.086 | 2 | 2.547 |
+| 0.5 | 14.441 | 0.071 | 2 | 4.101 |
+| 0.45 | 16.478 | 0.061 | 2 | 3.619 |
 
-It leaves the world file at the last value swept (0.45). **Set it deliberately
-afterwards.**
+The prediction was **half right, recorded honestly**: the knee is exactly at 0.7,
+the wheel's own `mu2`, which confirms min-combination. But it is not flat above
+it — chi erodes gently (1.37 → 1.44) while the spread across radii quadruples, so
+a single `slip_chi` is losing validity at 0.8 before anything looks broken.
 
-## What the curve decides
+**Correction to an earlier claim in this document's first draft and in
+CLAUDE.md:** the wheel's 285:1 nominal ratio (`mu1=200 / mu2=0.7`) is **never
+realized**, because the ground caps it. At ground 1.0 the effective pair is
+(1.0, 0.7) — a **1.43:1** ratio, perfectly physical. `mu1=200` encodes "the wheel
+is never the longitudinal limit", which is what its comment says and a legitimate
+choice. Provenance: Grigorii Matiukhin, 2026-02-13, in the team's own
+`scout_ros2` fork, so it is ours to change.
 
-If the knee is at 0.7, then **no isotropic ground below 0.7 can represent a
-surface without breaking steering**, and since patches must be ground entities,
-that bounds what a patch can express at all. The principled fix is then to give
-the wheel a *realistic* anisotropy instead of the 285:1 hack — something like
-`mu1=1.0 / mu2=0.5` for rubber on linoleum, a ratio of 2:1 — verify the robot
-still steers, and let patches scale from there. That is a re-baseline, but the
-version that survives contact with a real robot.
+Why it worked before and not after: **`ground(1.0) > wheel mu2(0.7)`**. In that
+regime the ground binds longitudinally and the wheel binds laterally — two
+independent constraints. Below 0.7 the ground binds both, so lowering it reduces
+grip *and* collapses the ratio, inseparably. Nothing regressed; the knife-edge
+merely held because the ground happened to be 1.0.
 
-Then: re-plan the eval trajectories on a plant that steers, re-measure the three
-correctors, and only then resume gain tuning.
+## The fix, and what it does not fix
+
+**Not yet applied.** `mu2=0.7` is the problem: it sits at the top of the
+realistic range for rubber, so every plausible floor lands at or below it.
+Lowering the wheel pair to about `mu1=0.9 / mu2=0.45` moves the cliff to ~0.45:
+
+| ground | effective (long, lat) | ratio | steers? |
+| --- | --- | --- | --- |
+| 0.9 | (0.9, 0.45) | 2.0 | yes, better than today |
+| 0.6 | (0.6, 0.45) | 1.33 | yes, degraded |
+| 0.45 | (0.45, 0.45) | 1.0 | no |
+
+That makes linoleum and tile representable and reserves the collapse for ice —
+arguably **correct**, since on real ice `mu_long ~= mu_lat` and a real skid-steer
+genuinely cannot steer there. The model was never broken for ice; it was broken
+for linoleum, because the wheel was parameterised for concrete.
+
+**The limit that survives:** under min-combination with an isotropic ground, any
+ground below the wheel's `mu2` gives ratio 1. "Slides but still steers" is
+inexpressible at low friction. If `sand` must be "grips less but still turns", a
+low-`mu` patch cannot deliver it — that needs a different mechanism, and it is
+now the blocker on the advisor's second zone.
+
+Re-run `sweep_ground_mu.sh` against any new wheel pair; the curve is a repeatable
+instrument for "does this tyre model steer".
+
+## Then
+
+1. Change the wheel pair, re-run the sweep, confirm the cliff moved.
+2. Re-plan the eval trajectories with the chi measured on the new plant.
+3. Re-measure identity / TVLQR / RL on a plant that steers.
+4. Only then resume gain tuning.
 
 ## Architecture: RL as a rough re-planner, not a residual
 
@@ -200,14 +238,15 @@ Chi, not mu, is the quantity to match — it is what the model consumes.
 
 ## State
 
-- **VM:** one headless `gz sim` on `rl_corrector_rt.world`, tmux session `rl`.
-  The sweep restarts it per point. `just check-sim` before launching anything.
-- **`rl_corrector.world` still carries `mu=0.45`** and must be reverted before any
-  training or comparison run touches it.
-- **`rl_corrector_rt.world`'s header claims friction parity** with a file it no
-  longer matches — fix once the value is chosen, rather than churning it twice.
-- **Nothing is committed**, including inside the `rudn-ordjo-building` submodule.
-  158 unit tests pass.
+- **VM:** one headless `gz sim` on `rl_corrector_rt.world` at the sweep's last
+  value (0.45 — a plant that cannot steer). Restart it before measuring anything.
+  `just check-sim` before launching.
+- Both worlds are back at **mu=1.0** in git, the only value measured to steer.
+  Do not lower them; lower the wheel pair instead.
+- **Committed** on `tvlqr-corrector`: routing tooling, the repeats/IMU-gate/
+  bayesopt work, today's plant investigation, and the submodule (worlds, profiles,
+  baked maps). 158 unit tests pass — note they now need the submodule on
+  `PYTHONPATH`, since `test_terrain_weights.py` imports `surface_patches`.
 - Abandoned caches on the VM: `tvlqr_tune_v2.jsonl` (killed Nelder-Mead run),
   `tvlqr_tune_v3.jsonl` (killed BO run, 1 evaluation). Both measured plants we
   have since abandoned; do not resume onto them.

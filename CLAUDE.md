@@ -59,9 +59,14 @@ touched file forces a rebuild; delete the stamp if a build seems stale.
 Run a single test:
 
 ```bash
-PYTHONPATH=src/agx_navigation/agx_planning python3 -m pytest \
+PYTHONPATH=src/agx_navigation/agx_planning:src/rudn-ordjo-building python3 -m pytest \
   src/agx_navigation/agx_planning/test/unit/test_rl_reward.py::test_name -v
 ```
+
+The submodule on the path is needed by `test_terrain_weights.py`, which imports
+`rudn_ordjo_building.surface_patches` — the friction profiles are defined there,
+not in `agx_planning`. Without it pytest fails at *collection*, so every test in
+the run reports as an error rather than just that file.
 
 Unit tests live in [src/agx_navigation/agx_planning/test/unit/](src/agx_navigation/agx_planning/test/unit/)
 and cover the *pure* RL-corrector modules (`coeff`, `obs`, `reward`, `nominal`,
@@ -1009,10 +1014,24 @@ straight at the yaw model.
 mis-tuned chi, it is that **an isotropic low-friction ground deletes the tyre
 model's anisotropy, which IS the steering mechanism.**
 
-| ground `mu` | chi | yaw gain | usable arcs |
-| --- | --- | --- | --- |
-| 1.0 | **1.3727** | 0.73 | 8 / 8 |
-| 0.45 | **18.69** | 0.054 | 1 / 8 |
+`tools/sweep_ground_mu.sh` measures chi against ground `mu`
+(`sweep_data/ground_mu_chi.csv`, logs per point):
+
+| ground `mu` | chi | yaw gain | usable arcs | spread across radii |
+| --- | --- | --- | --- | --- |
+| 1.0 | **1.3718** | 0.729 | 6 | 0.030 |
+| 0.9 | 1.3879 | 0.721 | 6 | 0.051 |
+| 0.8 | 1.4438 | 0.694 | 6 | 0.129 |
+| **0.7** | **10.147** | **0.100** | 2 | 2.672 |
+| 0.6 | 11.760 | 0.086 | 2 | 2.547 |
+| 0.5 | 14.441 | 0.071 | 2 | 4.101 |
+| 0.45 | **16.478** | 0.061 | 2 | 3.619 |
+
+**The cliff is at 0.7 — the wheel's own `mu2`, to the digit.** Above it only the
+longitudinal channel erodes, so chi drifts up gently while the spread across
+radii quadruples (a single `slip_chi` is already losing validity at 0.8, before
+anything looks broken). At 0.7 both coefficients meet and yaw gain falls
+seven-fold in one step of 0.1.
 
 The 1.0 row reproduces `PlannerConfig.slip_chi = 1.373` to four figures with an
 0.028 spread across radii, so the measurement chain is sound and the two rows are
@@ -1020,19 +1039,60 @@ comparable. At 0.45 the robot achieves **5% of commanded yaw rate** — it barel
 rotates at all, which is why seven of eight arcs were rejected as unmeasurable.
 
 Why: [wheel.xacro](src/scout_ros2/scout_description/urdf/wheel.xacro#L63) gives
-each wheel `mu1=200.0` (rolling) and `mu2=0.7` (lateral) — a 285:1 anisotropy
-that is the whole basis of skid-steering, since a skid-steer yaws by gripping
-longitudinally while scrubbing sideways. Gazebo combines the two contacting
-surfaces by taking the smaller coefficient, so a ground of 1.0 left the pair at
-~1.0 rolling / 0.7 lateral and the ratio intact. An **isotropic** ground of 0.45
-caps both at 0.45, collapsing the ratio to 1:1 and removing the mechanism.
+each wheel `mu1=200.0` (rolling) and `mu2=0.7` (lateral), and Gazebo combines two
+contacting surfaces by taking the **smaller** coefficient. So `mu1=200` is never
+realized — it encodes "the wheel is never the longitudinal limit, the ground
+decides", which is what its comment says. Against a ground of 1.0 the effective
+pair is (1.0 rolling, 0.7 lateral): a **1.43:1** ratio, a perfectly physical
+number. (An earlier version of this note called it "a 285:1 anisotropy". That was
+wrong — 285:1 is the nominal wheel pair, which the ground caps away.)
+
+That 1.43:1 is the steering mechanism, since a skid-steer yaws by gripping
+longitudinally while scrubbing sideways. It survives only while
+`ground > wheel mu2`: there the ground binds longitudinally and the wheel binds
+laterally, two independent constraints. Below 0.7 the ground binds **both**, so
+lowering it reduces grip *and* collapses the ratio to 1:1 — inseparably. The
+sweep shows exactly that shape.
+
+Provenance: Grigorii Matiukhin, 2026-02-13, in the team's own `scout_ros2` fork —
+not AgileX upstream, so it is ours to change.
 
 So "make the floor realistic" cannot be done by lowering an isotropic ground
 plane. The anisotropy that matters is in the **wheel** frame (rolling vs lateral)
 and only the wheel can express it; a ground `fdir1` is world-fixed, which is
 exactly why the `directional_x/y` patch profiles are unphysical. And per-zone
 friction has to live in the ground, because patches are ground entities. That
-tension is unresolved and is the thing to solve before any re-baselining.
+tension is the thing to solve before any re-baselining.
+
+**Every profile in `surface_patches.py` is below 0.7** — linoleum 0.45, wet_tile
+0.30, slippery 0.20, icy 0.05 — so every slip patch ever driven over has been
+simulating "loses steering", not "slides". That includes the RL training terrain
+and every corrector comparison. The friction values were not merely uncalibrated
+(as the section above says); they were outside the model's valid domain.
+
+**The proposed fix (not yet applied):** `mu2=0.7` is the problem — it sits at the
+top of the realistic range for rubber, so every physically plausible floor lands
+at or below it. Lowering the wheel pair to about `mu1=0.9 / mu2=0.45` moves the
+cliff from 0.7 to ~0.45:
+
+| ground | effective (long, lat) | ratio | steers? |
+| --- | --- | --- | --- |
+| 0.9 | (0.9, 0.45) | 2.0 | yes, better than today |
+| 0.6 | (0.6, 0.45) | 1.33 | yes, degraded |
+| 0.45 | (0.45, 0.45) | 1.0 | no |
+
+That makes linoleum and tile representable and reserves the collapse for ice,
+which is arguably **correct** rather than a limitation: on real ice
+`mu_long ~= mu_lat`, and a real skid-steer genuinely cannot steer there. The model
+is not broken for ice; it was broken for linoleum, because the wheel was
+parameterised for concrete. Re-run `sweep_ground_mu.sh` against any new pair —
+the curve is now a repeatable instrument for "does this tyre model steer".
+
+**The limit that survives the fix:** under min-combination with an isotropic
+ground, *any* ground below the wheel's `mu2` gives ratio 1. "Slides but still
+steers" is therefore inexpressible at low friction — a surface is either above
+the knee or it has no steering authority. If `sand` needs to be "grips less but
+still turns", a low-`mu` patch cannot deliver it and something else is required.
 
 **What still stands:** chi is genuinely a property of the SURFACE (1.37 vs 18.7 is
 that fact at its most extreme), so it cannot be a constant on a floor with
