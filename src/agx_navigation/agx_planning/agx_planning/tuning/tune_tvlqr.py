@@ -1,4 +1,4 @@
-"""Tune TVLQR's `q_cross` / `r_omega` by Nelder-Mead against real Gazebo rollouts.
+"""Tune TVLQR's `q_cross` / `r_omega` against real Gazebo rollouts.
 
 WHY THIS IS THE CHEAP WIN
 -------------------------
@@ -15,6 +15,15 @@ max|e_cross| over that list (see objective.py, including why a failed rollout
 invalidates the whole evaluation instead of shrinking the denominator).
 Nothing is sampled and no rollout is ever truncated: `--max-evals` bounds how
 many GAIN PAIRS are tried, never how far the robot drives.
+
+OPTIMIZER
+---------
+Default is `--optimizer bayes` (bayesopt.py): a GP surrogate with expected
+improvement, which models the measurement noise explicitly and reports the
+minimizer of the POSTERIOR MEAN. Nelder-Mead (`--optimizer simplex`) is kept
+only to reproduce pre-2026-08-04 runs -- it cannot converge on a noisy objective
+and reports the minimum observed draw, which is how two earlier runs reported
+improvements smaller than the spread they were selected from.
 
 SEARCH SPACE
 ------------
@@ -48,14 +57,27 @@ from ..rl_corrector.compare_correctors import _tvlqr_wheels
 from ..rl_corrector.config import RLCorrectorConfig
 from ..rl_corrector.nominal import load_recorded
 from ..runtime_corrector import tvlqr as tvlqr_mod
+from .bayesopt import minimize as bayes_minimize
 from .cache import EvalCache
-from .objective import aggregate
+from .objective import aggregate, reduce_repeats
 from .simplex import minimize
 
 # Log10 bounds. q_cross below 0.1 is no cross-track feedback at all; above 1000
 # the gains saturate the wheel limits every step. r_omega spans the same span
 # around its default 0.25.
 BOUNDS_LOG = [(-1.0, 3.0), (-2.0, 2.0)]
+
+# Bump this WHENEVER THE PLANT CHANGES -- world friction, robot model, physics
+# step, anything that alters what a rollout measures. It goes into the cache key,
+# so a stale cache is refused instead of being replayed as if it described the
+# current world. The friction weights are keyed separately (they are readable at
+# runtime); this covers everything that is not, notably the world file's own
+# ground <mu>, which the tuner has no way to inspect from a world NAME.
+#
+#   2026-08-04-linoleum-ground : world ground mu 1.0 -> 0.45 (dry linoleum),
+#       matching the `linoleum` patch profile. Everything before this was
+#       measured on a concrete-grippy floor.
+PLANT_VERSION = "2026-08-04-linoleum-ground"
 
 
 class EvalTimeout(Exception):
@@ -153,7 +175,30 @@ def main():
     ap.add_argument("--q-cross", type=float, default=10.0, help="starting q_cross")
     ap.add_argument("--r-omega", type=float, default=0.25, help="starting r_omega")
     ap.add_argument("--step", type=float, default=0.35,
-                    help="initial simplex size, in log10 units (0.35 ~ x2.2)")
+                    help="initial simplex size, in log10 units (0.35 ~ x2.2); "
+                         "--optimizer simplex only")
+    ap.add_argument("--optimizer", default="bayes", choices=["bayes", "simplex"],
+                    help="bayes: GP surrogate + expected improvement, reports "
+                         "the POSTERIOR-MEAN optimum. simplex: Nelder-Mead, "
+                         "which cannot converge on a noisy objective and reports "
+                         "the minimum observed draw -- kept only to reproduce "
+                         "pre-2026-08-04 runs. See bayesopt.py.")
+    ap.add_argument("--noise", type=float, default=0.055,
+                    help="known measurement sd of the objective, in metres, "
+                         "passed to the GP as a pinned noise floor. Default is "
+                         "the measured sd at --repeats 3; scale by sqrt(3/n) if "
+                         "you change --repeats. 0 lets the GP fit it, which "
+                         "over-fits scatter as structure at small n.")
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="rollouts of the whole trajectory set per candidate. "
+                         "The objective is noisy (sd 0.093 single-sample); "
+                         "averaging n cuts that by sqrt(n). 3 -> 0.055, which "
+                         "resolves the effect a real gain improvement produces. "
+                         "1 reproduces the old single-sample behaviour and is "
+                         "NOT enough to rank candidates on this eval set.")
+    ap.add_argument("--reduce", default="mean", choices=["mean", "median", "max"],
+                    help="how to combine repeats, per trajectory. mean is the "
+                         "measured best for search (see objective.py)")
     ap.add_argument("--seed", type=int, default=0, help="terrain seed")
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
@@ -192,7 +237,16 @@ def main():
                           deterministic=True)
 
     # The cache key pins everything that would make an old cache meaningless.
-    key = {"trajectories": sorted(names), "seed": args.seed, "metric": "mean_max_cross"}
+    # `repeats`/`reduce` are in it because they change what a cached number MEANS
+    # (a single noisy draw vs. a mean of 3), and `patch_weights` because the
+    # friction distribution defines the PLANT -- replaying evaluations measured
+    # on the old ice-heavy terrain would silently mix two different problems.
+    from rudn_ordjo_building.surface_patches import DEFAULT_PATCH_WEIGHTS
+    key = {"trajectories": sorted(names), "seed": args.seed,
+           "metric": "mean_max_cross", "plant": PLANT_VERSION,
+           "repeats": args.repeats, "reduce": args.reduce,
+           "patch_weights": {k: round(v, 4)
+                             for k, v in sorted(DEFAULT_PATCH_WEIGHTS.items())}}
     store = EvalCache(args.cache, key=key)
     recovered = store.load()
     store.write_header()
@@ -216,13 +270,23 @@ def main():
         print(f"[tune] eval {state['n']:3d}  q_cross={q_cross:9.3f} "
               f"r_omega={r_omega:8.4f}", flush=True)
         t_eval = time.monotonic()
+        # REPEATS. The objective is stochastic (sd 0.093 on this eval set at
+        # fixed gains), so a single sample ranks candidates by luck as often as
+        # by merit -- that is what collapsed the 2026-08-03 run, which re-drew
+        # ONE gain pair 71 times over a 0.364 m spread and reported the minimum.
+        # Averaging n repeats cuts the sd by sqrt(n); see objective.py for the
+        # measured table. Each repeat re-drives every trajectory with the same
+        # seed and terrain: the spread is per-rollout physics, not sampling.
+        reps = []
         try:
-            with _Deadline(args.eval_timeout):
-                per = run_trajectories(bridge, cfg, trajectories,
-                                       q_cross, r_omega, args.seed)
+            with _Deadline(args.eval_timeout * args.repeats):
+                for _ in range(args.repeats):
+                    reps.append(run_trajectories(bridge, cfg, trajectories,
+                                                 q_cross, r_omega, args.seed))
         except EvalTimeout as exc:
             print(f"        !! {exc}", flush=True)
-            per = {}
+            reps.append({})
+        per = reduce_repeats(reps, names, how=args.reduce)
         score = aggregate(per, names)
 
         # A dead sim fails every rollout in milliseconds. Unbounded, the search
@@ -243,6 +307,11 @@ def main():
         inflight.update(per_traj=per, eval_index=state["n"],
                         wall=time.monotonic() - t_eval,
                         elapsed=time.monotonic() - t_start,
+                        repeats=args.repeats, reduce=args.reduce,
+                        # Every individual rollout, not just the reduction, so
+                        # the noise can be re-analysed (and a different
+                        # estimator tried) without re-driving anything.
+                        per_traj_repeats=reps,
                         failed=[n for n in names if n not in per])
         print(f"        -> mean max|e_cross| = {score:.4f} m   "
               f"{ {k: round(v, 3) for k, v in per.items()} }"
@@ -262,17 +331,48 @@ def main():
 
     x0 = [math.log10(args.q_cross), math.log10(args.r_omega)]
     try:
-        res = minimize(wrapped, x0=x0, step=[args.step, args.step],
-                       bounds=BOUNDS_LOG,
-                       max_evals=(args.max_evals if args.max_evals > 0 else None),
-                       xtol=1e-2, ftol=1e-3)
+        if args.optimizer == "bayes":
+            if args.max_evals <= 0:
+                # Unlike a simplex, a GP has no convergence criterion that means
+                # "done" on a noisy objective -- EI stays positive as long as
+                # anything is uncertain. A budget is the honest stopping rule.
+                raise SystemExit("[tune] --optimizer bayes needs --max-evals > 0 "
+                                 "(a GP has no natural convergence test on a "
+                                 "noisy objective; pick a budget)")
+            res = bayes_minimize(
+                wrapped, bounds=BOUNDS_LOG, max_evals=args.max_evals,
+                x0=x0, noise=(args.noise if args.noise > 0 else None),
+                seed=args.seed)
+        else:
+            res = minimize(wrapped, x0=x0, step=[args.step, args.step],
+                           bounds=BOUNDS_LOG,
+                           max_evals=(args.max_evals if args.max_evals > 0
+                                      else None),
+                           xtol=1e-2, ftol=1e-3)
     finally:
         bridge.close()
 
     best = {"q_cross": float(10.0 ** res.x[0]), "r_omega": float(10.0 ** res.x[1]),
             "mean_max_cross": res.fx, "n_evals": res.n_evals,
+            "optimizer": args.optimizer, "plant": PLANT_VERSION,
+            "repeats": args.repeats, "reduce": args.reduce,
             "trajectories": names, "seed": args.seed,
             "start": {"q_cross": args.q_cross, "r_omega": args.r_omega}}
+    if args.optimizer == "bayes":
+        # Record BOTH, and label them. `mean_max_cross` is the posterior mean --
+        # what we believe the gains are worth. `observed` is the luckiest single
+        # measurement, which is what the old runs reported and is biased low.
+        # Quoting the observed value is how 0.183 m and 0.9412 m got into two
+        # write-ups that neither survived.
+        best["value_is"] = "posterior_mean"
+        best["observed"] = {
+            "q_cross": float(10.0 ** res.x_observed[0]),
+            "r_omega": float(10.0 ** res.x_observed[1]),
+            "mean_max_cross": res.fx_observed,
+            "note": "best single measurement; biased low, do not quote",
+        }
+        best["converged"] = res.converged
+        best["message"] = res.message
     with open(args.out, "w") as fh:
         json.dump(best, fh, indent=2)
 

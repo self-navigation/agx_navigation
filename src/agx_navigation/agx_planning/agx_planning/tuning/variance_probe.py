@@ -115,6 +115,11 @@ def main():
     ap.add_argument("--no-terrain", action="store_true",
                     help="drive on bare ground -- isolates the bridge's own "
                          "reproducibility from chaos seeded by patch edges")
+    ap.add_argument("--reset-world", action="store_true",
+                    help="full gz world reset every episode -- the only thing "
+                         "that zeroes JOINT velocities, which the settle loops "
+                         "leave at ~1e-9 rad/s. Tests whether that residual is "
+                         "the last seed of the run-to-run spread")
     ap.add_argument("--out", required=True, help="JSONL, appended to")
     ap.add_argument("--trace-dir",
                     help="write a per-rollout state trace CSV here "
@@ -137,7 +142,7 @@ def main():
 
     from ..rl_corrector.gazebo_bridge import GazeboBridge
     bridge = GazeboBridge(cfg, world_name=args.world, model_name=args.model,
-                          deterministic=True)
+                          deterministic=True, reset_world=args.reset_world)
     pid = os.getpid()
     try:
         with open(args.out, "a") as fh:
@@ -157,6 +162,7 @@ def main():
                 # spread is drift rather than noise, the score correlates with it.
                 rec.update(mode=args.mode, index=i, pid=pid, trajectory=name,
                            terrain=not args.no_terrain,
+                           reset_world=args.reset_world,
                            q_cross=args.q_cross, r_omega=args.r_omega,
                            seed=args.seed, wall=time.monotonic() - t0)
                 fh.write(json.dumps(rec) + "\n")

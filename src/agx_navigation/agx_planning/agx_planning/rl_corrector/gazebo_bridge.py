@@ -120,6 +120,7 @@ class _BridgeNode(Node):
         self.omega: float = 0.0
         self.wheel_speeds: Optional[List[float]] = [0.0] * 4 if use_wheel_speeds else None
         self.imu: Optional[Tuple[float, float, float]] = None
+        self.imu_stamp: Optional[float] = None
         self._odom_seen = False
         self.sim_time: Optional[float] = None
 
@@ -150,6 +151,11 @@ class _BridgeNode(Node):
             float(msg.linear_acceleration.x),
             float(msg.linear_acceleration.y),
         )
+        # Sim-time stamp of the sample, so _read_state can wait for the IMU
+        # belonging to the step just taken rather than whichever message ROS
+        # happened to have delivered. See _wait_imu_advance.
+        self.imu_stamp = (msg.header.stamp.sec
+                          + msg.header.stamp.nanosec * 1e-9)
 
     @property
     def odom_seen(self) -> bool:
@@ -200,6 +206,17 @@ class GazeboBridge:
         # below the ~2e-5 m run-to-run z spread the fixed settle was leaving.
         reset_settle_z_tol: float = 1e-7,
         reset_max_settle_iters: int = 60,
+        # Issue a full gz world reset at the top of every reset(). This is the
+        # only mechanism that zeroes JOINT velocities: set_pose moves the body
+        # and the settle loops converge position, but the wheels come to rest at
+        # ~1e-9 rad/s rather than exactly 0, and that residual is the last
+        # remaining difference between two "identical" rollouts. It gets
+        # amplified at turn reversals (omega crosses zero, the skid-steer's
+        # lateral friction switches direction), which is why the hard shapes are
+        # noisy and the straight one is not. Off by default: a world reset also
+        # zeroes the sim clock and drops every runtime-spawned entity, so it is
+        # an experiment knob, not the training path.
+        reset_world: bool = False,
         service_timeout_ms: int = 3000,
         step_ack_ms: int = 10,
         spin_warmup_s: float = 10.0,
@@ -216,6 +233,7 @@ class GazeboBridge:
         self.reset_refine_iters = int(reset_refine_iters)
         self.reset_settle_z_tol = float(reset_settle_z_tol)
         self.reset_max_settle_iters = int(reset_max_settle_iters)
+        self.reset_world = bool(reset_world)
         self.reset_settle_iters = 0
         self.reset_z_settled: Optional[float] = None
         # Distance the last reset actually settled from the requested pose --
@@ -286,6 +304,7 @@ class GazeboBridge:
         # count the two ways that promise leaks, so a rollout can report whether
         # it was reproducible instead of leaving it to be inferred from spread.
         self.lost_steps = 0        # _advance gave up waiting for the sim clock
+        self.stale_imu_steps = 0   # _advance gave up waiting for a fresh IMU
         self.total_steps = 0
         self.reset_ticks = 0       # physics ticks burned in the last reset's
                                    # confirm loop -- wall-clock-paced, so a
@@ -431,7 +450,8 @@ class GazeboBridge:
     # verify side effects by reading ground-truth state, never by trusting `ok`.
 
     def _world_control(self, pause: Optional[bool] = None, multi_step: int = 0,
-                       ack_ms: Optional[int] = None) -> None:
+                       ack_ms: Optional[int] = None,
+                       reset_all: bool = False) -> None:
         req = WorldControl()
         if multi_step > 0 and pause is None and self.deterministic:
             # THE `pause` FIELD IS NOT OPTIONAL ON THE WIRE. WorldControl.pause is
@@ -450,6 +470,10 @@ class GazeboBridge:
             req.pause = pause
         if multi_step > 0:
             req.multi_step = multi_step
+        if reset_all:
+            # WorldReset.all restores every entity's initial pose AND velocity,
+            # including joint velocities, and rewinds the sim clock to 0.
+            req.reset.all = True
         # Best-effort: the step/pause executes regardless of the (flaky) ack.
         # Callers on the hot path pass a tiny ack_ms so a lost reply can't stall
         # them; correctness is re-established by reading ground-truth state.
@@ -598,6 +622,13 @@ class GazeboBridge:
                         t0 + n * self.physics_step,
                         deadline_s=max(0.2, 10.0 * dt)):
                     self.stale_pose_steps += 1
+                # Same gate for the IMU, which feeds the RL observation. Only
+                # paid when the IMU is actually in the obs layout, so TVLQR
+                # tuning runs cost nothing for it.
+                if self.cfg.use_imu and not self._wait_imu_advance(
+                        t0 + n * self.physics_step,
+                        deadline_s=max(0.2, 10.0 * dt)):
+                    self.stale_imu_steps += 1
             self.total_steps += 1
         else:
             self._spin(dt)
@@ -665,6 +696,41 @@ class GazeboBridge:
             stamp = self._pose_stamp
             if stamp is not None and stamp >= target:
                 self._exec.spin_once(timeout_sec=0.0)   # drain twist to match
+                return True
+            self._exec.spin_once(timeout_sec=0.001)
+        return False
+
+    def _wait_imu_advance(self, target_sim_t: float, deadline_s: float) -> bool:
+        """Block until the cached IMU sample is stamped at/after `target`.
+
+        WHY. The pose channel has had a gate since 2026-08-02; the IMU never did,
+        so _read_state returned whatever /imu message ROS had last delivered --
+        possibly sampled several ticks before the step it is being reported for,
+        and WHICH one depended on wall-clock scheduling. Measured 2026-08-04
+        (trace_diff over two rollouts with identical inputs): pose agreed to
+        1e-12 and wheel speeds to 1e-17 while imu_ax/imu_ay/imu_gz differed by
+        0.01-0.04 -- twelve orders of magnitude larger than every other column,
+        and the single largest difference between two "identical" rollouts.
+
+        This does NOT matter for TVLQR, which never reads the IMU. It matters a
+        great deal for RL: `use_imu` is part of the observation layout, so an
+        uncontrolled, machine-timing-dependent jitter was going straight into the
+        policy input on every measurement ever taken.
+
+        The point is NOT determinism for its own sake -- the real robot has a
+        noisy, laggy IMU and the policy must tolerate that. The point is that
+        real sensor latency is a stationary, measurable property of hardware,
+        while this was an artifact of the test harness with no counterpart on the
+        robot. Gate it here so the reading is correct, then inject a DELIBERATE
+        sensor model (latency/noise/bias) in the env if robustness to it is
+        wanted -- a knob whose distribution we choose and can match to the real
+        IMU, instead of an accident of CPU load.
+        """
+        target = target_sim_t - 0.5 * self.physics_step
+        end = time.monotonic() + deadline_s
+        while time.monotonic() < end:
+            stamp = self._node.imu_stamp
+            if stamp is not None and stamp >= target:
                 return True
             self._exec.spin_once(timeout_sec=0.001)
         return False
@@ -782,6 +848,21 @@ class GazeboBridge:
         # 1. Halt the wheels so the teleport doesn't carry old motion through.
         self._node.publish_wheels([0.0, 0.0, 0.0, 0.0])
         self._spin(0.05)
+
+        # 1b. Optional full world reset -- the bit-identical-initial-condition
+        #     experiment. Must happen BEFORE _apply_terrain: the reset drops
+        #     every runtime-spawned entity, so the patch bookkeeping has to be
+        #     cleared or the next _remove_terrain waits out its full tick budget
+        #     removing things that are already gone. The reset commits on a step
+        #     like every other entity change, and it clears the pause, so
+        #     re-assert that afterwards.
+        if self.reset_world:
+            self._world_control(reset_all=True)
+            self._terrain_models.clear()
+            self._settle_entity_changes()
+            if self.deterministic:
+                self._ensure_paused()
+            self._trace("reset_world")
 
         # 2. Swap terrain (Phase 3); no-op when terrain is None.
         self._apply_terrain(terrain, near=(x, y))
