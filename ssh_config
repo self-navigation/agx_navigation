@@ -1,0 +1,19 @@
+# ssh config for the GPU training VM, checked in so it survives a fresh clone.
+#
+# `agx` is the ONE name for that machine. Its ProxyCommand (tools/agx-route)
+# picks the direct or the jump-host route depending on which is alive, so
+# nothing downstream -- ssh, scp, rsync, git, the Justfile -- ever needs to know
+# which one is in use. See tools/agx-route for the probe and its cache.
+#
+# Used two ways:
+#   * the Justfile passes -F <repo>/ssh_config explicitly, so `just` works
+#     straight after a clone with no setup at all;
+#   * `just ssh-setup` adds an Include line to ~/.ssh/config, after which plain
+#     `ssh agx` / `scp x agx:` / `rsync agx:...` work with no flags.
+
+Host agx
+    HostName 172.26.13.37
+    User programmer
+    ProxyCommand /home/danya/university/clown-car/agx_navigation/tools/agx-route %h %p
+    ServerAliveInterval 30
+    ServerAliveCountMax 6

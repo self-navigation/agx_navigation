@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Run a command on the GPU VM over whichever route is alive (see tools/agx-route).
+#
+#   tools/agx-run 'nvidia-smi'                    # foreground, output here
+#   tools/agx-run --detach 'make rl-train ...'    # detached, logged remotely
+#   tools/agx-run --log /tmp/x.log --detach '...' # pick the logfile
+#   tools/agx-run --tail /tmp/x.log               # read a detached run's log
+#
+# Why --detach exists. A backgrounded remote command started as
+#   ssh host 'setsid nohup cmd &'
+# keeps the ssh channel open for MINUTES after the remote process has detached,
+# because ssh waits for stdout/stderr to be closed by every process holding
+# them -- and the child inherited them. Redirecting all three streams AND
+# passing -f (ssh backgrounds itself after authentication) avoids it, so the
+# launch returns immediately. Long training and measurement runs are always
+# started this way.
+#
+# The other half of the same trap: `ssh host 'cmd | tail'` shows nothing until
+# the command exits, so a healthy long run looks frozen. Detach, then poll the
+# log with --tail.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ssh_cmd=(ssh -F "$here/ssh_config" agx)
+
+detach=0
+log=""
+usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit "${1:-0}"; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --detach|-d) detach=1; shift ;;
+        --log)       log=$2; shift 2 ;;
+        --tail)      exec "${ssh_cmd[@]}" "tail -f ${2:?--tail needs a path}" ;;
+        -h|--help)   usage 0 ;;
+        --)          shift; break ;;
+        -*)          echo "agx-run: unknown option '$1'" >&2; usage 1 >&2 ;;
+        *)           break ;;
+    esac
+done
+
+[ $# -gt 0 ] || { echo "agx-run: no command given" >&2; usage 1 >&2; }
+cmd="$*"
+
+if [ "$detach" -eq 0 ]; then
+    exec "${ssh_cmd[@]}" "$cmd"
+fi
+
+: "${log:=/tmp/agx-run-$(date +%Y%m%d-%H%M%S).log}"
+
+# -f backgrounds the local ssh; setsid+nohup detach the remote process from the
+# session; </dev/null and the redirects make sure nothing keeps the channel open.
+"${ssh_cmd[@]}" -f \
+    "setsid nohup bash -lc $(printf %q "$cmd") </dev/null >$(printf %q "$log") 2>&1 &"
+
+echo "detached on the VM -- log: $log"
+echo "poll it with:  tools/agx-run --tail $log"
