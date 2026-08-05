@@ -228,6 +228,11 @@ BRIDGE_FLAG := --bridge $(call lc,$(BRIDGE))
 # pure per-tick overhead. Set SIM_SENSORS=true to inspect them. (The IMU and
 # magnetometer stay on regardless -- they have no rendering cost.)
 SIM_SENSORS ?= false
+# rl_corrector.world runs uncapped (~33x), which is what training wants but puts
+# /imu/data at ~3 kHz -- far faster than a normal subscriber drains its queue, so
+# any drive-and-measure tool silently loses most samples. Use
+# WORLD=rl_corrector_rt.world (1x realtime) for slip_ident and friends.
+WORLD ?= rl_corrector.world
 TERRAIN_FLAG := $(if $(filter false,$(call lc,$(TERRAIN))),--no-terrain,--terrain)
 LOAD_FLAG := $(if $(LOAD),--load $(LOAD),)
 TB_FLAG := $(if $(TB),--tensorboard $(TB),)
@@ -238,7 +243,8 @@ rl-sim: build
 		$(GPU_PREFIX) \
 		ros2 launch agx_bringup rl_corrector_sim.launch.py \
 		headless:=$(call lc,$(HEADLESS)) \
-		sim_sensors:=$(call lc,$(SIM_SENSORS))
+		sim_sensors:=$(call lc,$(SIM_SENSORS)) \
+		world:=$(WORLD)
 
 rl-train: build
 	source /opt/ros/jazzy/setup.bash && \
