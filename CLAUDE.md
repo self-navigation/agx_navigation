@@ -1027,6 +1027,11 @@ model's anisotropy, which IS the steering mechanism.**
 | 0.5 | 14.441 | 0.071 | 2 | 4.101 |
 | 0.45 | **16.478** | 0.061 | 2 | 3.619 |
 
+(This whole section describes the plant as it was, with the wheel's `mu2` at 0.7.
+That was changed to 0.45 on 2026-08-07 and the cliff moved with it — see "The
+wheel fix" below. The mechanism and the method are unchanged; only the number
+where it breaks moved.)
+
 **The cliff is at 0.7 — the wheel's own `mu2`, to the digit.** Above it only the
 longitudinal channel erodes, so chi drifts up gently while the spread across
 radii quadruples (a single `slip_chi` is already losing validity at 0.8, before
@@ -1070,39 +1075,71 @@ simulating "loses steering", not "slides". That includes the RL training terrain
 and every corrector comparison. The friction values were not merely uncalibrated
 (as the section above says); they were outside the model's valid domain.
 
-**The proposed fix (not yet applied):** `mu2=0.7` is the problem — it sits at the
-top of the realistic range for rubber, so every physically plausible floor lands
-at or below it. Lowering the wheel pair to about `mu1=0.9 / mu2=0.45` moves the
-cliff from 0.7 to ~0.45:
+### The wheel fix: `mu2` 0.7 → 0.45, applied and confirmed (2026-08-07)
 
-| ground | effective (long, lat) | ratio | steers? |
-| --- | --- | --- | --- |
-| 0.9 | (0.9, 0.45) | 2.0 | yes, better than today |
-| 0.6 | (0.6, 0.45) | 1.33 | yes, degraded |
-| 0.45 | (0.45, 0.45) | 1.0 | no |
+`mu2=0.7` was the problem — it sat at the top of the realistic range for rubber,
+so every physically plausible floor landed at or below it. It is now **0.45** in
+`wheel.xacro`. **`mu1` deliberately stays at 200**: it is never realized (the
+ground caps it), and it encodes "the wheel is never the longitudinal limit, the
+GROUND decides", which is exactly what makes a friction patch's `mu` mean
+anything in the rolling direction. Only `mu2` sets the knee, so only `mu2` moved.
 
-That makes linoleum and tile representable and reserves the collapse for ice,
-which is arguably **correct** rather than a limitation: on real ice
-`mu_long ~= mu_lat`, and a real skid-steer genuinely cannot steer there. The model
-is not broken for ice; it was broken for linoleum, because the wheel was
-parameterised for concrete. Re-run `sweep_ground_mu.sh` against any new pair —
-the curve is now a repeatable instrument for "does this tyre model steer".
+Re-run of `sweep_ground_mu.sh` (`sweep_data/ground_mu_chi_mu2_045.csv`), against
+the old curve:
 
-**The limit that survives the fix:** under min-combination with an isotropic
-ground, *any* ground below the wheel's `mu2` gives ratio 1. "Slides but still
-steers" is therefore inexpressible at low friction — a surface is either above
-the knee or it has no steering authority. If `sand` needs to be "grips less but
-still turns", a low-`mu` patch cannot deliver it and something else is required.
+| ground `mu` | chi @ `mu2=0.7` | chi @ `mu2=0.45` | yaw gain | arcs | spread |
+| --- | --- | --- | --- | --- | --- |
+| 1.0 | 1.3718 | **1.3575** | 0.737 | 6 | 0.007 |
+| 0.8 | 1.4438 | **1.3651** | 0.733 | 6 | 0.023 |
+| 0.6 | 11.760 | **1.4037** | 0.713 | 6 | 0.058 |
+| 0.5 | 14.441 | **1.5713** | 0.641 | 6 | 0.341 |
+| **0.45** | 16.478 | **15.583** | 0.065 | 2 | 3.449 |
+| 0.4 | — | 18.729 | 0.055 | 2 | 5.733 |
+| 0.3 | — | 25.362 | 0.040 | 2 | 6.084 |
 
-**What still stands:** chi is genuinely a property of the SURFACE (1.37 vs 18.7 is
-that fact at its most extreme), so it cannot be a constant on a floor with
-ice/sand zones — it is not constant *within one trajectory*. That remains a
-modelling gap rather than a tuning problem, and the structural reason a frozen PMP
-plan cannot handle zones.
+**The knee moved to 0.45, to the digit** — predicted before the run, exactly as
+the 0.7 knee was. Min-combination is settled, not a hypothesis.
 
-**Do not re-adopt `mu=0.45` on the ground plane.** `rl_corrector.world` still
-carries it as of this writing and every measurement taken against it describes a
-robot that cannot steer.
+**The curve TRANSLATED rather than deformed, and the free variable is the RATIO
+`ground/mu2`, not absolute friction.** 0.5/0.45 (ratio 1.11) gives chi 1.57;
+the old 0.8/0.7 (ratio 1.14) gave 1.44. So `sweep_ground_mu.sh` measures one
+curve in one variable and `mu2` slides it — that is what makes it a reusable
+instrument for "does this tyre model steer" rather than a one-off.
+
+**Chi at nominal barely moved: 1.3718 → 1.3575, ~1%.** The prediction was a
+visible drop from the improved ratio (1.43:1 → 2.22:1) and that was **wrong** —
+above the knee chi cares *that* you are above it, not by how much. Consequence:
+`PlannerConfig.slip_chi = 1.373` is still within ~1% at ground 1.0, so the
+existing baked plans did **not** need re-planning for this change. The spread
+across radii also improved (0.0299 → 0.0072), so a single `slip_chi` describes
+this plant *better* than it described the old one.
+
+**Usable band is ground >= 0.5.** Linoleum at 0.45 sits exactly on the knee and
+is marginal; wet_tile (0.30), slippery (0.20) and icy (0.05) are all still below
+it. Ice being uncontrollable is **correct** rather than a limitation — on real
+ice `mu_long ~= mu_lat` and a real skid-steer genuinely cannot steer. The model
+was never broken for ice; it was broken for linoleum, because the wheel was
+parameterised for concrete.
+
+**The limit that survives the fix, unchanged:** under min-combination with an
+isotropic ground, *any* ground below the wheel's `mu2` gives ratio 1. "Slides but
+still steers" is inexpressible at low friction — a surface is either above the
+knee or it has no steering authority. **`sand` is still blocked on this**, at any
+wheel setting; it needs a different mechanism, and that is a question for the
+advisor alongside the planner-vs-corrector one.
+
+**What still stands:** chi is genuinely a property of the SURFACE (1.36 vs 25.4
+across this curve), so it cannot be a constant on a floor with ice/sand zones —
+it is not constant *within one trajectory*. That remains a modelling gap rather
+than a tuning problem, and the structural reason a frozen PMP plan cannot handle
+zones.
+
+**Do not lower the ground plane to model a slippery floor.** Both worlds are at
+`mu=1.0` and should stay there; slipperiness belongs in the wheel pair or in a
+patch, and any patch below 0.45 now means "no steering", deliberately.
+
+**Everything measured before this change was measured on a different plant.**
+The identity / TVLQR / RL comparison and every tuning result predate it.
 
 ### Measuring `slip_chi` on the real robot (method, 2026-08-05)
 

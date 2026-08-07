@@ -1,4 +1,9 @@
-# Handover — 2026-08-05
+# Handover — 2026-08-05, updated 2026-08-07
+
+**2026-08-07 in one line:** the wheel fix below is **applied and confirmed** —
+`mu2` 0.7 → 0.45 moved the steering cliff to 0.45 exactly as predicted, chi at
+nominal moved only 1% (so no re-planning needed), and the head of the queue is
+now re-measuring identity / TVLQR / RL on a plant that steers.
 
 ## TL;DR
 
@@ -13,7 +18,8 @@ Separately, the RL architecture changed direction after the advisor's reply:
 tracking residual.** That is a strictly better fit for the project and it makes
 the learning problem supervised rather than SAC.
 
-Nothing is committed. A ground-`mu` sweep is in flight (see "In flight").
+All of it is committed on `tvlqr-corrector`; the sweep it refers to is done and
+its successor is too (see "The fix").
 
 ## How today unfolded, in order
 
@@ -115,38 +121,58 @@ independent constraints. Below 0.7 the ground binds both, so lowering it reduces
 grip *and* collapses the ratio, inseparably. Nothing regressed; the knife-edge
 merely held because the ground happened to be 1.0.
 
-## The fix, and what it does not fix
+## The fix — APPLIED AND CONFIRMED 2026-08-07
 
-**Not yet applied.** `mu2=0.7` is the problem: it sits at the top of the
-realistic range for rubber, so every plausible floor lands at or below it.
-Lowering the wheel pair to about `mu1=0.9 / mu2=0.45` moves the cliff to ~0.45:
+`wheel.xacro` `mu2`: **0.7 → 0.45**. `mu1` left at 200 on purpose (it is never
+realized, and it encodes "the ground decides longitudinally", which is what makes
+a patch's `mu` mean anything in the rolling direction). This deviates from
+yesterday's `mu1=0.9 / mu2=0.45` proposal: only `mu2` sets the knee, so lowering
+`mu1` would have discarded grip on grippy ground for nothing.
 
-| ground | effective (long, lat) | ratio | steers? |
-| --- | --- | --- | --- |
-| 0.9 | (0.9, 0.45) | 2.0 | yes, better than today |
-| 0.6 | (0.6, 0.45) | 1.33 | yes, degraded |
-| 0.45 | (0.45, 0.45) | 1.0 | no |
+Sweep re-run, `sweep_data/ground_mu_chi_mu2_045.csv`:
 
-That makes linoleum and tile representable and reserves the collapse for ice —
-arguably **correct**, since on real ice `mu_long ~= mu_lat` and a real skid-steer
-genuinely cannot steer there. The model was never broken for ice; it was broken
-for linoleum, because the wheel was parameterised for concrete.
+| ground `mu` | chi @ 0.7 | chi @ 0.45 | yaw gain | arcs | spread |
+| --- | --- | --- | --- | --- | --- |
+| 1.0 | 1.3718 | **1.3575** | 0.737 | 6 | 0.007 |
+| 0.8 | 1.4438 | **1.3651** | 0.733 | 6 | 0.023 |
+| 0.6 | 11.760 | **1.4037** | 0.713 | 6 | 0.058 |
+| 0.5 | 14.441 | **1.5713** | 0.641 | 6 | 0.341 |
+| **0.45** | 16.478 | **15.583** | 0.065 | 2 | 3.449 |
+| 0.4 | — | 18.729 | 0.055 | 2 | 5.733 |
+| 0.3 | — | 25.362 | 0.040 | 2 | 6.084 |
 
-**The limit that survives:** under min-combination with an isotropic ground, any
-ground below the wheel's `mu2` gives ratio 1. "Slides but still steers" is
-inexpressible at low friction. If `sand` must be "grips less but still turns", a
-low-`mu` patch cannot deliver it — that needs a different mechanism, and it is
-now the blocker on the advisor's second zone.
+Three things, in order of how much they change the plan:
 
-Re-run `sweep_ground_mu.sh` against any new wheel pair; the curve is a repeatable
-instrument for "does this tyre model steer".
+1. **The knee moved to 0.45, to the digit** — predicted before running, as the
+   0.7 knee was. Ground 0.6 went from unusable (11.76, two arcs) to ordinary
+   (1.40, six arcs) with nothing changed but the wheel's lateral coefficient.
+2. **Chi at nominal moved ~1%** (1.3718 → 1.3575). The prediction of a visible
+   drop was **wrong**: above the knee chi cares that you are above it, not by how
+   much. So `PlannerConfig.slip_chi = 1.373` still holds and **step 2 below
+   mostly evaporates** — the baked plans did not need re-planning. Spread across
+   radii also improved 0.0299 → 0.0072.
+3. **The curve translated, it did not deform.** The free variable is the ratio
+   `ground/mu2`: 0.5/0.45 (1.11) → 1.57 mirrors the old 0.8/0.7 (1.14) → 1.44.
+   One curve, one variable, `mu2` slides it.
+
+Usable band is now **ground >= 0.5**. Linoleum (0.45) is exactly on the knee and
+marginal; wet_tile 0.30, slippery 0.20, icy 0.05 remain below it — ice being
+uncontrollable is correct, not a defect.
+
+**The limit that survives, unchanged:** under min-combination with an isotropic
+ground, any ground below the wheel's `mu2` gives ratio 1. "Slides but still
+steers" is inexpressible at low friction at **any** wheel setting. `sand` is
+still blocked on this and it is a question for the advisor, not a parameter.
 
 ## Then
 
-1. Change the wheel pair, re-run the sweep, confirm the cliff moved.
-2. Re-plan the eval trajectories with the chi measured on the new plant.
-3. Re-measure identity / TVLQR / RL on a plant that steers.
-4. Only then resume gain tuning.
+1. ~~Change the wheel pair, re-run the sweep, confirm the cliff moved.~~ **DONE
+   2026-08-07**, above.
+2. ~~Re-plan the eval trajectories with the chi measured on the new plant.~~
+   **Not needed** — chi moved 1% at nominal.
+3. **Re-measure identity / TVLQR / RL on a plant that steers.** This is now the
+   head of the queue and it re-baselines every number in CLAUDE.md.
+4. Only then resume gain tuning, with mean-of-3 repeats.
 
 ## Architecture: RL as a rough re-planner, not a residual
 
@@ -238,11 +264,17 @@ Chi, not mu, is the quantity to match — it is what the model consumes.
 
 ## State
 
-- **VM:** one headless `gz sim` on `rl_corrector_rt.world` at the sweep's last
-  value (0.45 — a plant that cannot steer). Restart it before measuring anything.
-  `just check-sim` before launching.
-- Both worlds are back at **mu=1.0** in git, the only value measured to steer.
-  Do not lower them; lower the wheel pair instead.
+- **VM:** one headless `gz sim` on `rl_corrector_rt.world` at the 2026-08-07
+  sweep's last value (**ground 0.3 — a plant that cannot steer**). The git copy
+  is reset to 1.0, the *running* one is not. Restart it before measuring
+  anything; `just check-sim` first.
+- Both worlds are at **mu=1.0** in git and should stay there. Slipperiness now
+  belongs in the wheel pair or in a patch; a patch below 0.45 deliberately means
+  "no steering".
+- **Watch for `--` in XML comments.** Writing a dash that way in `wheel.xacro`
+  made xacro fail to parse and the sim never came up; the sweep's readiness poll
+  caught it and wrote an empty row rather than mislabelling someone else's
+  numbers, which cost one point instead of a bogus curve.
 - **Committed** on `tvlqr-corrector`: routing tooling, the repeats/IMU-gate/
   bayesopt work, today's plant investigation, and the submodule (worlds, profiles,
   baked maps). 158 unit tests pass — note they now need the submodule on
