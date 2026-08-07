@@ -218,11 +218,22 @@ decision); RL no longer has to beat TVLQR to justify itself; and the existing
 residual work becomes a documented negative result, which is usable material for
 the intro the advisor asked for.
 
+**SETTLED 2026-08-07 (user):** corrections run **on top of the frozen PMP path**.
+A full PMP re-solve is reserved for situations that cannot be corrected around at
+all — the example given was an unexpected wall in the way. So the frozen plan is
+the default reference and re-planning is an exceptional event, not a control
+layer running at some rate. Two consequences worth holding onto:
+
+- the RL re-planner's job is bounded — *re-join the existing path*, never *find a
+  new one* — which is a much smaller function to approximate and keeps the
+  project's "one expensive optimal solve offline" philosophy intact;
+- a full re-solve needs a **trigger**, and "the reference is infeasible" is a
+  different test from "we are far off it". Nothing implements that yet.
+
 Open items on this: the PMP solver needs a "re-join from an arbitrary state onto
 the nominal path" boundary condition (a BC change, not a new solver), and its
 per-solve cost over a 2–3 s horizon needs measuring early since it sets the data
-budget. **Worth one clarifying line to the advisor** ("a planner over the frozen
-PMP path, or replacing PMP?") before committing to the rewrite.
+budget.
 
 ## Handling chi when it is not constant
 

@@ -674,7 +674,58 @@ result needs repeats and a comparison of distributions. This raises the priority
 of parallel sims (queue item 7) — repeats are now mandatory and embarrassingly
 parallel. `tools/plot_tune_variance.py` draws this; `figures_new/`.
 
-### Clean three-way comparison (2026-08-03) — the first trustworthy one
+### Baseline on the repaired plant (2026-08-07) — the current reference
+
+**This supersedes the 2026-08-03 table below for every purpose except history.**
+That one was measured with the wheel's `mu2` at 0.7, i.e. on a robot that lost
+steering on its own test terrain (see "The wheel fix"). Five repeats of the full
+seven-shape set, identity and TVLQR, terrain on, `just compare` (~82 s per
+repeat). max|e_cross| in metres, mean ± sd over 5:
+
+| trajectory | shape | identity | tvlqr | verdict |
+| --- | --- | --- | --- | --- |
+| floor_1_00049 | STRAIGHT | 0.132 ± 0.000 | **0.086 ± 0.028** | tvlqr, marginal |
+| floor_6_00023 | CORNER | 0.721 ± 0.196 | **0.226 ± 0.000** | tvlqr |
+| floor_6_00018 | S | **0.839 ± 0.031** | 2.128 ± 0.003 | **identity** |
+| floor_6_00047 | ZIGZAG | 7.063 ± 0.712 | **2.186 ± 0.276** | tvlqr |
+| floor_6_00056 | TIGHT V | 0.418 ± 0.014 | **0.253 ± 0.026** | tvlqr |
+| floor_6_00031 | U-TURN | 1.666 ± 0.771 | 1.411 ± 0.534 | **tie**, overlapping |
+| floor_6_00025 | LOOP | 4.053 ± 0.010 | **1.600 ± 0.035** | tvlqr |
+| **mean** | | **2.127** | **1.127** | |
+
+**TVLQR halves worst-case deviation** (2.13 → 1.13 m), winning 5 shapes, tying 1,
+losing 1. Open loop is what moved most in the re-baseline (3.53 → 2.13): a plant
+that can steer makes the nominal plan far more followable unaided, so the easy
+shapes stopped needing rescue (tight V 3.01 → 0.42, U-turn 5.53 → 1.67). TVLQR
+itself barely moved (1.20 → 1.13), which is the expected signature.
+
+**The noise REDISTRIBUTED, it did not shrink.** The old plant's worst trajectories
+were the straight (sd 0.501) and the tight V (0.582); both are now effectively
+deterministic (0.000 / 0.014), while the zigzag (0.712) and U-turn (0.771) became
+the noisy ones. Coherent: when everything slides, everything is noisy; now the
+chaos is confined to the reversal-heavy shapes, where contact modes switch.
+**Consequence: 5 of 7 trajectories now support single-sample ranking, but the
+zigzag and U-turn do not.** Keep mean-of-3 as the tuning default.
+
+**"TVLQR oscillates on S-curves" is REINSTATED**, and the 2026-08-03 retraction of
+it is itself retracted. TVLQR loses the genuine S by 2.5x with sd **0.003** — as
+reproducible as anything measured here. The retraction came from the old plant,
+where TVLQR scored 1.06 against identity's 4.22; that was open loop failing
+everywhere, masking a real TVLQR weakness. The original claim had the phenomenon
+right and the evidence wrong.
+
+**The U-turn is a TIE, not a TVLQR win.** The distributions overlap completely.
+Any earlier U-turn claim from single samples was reading noise.
+
+RL was deliberately not re-measured: the existing policy is a 4-wheel *residual*
+trained on the old plant with an IMU-bearing observation layout, so its number
+here would describe neither this plant nor the re-planner architecture that
+replaced it (see handover).
+
+### Clean three-way comparison (2026-08-03) — measured on the BROKEN plant
+
+**Historical only** — superseded by the table above; `mu2=0.7` meant the robot
+could not steer on any of its own patch profiles.
 
 Seven shapes, fixed bridge, terrain on, RL at the 800k checkpoint.
 `tools/plot_corrector_summary.py`, data in `compare_data_new/`
@@ -694,9 +745,11 @@ Seven shapes, fixed bridge, terrain on, RL at the 800k checkpoint.
 **TVLQR at the DEFAULT gains cuts worst-case deviation by 66% over open loop**,
 and wins 5 of 7 shapes. Two retractions follow:
 
-- **"TVLQR oscillates on S-curves" is dead.** It is the *best* corrector on the
-  genuine S (1.06 vs identity's 4.22). The claim came from `floor_6_00042`,
-  which was an L.
+- ~~**"TVLQR oscillates on S-curves" is dead.**~~ **This retraction was itself
+  wrong** — see the 2026-08-07 baseline above. TVLQR did win the S here (1.06 vs
+  identity's 4.22), but only because open loop was failing everywhere on a plant
+  that could not steer. On the repaired plant it loses the S 2.13 to 0.84, at
+  sd 0.003. The oscillation claim is reinstated.
 - **"No RL checkpoint beats identity on anything" is dead** — but only just, and
   only at the best checkpoints. RL(800k) beats identity on 6 of 7 shapes here.
   **That checkpoint is not representative**; see the clean sweep below.
