@@ -77,7 +77,14 @@ BOUNDS_LOG = [(-1.0, 3.0), (-2.0, 2.0)]
 #   2026-08-04-linoleum-ground : world ground mu 1.0 -> 0.45 (dry linoleum),
 #       matching the `linoleum` patch profile. Everything before this was
 #       measured on a concrete-grippy floor.
-PLANT_VERSION = "2026-08-04-linoleum-ground"
+#   2026-08-07-wheel-mu2-045 : REVERTED that ground change (0.45 was BELOW the
+#       wheel's lateral mu2 of 0.7, which caps both friction channels equally and
+#       destroys the anisotropy a skid-steer steers with -- the robot achieved 6%
+#       of commanded yaw rate). Ground is back at 1.0 and the WHEEL's mu2 is
+#       0.7 -> 0.45 instead, which is where slipperiness belongs. Measured
+#       baseline on this plant: identity 2.127, TVLQR 1.127 m mean max|e_cross|,
+#       objective sd 0.082 single-sample / 0.047 at --repeats 3.
+PLANT_VERSION = "2026-08-07-wheel-mu2-045"
 
 
 class EvalTimeout(Exception):
