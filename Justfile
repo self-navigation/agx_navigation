@@ -435,6 +435,46 @@ variance-probe n='10' traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.n
 variance-log:
     -{{_ssh}} 'tail -40 /tmp/variance_probe.log'
 
+# Leave this running on idle machine time. It accumulates RAW per-rollout
+# results forever and never optimizes anything -- see the long docstring in
+# tuning/soak.py for why an optimizer is the wrong thing to leave on (our
+# objective is currently selecting modes on two bistable shapes, so running BO
+# or a GA harder against it just buys confidence in the wrong quantity).
+#
+# The outer `while` is the point: soak.py exits cleanly every `batch` rollouts so
+# each batch runs in a FRESH process, which bounds any within-process
+# accumulation and gives an across-process arm for free (every row carries its
+# pid and process_index).
+#
+# It holds the only Gazebo instance, so `just check-sim` will refuse focused work
+# while it runs -- that is correct. `just kill-sim` stops it and loses nothing:
+# every rollout is flushed and fsync'd before the next begins.
+#     just soak                                    # the two validated points
+#     just soak "--gains 0.2,2.6 --gains 0.35,2.6" # any set, passed verbatim
+soak extra='' batch='200': sync check-sim
+    {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
+        tmux kill-window -t {{session}}:soak 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n soak \
+        "cd {{remote}} && source /opt/ros/jazzy/setup.bash \
+         && source install/setup.bash \
+         && export PYTHONPATH=src/agx_navigation/agx_planning:\$PYTHONPATH \
+         && while true; do \
+              python3 -m agx_planning.tuning.soak \
+                --trajectory-config {{remote}}/config/eval_trajectories.yaml \
+                {{extra}} \
+                --max-rollouts {{batch}} --out /home/programmer/soak.jsonl || break; \
+            done 2>&1 | tee -a /tmp/soak.log"'
+    @echo "soak started in tmux window '{{session}}:soak' -- follow it with:  just soak-log"
+    @echo "STOP IT before any focused test:  just kill-sim"
+
+soak-log:
+    -{{_ssh}} 'tail -40 /tmp/soak.log'
+
+fetch-soak dest='tune_data':
+    mkdir -p {{dest}}
+    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
+        {{host}}:/home/programmer/soak.jsonl {{dest}}/
+
 analyze-variance src="tune_data/variance_probe.jsonl":
     python3 tools/analyze_variance.py {{src}}
 
