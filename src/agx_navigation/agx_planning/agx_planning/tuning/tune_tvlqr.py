@@ -32,6 +32,13 @@ spanning orders of magnitude: a step means a ratio, so the search behaves the
 same at q=0.1 and q=100, and no move can propose a negative gain. Bounds are
 the physically sensible range, clipped rather than penalised.
 
+Those bounds are an ASSUMPTION, and `--q-bounds` / `--r-bounds` override them.
+The 2026-08-07 run put 23 of 100 evaluations into the bottom decade with its best
+point at q=0.276, i.e. it pushed against the q=0.1 floor -- which is a reason to
+doubt the floor, not to trust the answer. The flags matter for single-point
+probes too: `x0` is CLIPPED into the box, so probing q=0.01 without them measures
+q=0.1 and reports it under the label you asked for.
+
 RESUMABLE
 ---------
 Every evaluation is appended to a JSONL cache before the next one starts, and a
@@ -210,6 +217,19 @@ def main():
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--out", default=os.path.expanduser("~/tvlqr_tuned.json"))
+    ap.add_argument("--q-bounds", type=float, nargs=2, metavar=("LO", "HI"),
+                    default=None,
+                    help="override the q_cross search box, in LINEAR gain units "
+                         f"(default {10.0 ** BOUNDS_LOG[0][0]:g} "
+                         f"{10.0 ** BOUNDS_LOG[0][1]:g}). The default floor of "
+                         "0.1 is an assumption, not a measurement, and the "
+                         "2026-08-07 run piled 23 of 100 evaluations against it "
+                         "-- so probing below it needs this flag. Note x0 is "
+                         "CLIPPED into the box, so a single-point probe outside "
+                         "the default bounds silently measures the wrong gains "
+                         "without it.")
+    ap.add_argument("--r-bounds", type=float, nargs=2, metavar=("LO", "HI"),
+                    default=None, help="same, for r_omega")
     args = ap.parse_args()
 
     trajectories = args.trajectories
@@ -336,6 +356,19 @@ def main():
                              f"[tune] cached  q_cross={10.0**x[0]:9.3f} "
                              f"r_omega={10.0**x[1]:8.4f} -> {fx:.4f} m", flush=True))
 
+    bounds_log = list(BOUNDS_LOG)
+    for i, override in enumerate((args.q_bounds, args.r_bounds)):
+        if override is not None:
+            lo, hi = override
+            if not (0.0 < lo < hi):
+                raise SystemExit(f"[tune] bad bounds {lo} {hi}: need 0 < lo < hi")
+            bounds_log[i] = (math.log10(lo), math.log10(hi))
+    if bounds_log != list(BOUNDS_LOG):
+        print(f"[tune] search box overridden: "
+              f"q_cross [{10.0 ** bounds_log[0][0]:g}, {10.0 ** bounds_log[0][1]:g}] "
+              f"r_omega [{10.0 ** bounds_log[1][0]:g}, {10.0 ** bounds_log[1][1]:g}]",
+              flush=True)
+
     x0 = [math.log10(args.q_cross), math.log10(args.r_omega)]
     try:
         if args.optimizer == "bayes":
@@ -347,12 +380,12 @@ def main():
                                  "(a GP has no natural convergence test on a "
                                  "noisy objective; pick a budget)")
             res = bayes_minimize(
-                wrapped, bounds=BOUNDS_LOG, max_evals=args.max_evals,
+                wrapped, bounds=bounds_log, max_evals=args.max_evals,
                 x0=x0, noise=(args.noise if args.noise > 0 else None),
                 seed=args.seed)
         else:
             res = minimize(wrapped, x0=x0, step=[args.step, args.step],
-                           bounds=BOUNDS_LOG,
+                           bounds=bounds_log,
                            max_evals=(args.max_evals if args.max_evals > 0
                                       else None),
                            xtol=1e-2, ftol=1e-3)

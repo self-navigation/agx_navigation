@@ -423,6 +423,24 @@ delete a claim outright when it is superseded rather than leaving both versions.
 The single active goal is getting the runtime corrector to hold a frozen PMP
 trajectory under slip. Nothing else is in progress.
 
+**Keep [handover.md](handover.md) current — it is the primary record of what we
+are doing, and it outranks anyone's memory of it.** Sessions here are days apart
+and the user explicitly relies on that file rather than recall, so a session that
+learns something and does not write it down has lost it. The two files split by
+lifetime, not by importance:
+
+- **this section** accumulates *established findings* — a measured number, a
+  retracted claim, a mechanism understood. It is cumulative and dated.
+- **`handover.md`** is *state*: what is running on the VM right now, what is
+  half-finished, which caches are poisoned, what the next session should do
+  first, and the reasoning behind an in-flight decision that has not yet become
+  a finding. Rewrite it rather than appending — it describes now, not history.
+
+Update both **in the same session that produced the change**, not at the end of a
+run of them; and when a launched experiment is still in flight at the end of a
+session, `handover.md` must say so, say where its log is, and say what to
+conclude from either outcome.
+
 ### Terrain patches are inherited across processes (found 2026-08-01)
 
 `GazeboBridge._remove_terrain` only removed patches that *its own process*
@@ -721,6 +739,144 @@ RL was deliberately not re-measured: the existing policy is a 4-wheel *residual*
 trained on the old plant with an IMU-bearing observation layout, so its number
 here would describe neither this plant nor the re-planner architecture that
 replaced it (see handover).
+
+### The first tuning run that is probably real (2026-08-07, read 2026-08-12)
+
+100 Bayesian-optimization evaluations, mean-of-3, 3.2 h, **zero failures**, on the
+repaired `mu2=0.45` plant. History in `tune_data/tvlqr_tune_v4_newplant.jsonl`,
+result in `tune_data/tvlqr_tuned.json`. `converged: false` — the 100-evaluation
+budget ran out, it did not stop moving.
+
+| | `q_cross` | `r_omega` | mean max\|e_cross\| |
+| --- | --- | --- | --- |
+| default (eval 1) | 10.0 | 0.25 | **1.042** |
+| best (eval 48) | **0.276** | **2.618** | **0.614** |
+
+**Unlike the 2026-08-02 and 2026-08-03 runs, the improvement is far larger than
+the noise it was selected from.** The within-evaluation SEM of a mean-of-3 is
+**0.026 m** (median over the 100 evals; mean 0.046), against a 0.43 m
+improvement — roughly 10x. The mean-of-3 change of 2026-08-04 is what bought
+this; the two earlier runs were selecting draws from a spread bigger than their
+claimed gain. BO also reported the **posterior mean** (0.6147) essentially equal
+to the observed draw (0.6144), which is what a well-conditioned surrogate does.
+
+**The robust finding is qualitative, and it does not depend on trusting the
+single best point.** Binning all 100 evaluations shows a clean monotone trend in
+`q_cross` and none at all in `r_omega`:
+
+| `q_cross` bin | n | mean fx | | `r_omega` bin | n | mean fx |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.10-0.32 | 23 | **0.942** | | 0.01-0.1 | 32 | 1.038 |
+| 0.32-1.0 | 22 | 0.995 | | 0.1-1 | 16 | 1.227 |
+| 1.0-3.2 | 20 | 1.021 | | 1-10 | 30 | 1.026 |
+| 3.2-10 | 10 | 1.144 | | 10-100 | 21 | 1.200 |
+| 10-32 | 10 | 1.198 | | 100-1000 | 1 | 1.256 |
+| 32-1000 | 15 | 1.515 | | | | |
+
+So: **cross-track feedback should be ~30x weaker than the default, and `r_omega`
+is close to irrelevant.** That is consistent with the standing "TVLQR oscillates
+on the S-curve" claim — an over-aggressive cross-track gain is exactly what
+oscillates. Per-trajectory, the tuned point wins big on the zigzag (1.80 → 0.42)
+and the loop (1.50 → 0.43), and is a wash on the corner (0.23 → 0.31) and the
+U-turn (1.14 → 1.25).
+
+**Two things the tuner structurally cannot answer about its own result:**
+
+- **It never re-measured its best point.** 100 evaluations, **100 distinct gain
+  pairs, zero repeats** — the opposite failure mode from the Nelder-Mead run that
+  re-sampled one point 71 times. The posterior mean protects against winner's
+  curse in the *reporting*, but nothing here is a direct measurement of the
+  optimum.
+- **The search piled against its own lower bound.** `BOUNDS_LOG` floors
+  `q_cross` at 0.1; **23 of 100 evaluations landed in [0.1, 0.32)** and the best
+  sits at 0.276. The optimum may be outside the box. It is *not* simply "turn
+  TVLQR off" — identity scores 2.127 on this plant against TVLQR's 1.127 — so
+  there is a genuine interior minimum, but we do not know where.
+
+Both were tested on 2026-08-12; see the next two sections. Short version: the
+point **validates**, the **bounds were not the issue**, and the *reason* it wins
+is not the one the binned table implies.
+
+### The tuned point validates (2026-08-12)
+
+Independent mean-of-5 at each gain pair, tuner code path, fresh caches, clean
+sim. `tune_data/validate_20260812_{tuned,default}.jsonl`. The validation is run
+as `tune_tvlqr --max-evals 1 --repeats 5 --q-cross Q --r-omega R`: BO seeds its
+design with `x0`, so a 1-evaluation run is exactly a clean measurement at a
+chosen point, in the same code path that produced the number being checked.
+
+| | tuning run (mean-of-3) | validation (mean-of-5) |
+| --- | --- | --- |
+| default `q=10 / r=0.25` | 1.0417 | **1.0037** |
+| tuned `q=0.276 / r=2.618` | 0.6144 | **0.6212** |
+
+**This is the first tuning result on this project that survives an independent
+re-measurement.** Both earlier ones (0.183 m, 0.9412 m) were minima of noisy
+draws and evaporated on inspection.
+
+### The optimum is a narrow spike, not a basin (2026-08-12)
+
+`q_cross` walked down through the search box's 0.1 floor at the tuned
+`r_omega`, mean-of-3 each (`tune_data/qwall_20260812.jsonl`; needs the new
+`--q-bounds` flag, because `x0` is **clipped** into the box and a probe at
+q=0.003 without it silently measures q=0.1).
+
+| `q_cross` | 0.003 | 0.010 | 0.030 | 0.100 | **0.276** | 0.600 | 1.500 | 10.0 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| mean max\|e_cross\| | 0.900 | 1.261 | 0.960 | 1.080 | **0.621** | 0.993 | 0.916 | 1.004 |
+
+**The bounds were not the problem** — nothing below 0.1 is any good, so the
+optimum is interior after all, and the "23 evaluations against the floor" reading
+was wrong. But the minimum is **narrow**: the immediate neighbours at 0.1 and 0.6
+score ~1.0, level with the default. A factor of two in either direction throws
+away the entire improvement.
+
+**And the monotone `q_cross` trend in the binned table above is a SMOOTHING
+ARTIFACT.** Averaging 100 evaluations per bin hid a landscape that is not smooth
+at all.
+
+**Why it wins, per shape — this is the part that matters:**
+
+| `q_cross` | straight | corner | **S** | zigzag | tight V | **U-turn** | loop |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.100 | 0.048 | 0.316 | 2.537 | 1.266 | 0.287 | 2.649 | 0.458 |
+| **0.276** | 0.054 | 0.309 | **1.604** | 0.408 | 0.286 | **1.237** | 0.451 |
+| 0.600 | 0.096 | 0.298 | 2.526 | 0.384 | 0.282 | 2.707 | 0.661 |
+| 10.0 | 0.068 | 0.226 | 2.130 | 1.537 | 0.234 | **1.146** | 1.684 |
+
+**The U-turn and the S are BISTABLE, and the tuned gains win by landing both in
+their good mode.** The U-turn is either ~1.2 or ~2.7 and nothing between; the
+default gains reach the good U-turn mode too (1.146, the lowest in the table) but
+pay for it on the zigzag and loop. Those two shapes alone account for
+(2.7-1.24)/7 + (2.5-1.60)/7 = **0.34 m** of the 0.38 m improvement. The five
+other shapes barely move.
+
+This is the "discrete modes, not smooth noise" phenomenon from 2026-08-02,
+showing up in the *objective* rather than in a repeat. Consequence: **the tuner
+is substantially selecting modes, not tracking quality.** An unweighted mean over
+seven shapes, two of which are bistable with a ~1.5 m gap, is dominated by which
+side of the flip those two land on.
+
+**Repeat-level evidence that the tuned point is nonetheless the stable one:**
+
+| gains | n | the individual repeats | sd |
+| --- | --- | --- | --- |
+| tuned 0.276 | 5 | 0.640 0.586 0.619 0.620 0.642 | **0.020** |
+| default 10.0 | 5 | 1.133 0.835 1.061 0.846 1.144 | **0.137** |
+| 0.600 | 3 | 0.985 0.995 1.000 | 0.006 |
+| 0.100 | 3 | 0.980 1.314 0.946 | 0.166 |
+
+**The default gains are visibly BIMODAL across repeats** (two clusters, ~0.84 and
+~1.11) while the tuned point is tight. So the tuned gains are not merely better
+on average, they are *more repeatable* — which is a better argument for adopting
+them than the mean is.
+
+**Standing recommendation: adopt `q_cross=0.276 / r_omega=2.618` provisionally,
+but do not treat the 0.38 m as a tracking improvement in a write-up.** It is
+mostly "two hard shapes stop falling into their bad mode". Before it goes in a
+paper, map the width of the good window (a fine scan over q in [0.15, 0.5]) and
+characterise the bistability directly — what the two U-turn modes physically are
+is unknown and is probably the more interesting result.
 
 ### Clean three-way comparison (2026-08-03) — measured on the BROKEN plant
 

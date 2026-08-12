@@ -1,178 +1,127 @@
-# Handover — 2026-08-05, updated 2026-08-07
+# Handover — 2026-08-12
 
-**2026-08-07 in one line:** the wheel fix below is **applied and confirmed** —
-`mu2` 0.7 → 0.45 moved the steering cliff to 0.45 exactly as predicted, chi at
-nominal moved only 1% (so no re-planning needed), and the head of the queue is
-now re-measuring identity / TVLQR / RL on a plant that steers.
+**Read this first, and keep it current.** It is the primary record of what we are
+doing; CLAUDE.md's "Current work" section is the cumulative record of what we
+have *established*. This file describes **now**: what is running, what is
+half-finished, what to do next, and the reasoning behind decisions that have not
+yet become findings. Rewrite it rather than appending. (The rule is written down
+at the top of CLAUDE.md's "Current work" section.)
 
-## TL;DR
+**2026-08-12 in one line:** the overnight tuning run from 2026-08-07 is in, and
+**for the first time a tuning result survives independent re-measurement** —
+`q_cross=0.276 / r_omega=2.618` gives 0.621 m against the default's 1.004 m — but
+the follow-up sweep shows the win is mostly **two bistable shapes landing in
+their good mode**, not uniformly better tracking.
 
-Yesterday's "make the floor realistic" change (world ground `mu` 1.0 → 0.45) did
-not make the floor realistic. **It deleted the skid-steer's steering mechanism**,
-and everything measured against it describes a robot that cannot turn. Chasing
-that down consumed the session and produced a much better understanding of the
-plant than the tuning run it displaced would have.
+## What happened this session
 
-Separately, the RL architecture changed direction after the advisor's reply:
-**RL becomes a rough re-planner on top of the frozen PMP path, not a per-wheel
-tracking residual.** That is a strictly better fit for the project and it makes
-the learning problem supervised rather than SAC.
+1. **Read the completed run** (`tvlqr_tune_v4_newplant.jsonl`: 100 BO
+   evaluations, mean-of-3, 3.2 h, zero failures, plant `2026-08-07-wheel-mu2-045`).
+   Default 1.042 m, best 0.614 m at `q=0.276 / r=2.618`. The within-evaluation
+   SEM is 0.026 m, so unlike the two previous runs the improvement is ~10x the
+   noise it was selected from.
+2. **Validated it** — mean-of-5 at both points, fresh sim, fresh caches:
+   **1.0037 (default) vs 0.6212 (tuned)**. It holds.
+3. **Probed below the search box's `q_cross` floor**, since 23 of 100 evaluations
+   had piled against it. **The bounds were not the problem** — everything below
+   0.1 is worse. But the minimum turned out to be a **narrow spike**: the
+   neighbours at q=0.1 and q=0.6 both score ~1.0, level with the default.
+4. **Found why it wins**, and it is not what the aggregate suggests. See CLAUDE.md
+   "The optimum is a narrow spike, not a basin" for the per-shape table.
 
-All of it is committed on `tvlqr-corrector`; the sweep it refers to is done and
-its successor is too (see "The fix").
+All three results, the per-shape breakdown and the caveats are written up in
+CLAUDE.md; the raw JSONL is in gitignored `tune_data/`.
 
-## How today unfolded, in order
+## The finding that should drive the next session
 
-Recording the reasoning, not just the conclusions, so the timeline is
-reconstructable.
+**The U-turn (`floor_6_00031`) and the S (`floor_6_00018`) are bistable.** Each
+lands at either ~1.2 m or ~2.7 m and nothing in between, and those two shapes
+alone account for 0.34 m of the 0.38 m improvement. The other five barely move.
 
-**1. The mu=0.45 blowup.** The first Bayesian-optimization evaluation on the new
-plant returned **20.6148 m** where the previous plant gave 1.1706 m. Killed it
-rather than spending 2 h measuring a broken plant.
+So the tuner is substantially **selecting modes, not tracking quality** — an
+unweighted mean over seven shapes, two of which flip across a ~1.5 m gap, is
+dominated by which side of the flip those two land on. This is the
+"discrete modes, not smooth noise" phenomenon from 2026-08-02 appearing in the
+*objective* rather than in a repeat.
 
-**2. Diagnostic: is it the corrector or the plan?** Ran `compare_correctors` with
-`identity` and `tvlqr` on two shapes, **no terrain patches at all**:
+The saving grace, and the better argument for adopting the gains: across 5
+repeats the tuned point is tight (sd **0.020**) while the default is visibly
+**bimodal** (0.835 / 0.846 / 1.061 / 1.133 / 1.144, sd 0.137). The tuned gains
+are *more repeatable*, not just lower on average.
 
-| trajectory | identity | tvlqr |
-| --- | --- | --- |
-| floor_1_00049 (straight) | 0.53 / 0.54 | 0.59 / 0.86 |
-| floor_6_00023 (corner) | 27.25 / 27.95 | 30.31 / 30.92 |
+**What the two U-turn modes physically are is unknown, and finding out is
+probably worth more than any further tuning.** A 1.5 m bimodal split on a fixed
+trajectory with fixed gains and a fixed seed is a plant/controller phenomenon,
+not measurement scatter.
 
-Open loop fails as badly as TVLQR, with zero patches. So it is **not** a
-corrector failure and **not** the patch distribution — the nominal PMP plan is
-unfollowable. Straight fine, corner catastrophic ⇒ it is the yaw model.
+## Do this next, in order
 
-**3. First hypothesis (partly wrong, recorded because it shaped the next step):**
-`slip_chi` is the Mandow effective-track factor and the scrub it models is
-generated by lateral friction, so chi is a function of `mu`. The plans were baked
-with chi=1.373 measured on a grippier floor; a wrong chi is a multiplicative
-error on commanded yaw that compounds along an arc — no error on a straight,
-unbounded error round a corner. Right shape, wrong mechanism.
+1. **Characterise the bistability.** Drive `floor_6_00031` ~10 times at the tuned
+   gains with `--trace-dir`, and use `tuning/trace_diff.py` to find the step
+   where the good and bad modes part company and which column moves first. That
+   tool exists precisely for this and answers "our controller vs physics vs a
+   dropped step" directly. Cheap (~15 min) and it is the highest-information
+   experiment available.
+2. **Map the width of the good window** — a fine scan of `q_cross` over
+   [0.15, 0.5] at `r_omega=2.618`, mean-of-3, ~8 points, ~15 min. A gain that
+   only works within a factor of 1.5 is fragile and we should know that before
+   it goes anywhere near the real robot.
+3. **Only then** consider adopting the gains as the default in
+   `tvlqr.TVLQRConfig`. They are currently NOT adopted — the defaults in the code
+   are still `q_cross=10 / r_omega=0.25`.
+4. Reconsider the objective. If two bistable shapes dominate an unweighted mean,
+   a per-shape normalisation (each shape relative to its identity baseline) would
+   tune for something closer to "tracks well everywhere". This is a real design
+   question, not a tweak — write down the reasoning before changing it.
 
-**4. Measuring chi hit a harness bug first.** `slip_ident` aborted with "no IMU"
-(its `imu_topic` default is `/imu`, the real topic is `/imu/data`; its own usage
-line has it right). Fixed that, then it aborted with `No usable arcs` and a gyro
-reading ~800x too small. Cause: `make rl-sim` runs uncapped (~33x), putting
-`/imu/data` at **3295 Hz**, and a normal subscriber drops nearly all of it. It
-failed loudly instead of reporting a wrong chi, which is the correct behaviour.
-Built `rl_corrector_rt.world` (1x realtime, `real_time_update_rate=100`) plus a
-`world:=` launch arg, `WORLD=` Make variable and `just remote-sim <world>` param.
-Runtime `set_physics` is the tempting shortcut and it zeroes gravity — the
-world file header says so.
+## For the write-up
 
-**5. The measurement, and the control that made it mean something.**
+This session is a clean, self-contained story worth a section: *a tuning result
+that validated, and then the validation revealed the metric was measuring
+something other than what it claimed.* Three tuning runs, of which the first two
+were winner's curse (and are documented as such), the third survived — that
+progression is itself the methodological content. The per-shape table and the
+repeat-level bimodality are the two figures.
 
-| ground `mu` | chi | yaw gain | usable arcs |
-| --- | --- | --- | --- |
-| 1.0 | **1.3727** | 0.73 | 8 / 8 |
-| 0.45 | **18.69** | 0.054 | 1 / 8 |
+## State
 
-The mu=1.0 row reproduces `PlannerConfig.slip_chi = 1.373` to four figures with a
-0.028 spread across radii — so the harness is sound and the rows are comparable.
-At 0.45 the robot achieves **5% of commanded yaw rate**; seven of eight arcs were
-rejected as unmeasurable because there was almost no rotation to divide by.
+- **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
+  fresh 2026-08-12. The 5-day-old instance from 2026-08-07 was killed first.
+  `just check-sim` before launching anything.
+- **Nothing is running now.** Both of today's jobs completed; logs
+  `/tmp/agx-run-20260812-143333.log` (validation) and
+  `/tmp/agx-run-20260812-144027.log` (q sweep).
+- **New caches on the VM**, all on the current plant and safe to resume onto:
+  `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
+  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`). Fetched into local
+  `tune_data/`.
+- **Poisoned caches, still do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
+  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — all measured plants we have
+  abandoned. `PLANT_VERSION` in `tune_tvlqr.py` will refuse them.
+- **Code changed this session** (uncommitted): `tune_tvlqr.py` gains
+  `--q-bounds` / `--r-bounds`, because `x0` is **clipped** into the search box —
+  a single-point probe outside the default bounds silently measures the boundary
+  and reports it under the label you asked for. 166 unit tests pass. Also two
+  `.claude/hooks/` timer scripts hardened (stale-stamp sweep, non-numeric guard,
+  human-readable durations over 90 s).
+- Both worlds stay at **mu=1.0**. Slipperiness belongs in the wheel pair or a
+  patch; a patch below 0.45 deliberately means "no steering".
+- **Watch for `--` in XML comments** — writing a dash that way in `wheel.xacro`
+  made xacro fail to parse and the sim never came up.
 
-**6. The actual mechanism.** `wheel.xacro` gives each wheel `mu1=200.0` (rolling)
-and `mu2=0.7` (lateral) — a 285:1 anisotropy that *is* skid-steering, since the
-robot yaws by gripping longitudinally while scrubbing sideways. Gazebo combines
-two surfaces by taking the smaller coefficient, so ground 1.0 left the pair at
-~1.0/0.7 with the ratio intact, while an **isotropic** 0.45 caps both at 0.45 and
-collapses the ratio to 1:1. Lowering an isotropic ground plane does not make the
-floor slippery; it removes the mechanism.
+## Still open, unchanged from 2026-08-07
 
-**7. The implication that outruns the bug.** Patches are ground entities, so a
-patch is necessarily isotropic. Every profile in `surface_patches.py` sits below
-the wheel's 0.7 — linoleum 0.45, wet_tile 0.30, slippery 0.20, icy 0.05 — so
-**every slip patch ever driven over has been collapsing the anisotropy to 1:1**,
-simulating "loses steering" rather than "slides". That reframes a lot of past
-corrector behaviour and makes the `icy`/`icy_noslip` (`slip1`/`slip2` under
-DARTSIM) question a side issue by comparison.
-
-## The ground-`mu` → chi curve (done)
-
-`tools/sweep_ground_mu.sh`, `sweep_data/ground_mu_chi.csv`:
-
-| ground `mu` | chi | yaw gain | arcs | spread |
-| --- | --- | --- | --- | --- |
-| 1.0 | 1.3718 | 0.729 | 6 | 0.030 |
-| 0.9 | 1.3879 | 0.721 | 6 | 0.051 |
-| 0.8 | 1.4438 | 0.694 | 6 | 0.129 |
-| **0.7** | **10.147** | **0.100** | 2 | 2.672 |
-| 0.6 | 11.760 | 0.086 | 2 | 2.547 |
-| 0.5 | 14.441 | 0.071 | 2 | 4.101 |
-| 0.45 | 16.478 | 0.061 | 2 | 3.619 |
-
-The prediction was **half right, recorded honestly**: the knee is exactly at 0.7,
-the wheel's own `mu2`, which confirms min-combination. But it is not flat above
-it — chi erodes gently (1.37 → 1.44) while the spread across radii quadruples, so
-a single `slip_chi` is losing validity at 0.8 before anything looks broken.
-
-**Correction to an earlier claim in this document's first draft and in
-CLAUDE.md:** the wheel's 285:1 nominal ratio (`mu1=200 / mu2=0.7`) is **never
-realized**, because the ground caps it. At ground 1.0 the effective pair is
-(1.0, 0.7) — a **1.43:1** ratio, perfectly physical. `mu1=200` encodes "the wheel
-is never the longitudinal limit", which is what its comment says and a legitimate
-choice. Provenance: Grigorii Matiukhin, 2026-02-13, in the team's own
-`scout_ros2` fork, so it is ours to change.
-
-Why it worked before and not after: **`ground(1.0) > wheel mu2(0.7)`**. In that
-regime the ground binds longitudinally and the wheel binds laterally — two
-independent constraints. Below 0.7 the ground binds both, so lowering it reduces
-grip *and* collapses the ratio, inseparably. Nothing regressed; the knife-edge
-merely held because the ground happened to be 1.0.
-
-## The fix — APPLIED AND CONFIRMED 2026-08-07
-
-`wheel.xacro` `mu2`: **0.7 → 0.45**. `mu1` left at 200 on purpose (it is never
-realized, and it encodes "the ground decides longitudinally", which is what makes
-a patch's `mu` mean anything in the rolling direction). This deviates from
-yesterday's `mu1=0.9 / mu2=0.45` proposal: only `mu2` sets the knee, so lowering
-`mu1` would have discarded grip on grippy ground for nothing.
-
-Sweep re-run, `sweep_data/ground_mu_chi_mu2_045.csv`:
-
-| ground `mu` | chi @ 0.7 | chi @ 0.45 | yaw gain | arcs | spread |
-| --- | --- | --- | --- | --- | --- |
-| 1.0 | 1.3718 | **1.3575** | 0.737 | 6 | 0.007 |
-| 0.8 | 1.4438 | **1.3651** | 0.733 | 6 | 0.023 |
-| 0.6 | 11.760 | **1.4037** | 0.713 | 6 | 0.058 |
-| 0.5 | 14.441 | **1.5713** | 0.641 | 6 | 0.341 |
-| **0.45** | 16.478 | **15.583** | 0.065 | 2 | 3.449 |
-| 0.4 | — | 18.729 | 0.055 | 2 | 5.733 |
-| 0.3 | — | 25.362 | 0.040 | 2 | 6.084 |
-
-Three things, in order of how much they change the plan:
-
-1. **The knee moved to 0.45, to the digit** — predicted before running, as the
-   0.7 knee was. Ground 0.6 went from unusable (11.76, two arcs) to ordinary
-   (1.40, six arcs) with nothing changed but the wheel's lateral coefficient.
-2. **Chi at nominal moved ~1%** (1.3718 → 1.3575). The prediction of a visible
-   drop was **wrong**: above the knee chi cares that you are above it, not by how
-   much. So `PlannerConfig.slip_chi = 1.373` still holds and **step 2 below
-   mostly evaporates** — the baked plans did not need re-planning. Spread across
-   radii also improved 0.0299 → 0.0072.
-3. **The curve translated, it did not deform.** The free variable is the ratio
-   `ground/mu2`: 0.5/0.45 (1.11) → 1.57 mirrors the old 0.8/0.7 (1.14) → 1.44.
-   One curve, one variable, `mu2` slides it.
-
-Usable band is now **ground >= 0.5**. Linoleum (0.45) is exactly on the knee and
-marginal; wet_tile 0.30, slippery 0.20, icy 0.05 remain below it — ice being
-uncontrollable is correct, not a defect.
-
-**The limit that survives, unchanged:** under min-combination with an isotropic
-ground, any ground below the wheel's `mu2` gives ratio 1. "Slides but still
-steers" is inexpressible at low friction at **any** wheel setting. `sand` is
-still blocked on this and it is a question for the advisor, not a parameter.
-
-## Then
-
-1. ~~Change the wheel pair, re-run the sweep, confirm the cliff moved.~~ **DONE
-   2026-08-07**, above.
-2. ~~Re-plan the eval trajectories with the chi measured on the new plant.~~
-   **Not needed** — chi moved 1% at nominal.
-3. **Re-measure identity / TVLQR / RL on a plant that steers.** This is now the
-   head of the queue and it re-baselines every number in CLAUDE.md.
-4. Only then resume gain tuning, with mean-of-3 repeats.
+- `sand` is unbuilt and blocked on the friction-anisotropy question: under
+  min-combination with an isotropic ground, any ground below the wheel's `mu2`
+  gives ratio 1, so "slides but still steers" is inexpressible at low friction.
+  A question for the advisor.
+- chi is a property of the **surface** (1.36 to 25.4 across the sweep), so it
+  cannot be a constant on a floor with ice/sand zones. See "Handling chi when it
+  is not constant" below.
+- The RL re-planner architecture below is decided but **not started**. The PMP
+  solver needs a "re-join from an arbitrary state onto the nominal path" boundary
+  condition, and its per-solve cost needs measuring early since it sets the data
+  budget.
 
 ## Architecture: RL as a rough re-planner, not a residual
 
@@ -273,38 +222,3 @@ awkward; measuring chi is not. Drive the real robot on linoleum, on the ice
 mock-up and on sand, then tune each sim profile until the *sim's* chi matches.
 Chi, not mu, is the quantity to match — it is what the model consumes.
 
-## State
-
-- **VM:** one headless `gz sim` on `rl_corrector_rt.world` at the 2026-08-07
-  sweep's last value (**ground 0.3 — a plant that cannot steer**). The git copy
-  is reset to 1.0, the *running* one is not. Restart it before measuring
-  anything; `just check-sim` first.
-- Both worlds are at **mu=1.0** in git and should stay there. Slipperiness now
-  belongs in the wheel pair or in a patch; a patch below 0.45 deliberately means
-  "no steering".
-- **Watch for `--` in XML comments.** Writing a dash that way in `wheel.xacro`
-  made xacro fail to parse and the sim never came up; the sweep's readiness poll
-  caught it and wrote an empty row rather than mislabelling someone else's
-  numbers, which cost one point instead of a bogus curve.
-- **Committed** on `tvlqr-corrector`: routing tooling, the repeats/IMU-gate/
-  bayesopt work, today's plant investigation, and the submodule (worlds, profiles,
-  baked maps). 158 unit tests pass — note they now need the submodule on
-  `PYTHONPATH`, since `test_terrain_weights.py` imports `surface_patches`.
-- Abandoned caches on the VM: `tvlqr_tune_v2.jsonl` (killed Nelder-Mead run),
-  `tvlqr_tune_v3.jsonl` (killed BO run, 1 evaluation). Both measured plants we
-  have since abandoned; do not resume onto them.
-
-## Queue changes
-
-- **New, blocking everything:** resolve the friction-anisotropy model. Nothing
-  measured on a robot that cannot steer means anything.
-- **Item 6 (give RL a fair fight) is superseded** by the re-planner architecture
-  above — the point is no longer to stack RL on tuned TVLQR at the same layer.
-- **The 2026-08-04 "keep the 4-wheel residual" decision is superseded** for the
-  same reason.
-- Items 1 and 2 (entropy runaway, bounded return) become **moot** if the
-  supervised formulation is adopted.
-- Item 7 (parallel sims) drops further: supervised data generation needs no
-  Gazebo, so the parallel case is now only RL fine-tuning, if any.
-- `sand` still unbuilt, and now clearly blocked on the anisotropy question rather
-  than on `slip1`/`slip2`.
