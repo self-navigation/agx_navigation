@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__attention__notify_and_wait",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -45,11 +52,6 @@
           }
         ]
       }
-    ]
-  },
-  "permissions": {
-    "allow": [
-      "mcp__attention__notify_and_wait"
     ]
   }
 }

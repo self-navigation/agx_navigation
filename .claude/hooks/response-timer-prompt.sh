@@ -14,6 +14,11 @@ fi
 
 stop=$(cat "$stop_file")
 rm -f "$stop_file"
+
+# Guard the same way bash-timer-post.sh does: an empty or truncated stamp would
+# abort under `set -e` at the arithmetic below and drop the timing silently.
+[[ "$stop" =~ ^[0-9]+$ ]] || exit 0
+
 now=$(date +%s)
 elapsed=$(( now - stop ))
 
@@ -26,7 +31,7 @@ stop_human=$(date -d "@$stop" '+%H:%M:%S')
 now_human=$(date -d "@$now" '+%H:%M:%S')
 
 jq -n --arg elapsed "$elapsed" --arg stop_human "$stop_human" --arg now_human "$now_human" '
-  ("It has been \($elapsed)s since your last response (then: \($stop_human), now: \($now_human)).") as $msg
+  ("<human_response_timer>It has been \($elapsed)s since your last response (then: \($stop_human), now: \($now_human)).</human_response_timer>") as $msg
   | {
       systemMessage: $msg,
       hookSpecificOutput: {
