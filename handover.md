@@ -7,106 +7,105 @@ half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending. (The rule is written down
 at the top of CLAUDE.md's "Current work" section.)
 
-**2026-08-12 in one line:** the overnight tuning run from 2026-08-07 is in, and
-**for the first time a tuning result survives independent re-measurement** —
-`q_cross=0.276 / r_omega=2.618` gives 0.621 m against the default's 1.004 m — but
-the follow-up sweep shows the win is mostly **two bistable shapes landing in
-their good mode**, not uniformly better tracking.
+**2026-08-12 in one line:** the 2026-08-07 tuning run is in, and
+`q_cross=0.276 / r_omega=2.618` is the **first tuning result on this project that
+survives independent re-measurement** — 0.621 m against the default's 1.004 m,
+measured three times in three processes, best of a 15-point local grid.
 
 ## What happened this session
 
-1. **Read the completed run** (`tvlqr_tune_v4_newplant.jsonl`: 100 BO
-   evaluations, mean-of-3, 3.2 h, zero failures, plant `2026-08-07-wheel-mu2-045`).
-   Default 1.042 m, best 0.614 m at `q=0.276 / r=2.618`. The within-evaluation
-   SEM is 0.026 m, so unlike the two previous runs the improvement is ~10x the
-   noise it was selected from.
-2. **Validated it** — mean-of-5 at both points, fresh sim, fresh caches:
-   **1.0037 (default) vs 0.6212 (tuned)**. It holds.
-3. **Probed below the search box's `q_cross` floor**, since 23 of 100 evaluations
-   had piled against it. **The bounds were not the problem** — everything below
-   0.1 is worse. But the minimum turned out to be a **narrow spike**: the
-   neighbours at q=0.1 and q=0.6 both score ~1.0, level with the default.
-4. **Found why it wins**, and it is not what the aggregate suggests. See CLAUDE.md
-   "The optimum is a narrow spike, not a basin" for the per-shape table.
+1. **Read the completed run** — `tvlqr_tune_v4_newplant.jsonl`, 100 BO
+   evaluations, mean-of-3, 3.2 h, zero failures, plant `2026-08-07-wheel-mu2-045`.
+   Default 1.042 m, best 0.614 m. The within-evaluation SEM is 0.026 m, so unlike
+   the two previous runs the improvement is ~10x the noise it was selected from.
+2. **Validated it** — independent mean-of-5 at each point: **1.0037 vs 0.6212**.
+3. **Probed below the search box's `q_cross` floor** (23 of 100 evals had piled
+   against it). The bounds were **not** the problem — nothing below 0.1 is better.
+   Needed a new `--q-bounds` flag, because `x0` is clipped into the box and a
+   probe outside it silently measures the boundary.
+4. **Mapped the neighbourhood** — 5 `q` x 3 `r`, mean-of-3 each. The tuned point
+   is the grid's best (0.643 here) and 13 of 15 points beat the default.
 
-All three results, the per-shape breakdown and the caveats are written up in
-CLAUDE.md; the raw JSONL is in gitignored `tune_data/`.
+Full tables in CLAUDE.md; raw JSONL in gitignored `tune_data/`; the figure is
+`figures/tvlqr_validation.png` from `tools/plot_tune_validation.py`.
 
-## The finding that should drive the next session
+## One reading was wrong, and the correction is the interesting part
 
-**The U-turn (`floor_6_00031`) and the S (`floor_6_00018`) are bistable.** Each
-lands at either ~1.2 m or ~2.7 m and nothing in between, and those two shapes
-alone account for 0.34 m of the 0.38 m improvement. The other five barely move.
+Mid-session I attributed the improvement to "the U-turn and the S landing in
+their good mode", i.e. mostly mode luck. **That was computed against the q-sweep
+NEIGHBOURS rather than against the default**, which is the baseline the
+improvement is actually measured from. Decomposed properly:
 
-So the tuner is substantially **selecting modes, not tracking quality** — an
-unweighted mean over seven shapes, two of which flip across a ~1.5 m gap, is
-dominated by which side of the flip those two land on. This is the
-"discrete modes, not smooth noise" phenomenon from 2026-08-02 appearing in the
-*objective* rather than in a repeat.
+| shape | delta (default − tuned) | share |
+| --- | --- | --- |
+| loop | +1.233 | 46% |
+| zigzag | +1.129 | 42% |
+| S | +0.526 | 20% |
+| U-turn | **−0.090** | **−3%** |
 
-The saving grace, and the better argument for adopting the gains: across 5
-repeats the tuned point is tight (sd **0.020**) while the default is visibly
-**bimodal** (0.835 / 0.846 / 1.061 / 1.133 / 1.144, sd 0.137). The tuned gains
-are *more repeatable*, not just lower on average.
+**The loop and zigzag are 88% of it; the U-turn contributes nothing.** So the
+result is *stronger* than the mid-session reading: three shapes improve
+substantially and smoothly, and it is not mode selection.
 
-**What the two U-turn modes physically are is unknown, and finding out is
-probably worth more than any further tuning.** A 1.5 m bimodal split on a fixed
-trajectory with fixed gains and a fixed seed is a plant/controller phenomenon,
-not measurement scatter.
+**The bistability is still real, with its scope corrected.** Over 45 grid
+rollouts the U-turn is bimodal — 33% good (mean 1.555), 67% bad (mean 2.575),
+with no smooth dependence on `(q, r)`. It is a hazard when comparing
+**neighbouring gain points to each other**, not a contaminant of tuned-vs-default,
+where both arms sit in the good mode 5 times out of 5.
+
+**Rule this establishes: a per-shape claim must name its baseline.**
 
 ## Do this next, in order
 
-1. **Characterise the bistability.** Drive `floor_6_00031` ~10 times at the tuned
-   gains with `--trace-dir`, and use `tuning/trace_diff.py` to find the step
-   where the good and bad modes part company and which column moves first. That
-   tool exists precisely for this and answers "our controller vs physics vs a
-   dropped step" directly. Cheap (~15 min) and it is the highest-information
-   experiment available.
-2. **Map the width of the good window** — a fine scan of `q_cross` over
-   [0.15, 0.5] at `r_omega=2.618`, mean-of-3, ~8 points, ~15 min. A gain that
-   only works within a factor of 1.5 is fragile and we should know that before
-   it goes anywhere near the real robot.
-3. **Only then** consider adopting the gains as the default in
-   `tvlqr.TVLQRConfig`. They are currently NOT adopted — the defaults in the code
-   are still `q_cross=10 / r_omega=0.25`.
-4. Reconsider the objective. If two bistable shapes dominate an unweighted mean,
-   a per-shape normalisation (each shape relative to its identity baseline) would
-   tune for something closer to "tracks well everywhere". This is a real design
+1. **Explain the U-turn's two modes.** Drive `floor_6_00031` ~10x at fixed gains
+   with `--trace-dir`, then `tuning/trace_diff.py` to find the step where the two
+   modes part and which column moves first — it distinguishes "our controller"
+   from "physics" from "a dropped step" directly. ~15 min, and a 1.5 m bimodal
+   split at fixed gains and fixed seed is a plant phenomenon worth more than
+   further tuning. The soak (below) is already accumulating the frequency data
+   this needs.
+2. **Then adopt the gains** in `tvlqr.TVLQRConfig` (still `10 / 0.25` in code).
+   The evidence supports them; the reason to wait is only that an unexplained
+   bimodality in the eval set is a bad thing to bake a default on top of.
+3. Reconsider the objective. An unweighted mean over seven shapes lets one
+   bistable shape move the aggregate by ~0.2 m. Per-shape normalisation against
+   the identity baseline would tune for "tracks well everywhere". Design
    question, not a tweak — write down the reasoning before changing it.
+4. **Do not re-run a wide search yet.** Two summaries of this landscape have now
+   been wrong in the same way (binned over `q` hid the `r` structure, binned over
+   `r` hid the `q` structure). Treat any one-variable summary as suspect.
 
 ## For the write-up
 
-This session is a clean, self-contained story worth a section: *a tuning result
-that validated, and then the validation revealed the metric was measuring
-something other than what it claimed.* Three tuning runs, of which the first two
-were winner's curse (and are documented as such), the third survived — that
-progression is itself the methodological content. The per-shape table and the
-repeat-level bimodality are the two figures.
+A clean, self-contained story: three tuning runs, the first two winner's curse
+and documented as such, the third surviving validation — and then the validation
+correcting our own reading of *why* it won. The methodological progression is
+itself the content. Figures: `figures/tvlqr_validation.png` (three panels) and
+the repeat-level bimodality.
 
 ## State
 
 - **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
-  fresh 2026-08-12. The 5-day-old instance from 2026-08-07 was killed first.
-  `just check-sim` before launching anything.
-- **Nothing is running now.** Both of today's jobs completed; logs
-  `/tmp/agx-run-20260812-143333.log` (validation) and
-  `/tmp/agx-run-20260812-144027.log` (q sweep).
-- **New caches on the VM**, all on the current plant and safe to resume onto:
+  fresh 2026-08-12; the 5-day-old instance from 2026-08-07 was killed first.
+- **A soak is running** (`just soak`, tmux window `rl:soak`, log `/tmp/soak.log`,
+  data `~/soak.jsonl`). It cycles the tuned and default gain points forever,
+  writing raw per-rollout results, and never optimizes anything. **Stop it with
+  `just kill-sim` before any focused test** — `just check-sim` will refuse
+  otherwise, which is correct. It loses nothing when killed.
+- **Caches on the VM, all on the current plant and safe to resume onto:**
+  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
   `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
-  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`). Fetched into local
-  `tune_data/`.
-- **Poisoned caches, still do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
-  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — all measured plants we have
-  abandoned. `PLANT_VERSION` in `tune_tvlqr.py` will refuse them.
-- **Code changed this session** (uncommitted): `tune_tvlqr.py` gains
-  `--q-bounds` / `--r-bounds`, because `x0` is **clipped** into the search box —
-  a single-point probe outside the default bounds silently measures the boundary
-  and reports it under the label you asked for. 166 unit tests pass. Also two
-  `.claude/hooks/` timer scripts hardened (stale-stamp sweep, non-numeric guard,
-  human-readable durations over 90 s).
+  `~/local2d_20260812.jsonl`. All fetched into local `tune_data/`.
+- **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
+  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
+  `PLANT_VERSION` will refuse them.
+- One grid evaluation failed with `terrain patches failed to spawn:
+  ['rl_patch_2']` and was correctly invalidated rather than averaged over
+  survivors, then re-run. The 2026-08-01 guard working as designed; worth knowing
+  it still fires occasionally.
 - Both worlds stay at **mu=1.0**. Slipperiness belongs in the wheel pair or a
   patch; a patch below 0.45 deliberately means "no steering".
-- **Watch for `--` in XML comments** — writing a dash that way in `wheel.xacro`
+- **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
   made xacro fail to parse and the sim never came up.
 
 ## Still open, unchanged from 2026-08-07

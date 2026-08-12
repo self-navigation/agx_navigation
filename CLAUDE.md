@@ -844,18 +844,20 @@ at all.
 | 0.600 | 0.096 | 0.298 | 2.526 | 0.384 | 0.282 | 2.707 | 0.661 |
 | 10.0 | 0.068 | 0.226 | 2.130 | 1.537 | 0.234 | **1.146** | 1.684 |
 
-**The U-turn and the S are BISTABLE, and the tuned gains win by landing both in
-their good mode.** The U-turn is either ~1.2 or ~2.7 and nothing between; the
-default gains reach the good U-turn mode too (1.146, the lowest in the table) but
-pay for it on the zigzag and loop. Those two shapes alone account for
-(2.7-1.24)/7 + (2.5-1.60)/7 = **0.34 m** of the 0.38 m improvement. The five
-other shapes barely move.
+**The U-turn is BISTABLE** — either ~1.2 m or ~2.7 m across this row, nothing
+between — and at most gains in the low-`q` region it sits in the bad mode, while
+q=0.276 and the default both reach the good one.
 
-This is the "discrete modes, not smooth noise" phenomenon from 2026-08-02,
-showing up in the *objective* rather than in a repeat. Consequence: **the tuner
-is substantially selecting modes, not tracking quality.** An unweighted mean over
-seven shapes, two of which are bistable with a ~1.5 m gap, is dominated by which
-side of the flip those two land on.
+**RETRACTED, same day, by the 2026-08-12 grid below: "the U-turn and the S are
+bistable and the tuned gains win by landing both in their good mode", and the
+"0.34 m of the 0.38 m" attribution that went with it.** That was computed against
+the q-SWEEP NEIGHBOURS (q=0.1, q=0.6), where the U-turn happens to be in its bad
+mode — not against the **default**, which is the baseline the improvement is
+actually measured from. The default reaches the good U-turn mode reliably
+(1.070-1.345 over 5 repeats), so the U-turn contributes **nothing** to the
+headline improvement. Decomposition below; the error was picking the wrong
+baseline, and the lesson is that "shape X drives the result" must always name
+which comparison it is driving.
 
 **Repeat-level evidence that the tuned point is nonetheless the stable one:**
 
@@ -871,12 +873,77 @@ side of the flip those two land on.
 on average, they are *more repeatable* — which is a better argument for adopting
 them than the mean is.
 
-**Standing recommendation: adopt `q_cross=0.276 / r_omega=2.618` provisionally,
-but do not treat the 0.38 m as a tracking improvement in a write-up.** It is
-mostly "two hard shapes stop falling into their bad mode". Before it goes in a
-paper, map the width of the good window (a fine scan over q in [0.15, 0.5]) and
-characterise the bistability directly — what the two U-turn modes physically are
-is unknown and is probably the more interesting result.
+### The local grid: where the improvement actually comes from (2026-08-12)
+
+5 `q_cross` x 3 `r_omega` around the validated point, mean-of-3 each,
+`tune_data/local2d_20260812.jsonl`. One evaluation (q=0.15, r=2.618) failed on
+its first attempt — `terrain patches failed to spawn: ['rl_patch_2']` — and was
+correctly invalidated rather than averaged over survivors, then re-run.
+
+| `r_omega` \ `q_cross` | 0.150 | 0.200 | **0.276** | 0.350 | 0.450 |
+| --- | --- | --- | --- | --- | --- |
+| 1.000 | 1.085 | 0.896 | 0.799 | 0.847 | 1.123 |
+| **2.618** | 0.696 | 0.847 | **0.643** | 0.784 | 0.807 |
+| 6.000 | 0.869 | 0.720 | 0.865 | 0.853 | 0.874 |
+
+Three things follow, and the third supersedes this morning's reading.
+
+**1. The tuned point is confirmed a third time and is the grid's best.** It has
+now measured 0.6144 (mean-of-3, the tuning run), 0.6212 (mean-of-5, validation)
+and 0.6429 (mean-of-3, here) in three independent processes. Nothing else in the
+grid goes below 0.72.
+
+**2. "Narrow spike" was too strong — soften it.** 13 of the 15 grid points beat
+the default's 1.004 and the other two roughly tie it, across ±60% in `q` and a
+factor of 6 in `r`. The neighbourhood is a shallow bowl with a deeper notch at
+the optimum, not a knife edge; the 1-D sweep's alarming neighbours (q=0.1 →
+1.080, q=0.6 → 0.993) are at its *edges*. The gains are less fragile than this
+morning's section says. (The re-run of the failed cell landed at 0.696 — the
+grid's second-best — so the row is non-monotone but uniformly good.)
+
+**3. `r_omega` DOES matter locally**, contradicting the binned table from the
+100-eval run. At q=0.276 it runs 0.799 / 0.643 / 0.865 as `r` goes 1.0 / 2.618 /
+6.0. That table averaged over `q`, exactly the smoothing that hid the `q`
+structure — **second instance of the same artifact in one day.** Treat any
+one-variable summary of this landscape as suspect by default.
+
+**Where the improvement really comes from** (tuned vs default, both mean-of-5):
+
+| shape | default | tuned | delta | share |
+| --- | --- | --- | --- | --- |
+| **loop** | 1.684 | 0.451 | **+1.233** | **46%** |
+| **zigzag** | 1.537 | 0.408 | **+1.129** | **42%** |
+| S | 2.130 | 1.604 | +0.526 | 20% |
+| straight | 0.068 | 0.054 | +0.014 | 1% |
+| tight V | 0.234 | 0.286 | -0.051 | -3% |
+| corner | 0.226 | 0.309 | -0.083 | -3% |
+| U-turn | 1.146 | 1.237 | -0.090 | -3% |
+| **mean** | **1.004** | **0.621** | **+0.383** | |
+
+**The loop and the zigzag alone are 88% of it, the S adds 20%, and the U-turn is
+slightly NEGATIVE.** So the headline improvement is *not* mode luck — it is three
+shapes improving substantially, on a metric that is reproducible at those shapes.
+That is a stronger result than this morning's, not a weaker one.
+
+**The bistability finding survives, with its scope corrected.** It is real: over
+all 45 grid rollouts the U-turn is bimodal, 33% in the good mode (mean 1.555) and
+67% in the bad (mean 2.575), with no smooth dependence on `(q, r)` — at r=1.0 it
+is bad at every `q`, at r=2.618 good at 0.276 and 0.45, at r=6.0 good only at
+0.20. But it is a hazard for **comparing neighbouring gain points to each other**,
+not a contaminant of the tuned-vs-default headline, where both arms sit in the
+good mode 5 times out of 5.
+
+**Practical rule this establishes: a per-shape claim must name its baseline.**
+The retraction above happened because "which shape drives the difference" was
+computed against the sweep neighbours while the difference being explained was
+against the default.
+
+**Standing recommendation, as revised by the grid below: `q_cross=0.276 /
+r_omega=2.618` is supported.** Measured three times in three processes
+(0.614 / 0.621 / 0.643), best of 15 grid points, and the improvement decomposes
+onto three shapes that improve smoothly rather than onto mode luck. It is still
+**not adopted in code** — `TVLQRConfig` defaults remain 10 / 0.25 — because the
+U-turn's bistability is unexplained and worth understanding first.
 
 ### Clean three-way comparison (2026-08-03) — measured on the BROKEN plant
 

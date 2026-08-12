@@ -11,22 +11,28 @@ The figure is about what the validation then revealed, which is the actually
 interesting part and is invisible in any aggregate plot:
 
   left    q_cross profile at the tuned r_omega, spanning BELOW the tuner's own
-          search-box floor of 0.1. The optimum is interior (so the floor was not
-          the problem) but it is a NARROW SPIKE -- the neighbours at 0.1 and 0.6
-          score level with the default. The monotone trend seen when the 100
-          evaluations are binned by q_cross is a smoothing artifact of averaging
-          over what the middle panel shows.
+          search-box floor of 0.1, because 23 of the run's 100 evaluations piled
+          against that floor. Nothing below it is better, so the optimum is
+          interior and the bounds were not the limitation. Read this panel WITH
+          the middle one: on its own it suggests a knife-edge optimum, and the
+          grid shows the neighbourhood is actually a shallow bowl.
 
-  middle  the same sweep resolved PER SHAPE. Five of the seven shapes are flat
-          across three orders of magnitude in gain. The U-turn and the S are
-          bistable -- each sits at ~1.2 or ~2.7 and nothing between -- and those
-          two alone account for 0.34 m of the 0.38 m improvement. So the
-          objective is substantially selecting MODES, not tracking quality.
+  middle  the 5x3 local (q, r) grid. It softens the left panel: 13 of 15 points
+          beat the default, so the neighbourhood is a shallow bowl with a notch
+          at the optimum rather than a knife edge. It also shows r_omega matters
+          LOCALLY (0.799 / 0.643 / 0.865 at q=0.276 as r goes 1.0 / 2.618 / 6.0),
+          which the run's binned r_omega table denied -- that table averaged over
+          q, the same smoothing that hid the spike in the left panel.
 
-  right   the individual repeats behind the two validated points. This is the
-          honest argument for adopting the tuned gains, and it is not the mean:
-          the default gains are visibly BIMODAL across repeats (sd 0.137) while
-          the tuned point is tight (sd 0.020). More repeatable, not just lower.
+  right   where the improvement actually comes from, per shape. The loop and the
+          zigzag are 88% of it and the S adds 20%, while the U-turn is slightly
+          NEGATIVE. This panel exists because the first reading of this data
+          attributed the win to the U-turn and the S "landing in their good
+          mode" -- computed against the SWEEP NEIGHBOURS rather than against the
+          default, which is the baseline the improvement is measured from. The
+          U-turn really is bistable (33% good over 45 grid rollouts, no smooth
+          dependence on the gains), but both arms of the headline comparison sit
+          in its good mode 5 times out of 5, so it explains none of the gap.
 
 Offline-only, like every tool in here: matplotlib in a venv, reads the gitignored
 JSONL that `just fetch-tune` pulls back. Reads data, draws, writes a PNG --
@@ -38,7 +44,6 @@ never touches the sim.
 import argparse
 import json
 import os
-import statistics as st
 
 import matplotlib
 matplotlib.use("Agg")
@@ -57,8 +62,6 @@ SHAPES = [
     ("floor_6_00031", "U-turn"),
     ("floor_6_00025", "loop"),
 ]
-# The two bistable ones, drawn heavy because they are the finding.
-BISTABLE = {"floor_6_00031", "floor_6_00018"}
 
 
 def load(path):
@@ -72,17 +75,6 @@ def load(path):
         rows = [json.loads(line) for line in fh if line.strip()]
     meta = rows[0].get("_meta", {}) if rows else {}
     return meta, [r for r in rows[1:] if not r.get("_failed")]
-
-
-def repeat_aggregates(rec, names):
-    """The per-repeat aggregate scores behind one evaluation.
-
-    The record stores per-trajectory values per repeat; the aggregate the tuner
-    optimises is the mean over trajectories, so reduce the same way here or the
-    spread shown will not be the spread the search saw.
-    """
-    reps = rec.get("per_traj_repeats") or []
-    return [st.mean(d[n] for n in names) for d in reps if all(n in d for n in names)]
 
 
 def main():
@@ -120,43 +112,49 @@ def main():
     ax1.set_xscale("log")
     ax1.set_xlabel("$q_{cross}$   (log scale, $r_\\omega$ = 2.618)")
     ax1.set_ylabel("mean max|$e_{cross}$|  [m]")
-    ax1.set_title("The optimum is a narrow spike, not a basin", fontsize=11)
+    ax1.set_title("1-D scan: the search floor was not the limit", fontsize=11)
     ax1.legend(fontsize=8, loc="upper right")
     ax1.grid(alpha=0.3)
 
-    # ---- middle: per shape ----------------------------------------------
-    cmap = plt.get_cmap("tab10")
-    for i, (key, label) in enumerate(SHAPES):
-        heavy = key in BISTABLE
-        ax2.plot([r["q_cross"] for r in pts], [r["per_traj"][key] for r in pts],
-                 "o-", color=cmap(i), label=label,
-                 lw=2.6 if heavy else 1.1, ms=6 if heavy else 3.5,
-                 alpha=1.0 if heavy else 0.55, zorder=3 if heavy else 2)
-    ax2.axvline(tuned["q_cross"], color="#e8a33d", lw=1.2, ls=":", zorder=1)
+    # ---- middle: the local (q, r) grid -----------------------------------
+    _, grid = load(os.path.join(d, "local2d_20260812.jsonl"))
+    grid = [r for r in grid if not r.get("_failed")]
+    r_values = sorted({round(r["r_omega"], 3) for r in grid})
+    for i, r_val in enumerate(r_values):
+        row = sorted((r for r in grid if round(r["r_omega"], 3) == r_val),
+                     key=lambda r: r["q_cross"])
+        ax2.plot([r["q_cross"] for r in row], [r["fx"] for r in row], "o-",
+                 color=plt.get_cmap("viridis")(i / max(len(r_values) - 1, 1)),
+                 lw=1.9, ms=6, label=f"$r_\\omega$ = {r_val:g}")
+    ax2.axhline(default["fx"], color="#c0392b", ls="--", lw=1.4,
+                label="default (1.004 m)")
     ax2.set_xscale("log")
     ax2.set_xlabel("$q_{cross}$")
-    ax2.set_ylabel("max|$e_{cross}$|  [m]")
-    ax2.set_title("Two shapes are bistable; five are flat", fontsize=11)
-    ax2.legend(fontsize=8, ncol=2)
+    ax2.set_ylabel("mean max|$e_{cross}$|  [m]")
+    ax2.set_title("A shallow bowl, and $r_\\omega$ does matter locally",
+                  fontsize=11)
+    ax2.legend(fontsize=8)
     ax2.grid(alpha=0.3)
 
-    # ---- right: the repeats ---------------------------------------------
-    arms = [("tuned\nq=0.276 / r=2.618", tuned, "#2c6fbb"),
-            ("default\nq=10 / r=0.25", default, "#c0392b")]
-    for i, (label, rec, colour) in enumerate(arms):
-        vals = repeat_aggregates(rec, names)
-        ax3.scatter([i] * len(vals), vals, s=90, color=colour, zorder=3,
-                    edgecolor="white", linewidth=0.8)
-        ax3.hlines(st.mean(vals), i - 0.22, i + 0.22, color=colour, lw=2.5)
-        ax3.text(i + 0.30, st.mean(vals),
-                 f"mean {st.mean(vals):.3f}\nsd {st.pstdev(vals):.3f}",
-                 fontsize=9, va="center", color=colour)
-    ax3.set_xticks(range(len(arms)))
-    ax3.set_xticklabels([a[0] for a in arms], fontsize=9)
-    ax3.set_xlim(-0.5, 1.9)
-    ax3.set_ylabel("mean max|$e_{cross}$| per repeat  [m]")
-    ax3.set_title("The default is bimodal across repeats", fontsize=11)
-    ax3.grid(alpha=0.3, axis="y")
+    # ---- right: where the improvement comes from -------------------------
+    deltas = sorted(((label, default["per_traj"][k] - tuned["per_traj"][k])
+                     for k, label in SHAPES), key=lambda x: x[1])
+    labels = [x[0] for x in deltas]
+    vals = [x[1] for x in deltas]
+    colours = ["#2c8f4a" if v > 0 else "#c0392b" for v in vals]
+    ax3.barh(range(len(vals)), vals, color=colours, height=0.68)
+    ax3.set_yticks(range(len(vals)))
+    ax3.set_yticklabels(labels, fontsize=9)
+    ax3.axvline(0, color="0.3", lw=0.9)
+    total = sum(vals)
+    for i, v in enumerate(vals):
+        ax3.text(v + (0.03 if v > 0 else -0.03), i, f"{v:+.2f} ({100*v/total:.0f}%)",
+                 va="center", ha="left" if v > 0 else "right", fontsize=8)
+    ax3.set_xlim(-0.35, 1.55)
+    ax3.set_xlabel("default $-$ tuned   [m]      (positive = tuned is better)")
+    ax3.set_title("Loop + zigzag are 88% of the win; U-turn is not",
+                  fontsize=11)
+    ax3.grid(alpha=0.3, axis="x")
 
     fig.suptitle(
         "TVLQR gain tuning, 2026-08-07 run validated 2026-08-12  "
