@@ -57,29 +57,52 @@ widths, not measurement error, and the right estimator is a mode *frequency*
 (~100 samples) rather than a mean of 3. Mean-of-3 stays fine for **searching**;
 a per-shape **claim** now wants soak-scale n.
 
+## THE SOURCE DOCUMENTS CHANGE THE PRIORITIES (read 2026-08-13)
+
+The advisor's dissertation draft and the paper seed were read directly for the
+first time. Full findings in CLAUDE.md, "What the source documents actually say".
+The method is **SVCM**, `epsilon`-optimality is `J[u] <= J* + epsilon`, and
+**Theorem 1** gives a dichotomy: either some admissible control achieves
+acceptable `J` and the template-catalogue scheme is provably ε-optimal, or none
+does and the failure is physics rather than algorithm.
+
+Three of those findings reorder the work:
+
+- **We measure `max|e_cross|`; the framework is stated in `J[u] - J*`.** Never
+  computed. It is computable offline from `PlannerConfig`'s cost weights plus
+  recorded tracks — including retroactively, on the ~4000 soak rollouts.
+- **The `mu2` steering cliff is an instance of Theorem 1's second branch**, which
+  the dissertation asserts but never demonstrates. That upgrades the friction
+  sweep from side-quest to contribution.
+- **RL belongs at the costates / transversality conditions**, not on the wheel
+  commands. An independent reason the residual was the wrong object.
+
 ## Do this next, in order
 
-1. **Read the ladder soak** (running now, see State). It answers the one question
-   the two-point soak could not: does bad-mode frequency vary smoothly with
-   `q_cross`, or is it a threshold? If smooth, mode frequency is the real
-   objective and the aggregate mean is a lossy proxy for it. Give it a few hours;
-   ~90 s per cycle over 3 shapes x 6 gain points.
-2. **Explain the U-turn's two modes.** Still unexplained, and now known to be
-   gain-independent — which makes it a *plant* phenomenon, and more interesting
-   than when we thought it was a tuning artifact. Drive `floor_6_00031` ~10x with
-   `--trace-dir`, then `tuning/trace_diff.py` for the step where the modes part
-   and which column moves first (controller vs physics vs dropped step). ~15 min,
-   but it needs the sim, so stop the soak first.
-3. **Reconsider the objective, now with evidence.** An unweighted mean over seven
-   shapes lets a bimodal shape move the aggregate by ~0.2 m, and we now know
-   exactly which shapes and by how much. Per-shape normalisation against identity
-   would tune for "tracks well everywhere". Design question — write the reasoning
-   down before changing it, and note that changing it costs nothing in data,
-   since the soak stores raw rows precisely so the objective can be recomputed.
-4. **Do not re-run a wide search yet.** Three summaries of this landscape have now
-   been wrong in the same way (binning over one variable hides the other's
-   structure; and a mean over a bimodal shape hides that it *is* bimodal). Treat
-   any one-variable summary as suspect.
+1. **Compute `J` for the runs we already have.** This is the highest-value thing
+   available and needs no sim time: implement the running + terminal cost from
+   `PlannerConfig` as a pure, unit-tested function of a recorded track, then
+   evaluate it on the soak data and the comparison runs. It turns every existing
+   result into the thesis's own currency and gives `epsilon` a number. Do it as a
+   pure module under `tuning/`, same rule as the rest.
+2. **Read the ladder soak** (running now, see State) — does bad-mode frequency
+   vary smoothly with `q_cross`, or is it a threshold? Now doubly interesting: if
+   the modes differ in `J` and not just in `e_cross`, that is the ε-framework
+   detecting something the tracking metric cannot.
+3. **Explain the U-turn's two modes.** Gain-independent (10.3% vs 12.4% at
+   n≈285), so it is a *plant* phenomenon. Drive `floor_6_00031` ~10x with
+   `--trace-dir`, then `tuning/trace_diff.py`. ~15 min, needs the sim, so stop
+   the soak first.
+4. **Then reconsider the objective** — but note (1) may answer this outright, by
+   replacing the ad-hoc 7-shape mean with the functional the theory names.
+5. **Measure the re-join PMP solve time** before committing to any architecture.
+   `200388e` added acados and `0454d3d` removed it, after which online mode was
+   documented as infeasible — so the "cannot solve online" premise is currently a
+   statement about scipy, not about the problem. The source's own justification
+   for offloading cites **DShot and PWM** frame budgets, i.e. a flight
+   controller, not a Jetson. The architecture is sound where its premise holds;
+   whether the premise holds *here* is unverified and cheap to check.
+6. **Do not re-run a wide search yet.**
 
 ## For the write-up
 

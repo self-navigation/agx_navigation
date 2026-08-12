@@ -945,6 +945,128 @@ mode frequency on the zigzag plus clean level shifts, not mode luck. The
 U-turn's bistability is *still* unexplained, but the soak shows the gains do not
 affect it (10.3% vs 12.4% bad), so it was never a reason to withhold adoption.
 
+### What the source documents actually say (read 2026-08-13)
+
+Read directly from the advisor's own dissertation draft (`Киселёв_докторская_v1.docx`,
+§1.2.2-1.3.3 and ch. 2) and the paper seed (`Затравка статьи.docx`), both in
+`~/Downloads/Telegram Desktop/`. **This section supersedes several inferences
+made from second-hand descriptions of the concept, including some made earlier in
+this file and in conversation.** The paper seed's §"Синтез управления в зонах
+изменения физических значений среды" is largely lifted from dissertation §1.3.2,
+so the two agree.
+
+**The method has a name and a formal definition.** It is **SVCM** —
+*STRL-Variative Control Method*. A control `u` is **ε-optimal** on a trajectory
+`z` when
+
+    J[u] <= J*[z] + epsilon
+
+where `J*[z]` is the best achievable value of the cost functional on `z`. The set
+of such controls is `U_eps`. Applied reading, in the advisor's words: a bounded
+set of admissible agent states within which the robot can keep moving **without
+critical effect on the final distance to the goal**.
+
+**The architecture, exactly as specified:**
+
+1. **Offline, on a remote server:** build a finite family of environment
+   scenarios per external factor `w` — *dry asphalt, wet surface, ice, mud*. For
+   each, solve with PMP for a control that is ε-optimal. Store the trajectory,
+   **its conjugate (costate) trajectory, and the Hamiltonian parameters** as a
+   *catalogue of suboptimal crisis templates*, indexed by environment type and by
+   the magnitude of deviation from expected system characteristics.
+2. **Onboard, in real time:** the agent tracks state `x_k` plus diagnostic
+   features `d_k` (explicitly: *wheel-slip indicators*). **It first tries to
+   compensate with the control it already has**, and only escalates if that
+   fails.
+3. **On a traction-loss event:** send `(x_k, d_k)` to the server; the server
+   replies with an index `i` and "apply template `u_i` over horizon `T_w`"
+   (`T_w` = a fixed local control window, e.g. *the time to drive out of the
+   puddle*). Onboard stores either the parameterised trajectory or a compact rule
+   for reproducing it.
+
+**Theorem 1 ("On realizational ε-admissibility and controllability accounting for
+real time")** assumes scenario coverage (the catalogue δ-approximates the real
+dynamics on `T_w`), a communication delay `τ` small relative to `T_w` with a
+Lipschitz bound on the resulting drift, and templates that respect the actuator
+and state constraints. It then gives a **dichotomy**:
+
+- **Controllable** — if *some* admissible control achieves acceptable `J`, the
+  real-time "event → server → template" scheme achieves `J <= J* + eps'`.
+- **Uncontrollable** — if *no* admissible control does, then no finite-catalogue,
+  real-time-bounded strategy can either, **and the cause is the physics, not the
+  algorithm or the network**.
+
+**Consequences for this project, in order of how much they change what we do:**
+
+**1. We have been measuring the wrong quantity.** Every table above scores
+`max|e_cross|` — a tracking error. The theory is stated entirely in terms of the
+**cost-functional gap `J[u] - J*`**, which is what `epsilon` *is*. These are
+different quantities and we have never computed the one the framework uses. We
+can: `PlannerConfig` fully specifies the running cost (`w_h`, `w_v`, `w_brake`,
+`w_omega_run`, the barriers) and the terminal cost, and `run_recorder` already
+stores the executed track. So **`J` along an executed rollout is computable
+offline from data we already have**, including the ~4000 soak rollouts. Doing so
+would let every result be reported in the thesis's own currency, and would give
+`epsilon` an empirical value instead of a symbol.
+
+**2. Our `mu2` / steering-cliff result is a demonstration of Theorem 1's SECOND
+branch.** Below the knee the robot achieves ~5% of commanded yaw rate — no
+admissible control tracks the plan, so the failure is fundamental rather than a
+corrector deficiency. That is exactly the "uncontrollable" case, which the
+dissertation asserts but does not demonstrate experimentally. **This makes the
+friction sweep a contribution to the advisor's own theory rather than a
+side-quest**, and it argues for keeping ice in the evaluation deliberately, as
+the branch-2 case, rather than treating "ice is uncontrollable" as a limitation.
+
+**3. The remote server is not a design smell, it is the central claim.** It was
+argued against earlier today on latency/connectivity grounds; **that objection is
+retracted as stated** — the delay `τ` is an explicit hypothesis of Theorem 1, and
+§1.2.2 justifies offloading from the platform's side: the named comms protocols
+are **DShot and PWM** (drone ESC protocols, 16-bit frames), and the doc proposes
+*extending DShot* to carry the model updates. The concern that survives is
+narrower and worth stating as such: those constraints describe a flight
+controller, not a Jetson, so on our platform the *premise* wants re-checking even
+though the *architecture* is sound where it holds.
+
+**4. LQR is on-plan, not a detour.** The paper seed says outright that a
+"lightweight algorithm" which recognises the scenario and **applies LQR** is part
+of the contribution, alongside the PMP catalogue. §1.2.2-1.2.3 develop an
+LQG-based sibling method (SFCC) to SVCM's PMP-based one. So the TVLQR work is one
+of the two intended arms.
+
+**5. RL's role is at the PMP problem's parameters, not on the wheels.** Ch. 2
+puts RL on the **server side**, in actor-critic form with MPC embedded in the
+actor, and the defended claim is that *"the weights of the conjugate system can
+be tuned by the author's experience-transfer algorithm"* and that
+**transversality conditions** are set from experimental checking of situations.
+So RL adjusts the **costates / transversality conditions / cost weights of the
+optimal control problem** — i.e. it acts at the planning layer. Our 4-wheel
+multiplicative residual on the commands was never this, which is an additional,
+independent reason it was the wrong object — separate from why it failed to
+train.
+
+**6. The dissertation pre-empts the obvious alternatives** (§1.3.3), which is
+useful for our related-work section: abstract ε-optimality existence theory
+(Uryson integral equations, admissible set a closed ball in `L_p`) proves
+existence non-constructively with no real-time or agent-server story;
+ε-optimal-policy results for MDPs (and hence RL) are for discrete states and
+actions, average-cost criteria and stationary policies, with no comms delay or
+event-triggered switching; and invariant/admissible-set methods target constraint
+satisfaction at mode switches rather than ε-optimality of a cost functional.
+
+**Two mismatches between the theory and our implementation, both unresolved:**
+
+- The theory is written for a **three-wheeled robot with a driving wheel**, state
+  `(x, y, theta)` with `(v, omega)` controls. Our PMP is a **5D skid-steer
+  wheel-space** model with per-wheel accelerations. The skid-steer `chi` has no
+  counterpart in the source formulation.
+- The catalogue is indexed by **surface type** (asphalt/wet/ice/mud), which is
+  precisely the `slip_chi`-is-a-property-of-the-surface finding of 2026-08-05
+  turned into an architecture. Our patch profiles are the same idea; they have
+  never been indexed or catalogued, and the mapping from a measured `chi` to a
+  catalogue index is exactly the "scenario recognition" step both documents
+  assume and neither specifies.
+
 ### What 4065 rollouts say: the mechanism is MODE FREQUENCY (2026-08-13)
 
 The overnight soak (`tuning/soak.py`, `just soak`) accumulated **4108 rollouts,
