@@ -27,6 +27,9 @@ traj_data/
 tune_data/
 compare_data_new/
 sweep_clean/
+# Soak output. Regenerable in principle, but a 4000-rollout soak is ~6 h of
+# machine time, so archive it off-box rather than casually deleting it.
+soak_data/
 
 # TensorBoard event files pulled off the server (~4 MB per run, regenerable by
 # re-fetching from ~/runs_<label>/tb/).
