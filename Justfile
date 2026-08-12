@@ -446,12 +446,19 @@ variance-log:
 # accumulation and gives an across-process arm for free (every row carries its
 # pid and process_index).
 #
-# It holds the only Gazebo instance, so `just check-sim` will refuse focused work
-# while it runs -- that is correct. `just kill-sim` stops it and loses nothing:
-# every rollout is flushed and fsync'd before the next begins.
+# It ATTACHES to a running sim rather than starting one, so it does NOT depend on
+# check-sim (that guard is for recipes that launch Gazebo; requiring it here made
+# the recipe refuse to run exactly when its prerequisite was satisfied). Start a
+# sim first with `just remote-sim`.
+#
+# It does monopolise that sim -- it is driving the robot continuously -- so stop
+# it before any focused measurement with `just soak-stop`, which leaves the sim
+# up. `just kill-sim` also stops it but takes the sim down with it. Either is
+# safe: every rollout is flushed and fsync'd before the next begins.
+#
 #     just soak                                    # the two validated points
 #     just soak "--gains 0.2,2.6 --gains 0.35,2.6" # any set, passed verbatim
-soak extra='' batch='200': sync check-sim
+soak extra='' batch='200': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:soak 2>/dev/null; \
         tmux new-window -d -t {{session}} -n soak \
@@ -465,7 +472,20 @@ soak extra='' batch='200': sync check-sim
                 --max-rollouts {{batch}} --out /home/programmer/soak.jsonl || break; \
             done 2>&1 | tee -a /tmp/soak.log"'
     @echo "soak started in tmux window '{{session}}:soak' -- follow it with:  just soak-log"
-    @echo "STOP IT before any focused test:  just kill-sim"
+    @echo "STOP IT before any focused test:  just soak-stop"
+
+# Stop the soak and LEAVE THE SIM UP, so a focused measurement can start
+# immediately. SIGTERM so the current rollout finishes and its row is written;
+# the tmux window goes too, or the `while true` wrapper would restart it.
+soak-stop:
+    -{{_ssh}} 'tmux kill-window -t {{session}}:soak 2>/dev/null; \
+        pkill -u "$(id -u)" -TERM -f "agx_planning.tuning.soak" 2>/dev/null; \
+        sleep 8; \
+        if pgrep -u "$(id -u)" -f "agx_planning.tuning.soak" >/dev/null; then \
+            echo "soak still alive, sending KILL"; \
+            pkill -u "$(id -u)" -KILL -f "agx_planning.tuning.soak"; \
+        fi; \
+        echo "soak stopped; sim left running"'
 
 soak-log:
     -{{_ssh}} 'tail -40 /tmp/soak.log'
