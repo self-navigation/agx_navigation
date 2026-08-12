@@ -70,7 +70,10 @@ Three of those findings reorder the work:
 
 - **We measure `max|e_cross|`; the framework is stated in `J[u] - J*`.** Never
   computed. It is computable offline from `PlannerConfig`'s cost weights plus
-  recorded tracks — including retroactively, on the ~4000 soak rollouts.
+  recorded tracks — but **not** retroactively. `variance_probe.drive` reduces
+  each rollout to scalars, so the ~4000 soak rollouts cannot be rescored; only
+  fixture runs (`run_recorder` writes `_track.csv`) can. Capturing tracks for
+  future rollouts is a small change and should land before the next long soak.
 - **The `mu2` steering cliff is an instance of Theorem 1's second branch**, which
   the dissertation asserts but never demonstrates. That upgrades the friction
   sweep from side-quest to contribution.
