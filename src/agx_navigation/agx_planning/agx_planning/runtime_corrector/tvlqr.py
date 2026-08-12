@@ -123,7 +123,13 @@ class TVLQRConfig:
     # Cross-track is weighted hardest: leaving the corridor is the failure mode,
     # while an along-track lag is benign (the robot is on the path, just behind).
     q_along: float = 1.0
-    q_cross: float = 10.0
+    # TUNED 2026-08-13, was 10.0. ~36x weaker than the hand-picked value, which
+    # is the same direction the "TVLQR oscillates on the S-curve" complaint
+    # always pointed: an over-aggressive cross-track gain oscillates. Adopted on
+    # a 4065-rollout soak (~290 samples per shape per arm), not on a search
+    # optimum -- see CLAUDE.md, "What 4065 rollouts say". Only q_cross and
+    # r_omega have been tuned; q_along/q_heading/r_v are still hand-picked.
+    q_cross: float = 0.2762521839107533
     q_heading: float = 5.0
     # Terminal weights (Riccati seed). Heavier than the running Q so the
     # trajectory is driven onto the goal rather than merely near it.
@@ -134,7 +140,12 @@ class TVLQRConfig:
     # steering is how a differential-drive platform actually fixes cross-track
     # error; penalizing it hard would leave only the (useless) along-track dof.
     r_v: float = 1.0
-    r_omega: float = 0.25
+    # TUNED 2026-08-13, was 0.25. Note this REVERSES the reasoning in the
+    # comment above -- angular correction turned out to want the EXPENSIVE
+    # weight, not the cheap one. Consistent with q_cross going down: both moves
+    # ask the corrector to steer less hard. The comment is left as written
+    # because the argument was reasonable and the measurement disagreed.
+    r_omega: float = 2.6183452282612643
 
     # --- Authority limits --------------------------------------------------
     # Absolute caps on the CORRECTION, not the total command. Additive (unlike

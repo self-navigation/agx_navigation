@@ -938,12 +938,90 @@ The retraction above happened because "which shape drives the difference" was
 computed against the sweep neighbours while the difference being explained was
 against the default.
 
-**Standing recommendation, as revised by the grid below: `q_cross=0.276 /
-r_omega=2.618` is supported.** Measured three times in three processes
-(0.614 / 0.621 / 0.643), best of 15 grid points, and the improvement decomposes
-onto three shapes that improve smoothly rather than onto mode luck. It is still
-**not adopted in code** — `TVLQRConfig` defaults remain 10 / 0.25 — because the
-U-turn's bistability is unexplained and worth understanding first.
+**ADOPTED 2026-08-13** — `TVLQRConfig` now defaults to `q_cross=0.276 /
+r_omega=2.618`. Measured four times in four processes (0.614 / 0.621 / 0.643 /
+0.669), best of 15 grid points, and the 4065-rollout soak below shows the win is
+mode frequency on the zigzag plus clean level shifts, not mode luck. The
+U-turn's bistability is *still* unexplained, but the soak shows the gains do not
+affect it (10.3% vs 12.4% bad), so it was never a reason to withhold adoption.
+
+### What 4065 rollouts say: the mechanism is MODE FREQUENCY (2026-08-13)
+
+The overnight soak (`tuning/soak.py`, `just soak`) accumulated **4108 rollouts,
+43 failed (1.0%), 4065 usable** across 21 processes and 14 complete cycles of the
+7-shape set at both gain points — roughly **290 samples per shape per arm**,
+against the n=3-5 every earlier claim rested on. Raw rows in `soak_data/`.
+
+**The headline is now settled beyond argument.** Mean over the 7 shapes, per
+complete cycle, n=14 cycles per arm:
+
+| gains | mean | sd | min | max |
+| --- | --- | --- | --- | --- |
+| tuned `q=0.276 / r=2.618` | **0.6686** | 0.0882 | 0.618 | 0.982 |
+| default `q=10 / r=0.25` | **1.1273** | 0.1108 | 0.897 | 1.334 |
+
+The distributions do not overlap at all (worst tuned cycle 0.982 < best default
+cycle 0.897 is *nearly* true; the single exception is one tuned cycle). This is
+the fourth independent measurement of the tuned point (0.6144 / 0.6212 / 0.6429 /
+**0.6686**) and the third of the default (1.0417 / 1.0037 / **1.1273**).
+**The gains are now ADOPTED in `TVLQRConfig`** — `q_cross` 10.0 → 0.276,
+`r_omega` 0.25 → 2.618. Note `r_omega` moving *up* reverses the reasoning in its
+own docstring comment ("angular correction is cheaper"); the comment is left in
+place with the correction beside it, because the argument was sound and the
+measurement disagreed anyway.
+
+**The important finding is not the mean, it is HOW the win happens.** Per shape,
+pooled (mean ± sd over ~290):
+
+| shape | tuned | default | character |
+| --- | --- | --- | --- |
+| straight | 0.054 ± 0.001 | 0.078 ± 0.054 | level |
+| corner | 0.311 ± 0.009 | **0.226 ± 0.000** | level, default wins |
+| S | 1.617 ± 0.088 | 2.131 ± 0.016 | level |
+| **zigzag** | **0.503 ± 0.352** | **2.009 ± 0.533** | **mode frequency** |
+| tight V | 0.286 ± 0.001 | 0.357 ± 0.219 | mode frequency |
+| **U-turn** | 1.502 ± 0.520 | **1.316 ± 0.470** | **modes, unchanged** |
+| loop | 0.459 ± 0.055 | 1.678 ± 0.090 | level |
+
+Four shapes are **unimodal and near-deterministic in both arms** (sd ≤ 0.09,
+straight/corner/S/loop): those are plain level shifts, three won by the tuned
+gains and one — the corner — genuinely won by the default, by 0.085 m at sd
+0.000. Nothing there is noise.
+
+The other three are **bimodal, and the gains move the FREQUENCY of the bad mode,
+not its depth**:
+
+| shape | bad mode at | tuned %bad | default %bad |
+| --- | --- | --- | --- |
+| zigzag | ~2.2-2.5 m | **2.6%** | **88.8%** |
+| tight V | ~0.78 m | 0.0% | 20.4% |
+| U-turn | ~2.5-2.9 m | 10.3% | 12.4% |
+
+**The zigzag flip is 88.8% → 2.6%, and that single number is most of the
+result.** It also explains why the zigzag looked "noisy" (sd 0.215-0.533) in every
+earlier table: it was never noise, it was a ~90/10 mixture of two reproducible
+outcomes being sampled 3 times.
+
+**RETRACT: "the U-turn is bistable and the tuned gains land it in the good
+mode."** It is bistable — but the bad-mode rate is **10.3% vs 12.4%**, i.e.
+statistically indistinguishable, so *the gains do not control it at all*. This
+also corrects the 2026-08-12 grid figure of "33% good / 67% bad": that pooled 45
+rollouts across many gain pairs, and at neither validated point is the bad mode
+anywhere near a majority. The U-turn's mode is driven by something else, and it
+is the one open mechanism left. (Consistent with the U-turn contributing -3% to
+the improvement: the tuned arm is slightly *worse* there, 1.502 vs 1.316.)
+
+**Methodological point worth keeping.** Every "run-to-run variance" number in
+this file above is a mixture width, not a measurement error, on exactly the
+shapes that turn out to be bimodal. The right estimator for a bimodal metric is
+not the mean of 3 — it is the mode frequency, which needs ~100 samples and was
+unaffordable until a rollout cost 5 s. Mean-of-3 remains fine for *searching*
+(it is what found these gains) but a per-shape *claim* now wants soak-scale n.
+
+**The 1.0% failure rate is all `terrain patches failed to spawn`** (43/4108,
+spread evenly over all 7 shapes), correctly invalidating the rollout rather than
+being recorded as a sample. That is the 2026-08-01 guard working; at soak scale
+it is now measurable, and it is small enough not to bias anything.
 
 ### Clean three-way comparison (2026-08-03) — measured on the BROKEN plant
 

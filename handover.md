@@ -1,4 +1,4 @@
-# Handover — 2026-08-12
+# Handover — 2026-08-13
 
 **Read this first, and keep it current.** It is the primary record of what we are
 doing; CLAUDE.md's "Current work" section is the cumulative record of what we
@@ -7,73 +7,79 @@ half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending. (The rule is written down
 at the top of CLAUDE.md's "Current work" section.)
 
-**2026-08-12 in one line:** the 2026-08-07 tuning run is in, and
-`q_cross=0.276 / r_omega=2.618` is the **first tuning result on this project that
-survives independent re-measurement** — 0.621 m against the default's 1.004 m,
-measured three times in three processes, best of a 15-point local grid.
+**2026-08-13 in one line:** the overnight soak returned **4065 usable rollouts**
+(~290 per shape per arm), the tuned gains are **adopted in `TVLQRConfig`**, and
+the win turns out to be a **mode-frequency flip on the zigzag** (88.8% bad → 2.6%)
+plus clean level shifts — not the mode luck we suspected, and not on the shape we
+suspected.
 
 ## What happened this session
 
-1. **Read the completed run** — `tvlqr_tune_v4_newplant.jsonl`, 100 BO
-   evaluations, mean-of-3, 3.2 h, zero failures, plant `2026-08-07-wheel-mu2-045`.
-   Default 1.042 m, best 0.614 m. The within-evaluation SEM is 0.026 m, so unlike
-   the two previous runs the improvement is ~10x the noise it was selected from.
-2. **Validated it** — independent mean-of-5 at each point: **1.0037 vs 0.6212**.
-3. **Probed below the search box's `q_cross` floor** (23 of 100 evals had piled
-   against it). The bounds were **not** the problem — nothing below 0.1 is better.
-   Needed a new `--q-bounds` flag, because `x0` is clipped into the box and a
-   probe outside it silently measures the boundary.
-4. **Mapped the neighbourhood** — 5 `q` x 3 `r`, mean-of-3 each. The tuned point
-   is the grid's best (0.643 here) and 13 of 15 points beat the default.
+1. **Read the soak.** 4108 rollouts, 43 failed (1.0%, all `terrain patches failed
+   to spawn`, correctly invalidated), 21 processes, 14 complete cycles.
+   Aggregate per cycle: tuned **0.6686 ± 0.0882** vs default **1.1273 ± 0.1108**,
+   n=14 each, distributions essentially disjoint. Fourth independent measurement
+   of the tuned point (0.614 / 0.621 / 0.643 / 0.669).
+2. **Adopted the gains** — `TVLQRConfig.q_cross` 10.0 → 0.276, `r_omega` 0.25 →
+   2.618. Note `r_omega` going *up* contradicts its own docstring comment
+   ("angular correction is cheaper"); the comment is left with the correction
+   beside it, since the argument was sound and the measurement disagreed.
+3. **Started the mode-frequency ladder** (below) — the natural follow-up now that
+   the mechanism is known to be mode frequency.
 
-Full tables in CLAUDE.md; raw JSONL in gitignored `tune_data/`; the figure is
-`figures/tvlqr_validation.png` from `tools/plot_tune_validation.py`.
+Full tables in CLAUDE.md, "What 4065 rollouts say". Raw rows in gitignored
+`soak_data/soak_20260813_twopoint.jsonl`.
 
-## One reading was wrong, and the correction is the interesting part
+## What the soak changed about our understanding
 
-Mid-session I attributed the improvement to "the U-turn and the S landing in
-their good mode", i.e. mostly mode luck. **That was computed against the q-sweep
-NEIGHBOURS rather than against the default**, which is the baseline the
-improvement is actually measured from. Decomposed properly:
+**Four of seven shapes are near-deterministic** (sd ≤ 0.09): straight, corner, S,
+loop. Those are plain level shifts — three won by the tuned gains, and the
+**corner genuinely won by the default** (0.226 vs 0.311 at sd 0.000). No noise
+anywhere in them.
 
-| shape | delta (default − tuned) | share |
-| --- | --- | --- |
-| loop | +1.233 | 46% |
-| zigzag | +1.129 | 42% |
-| S | +0.526 | 20% |
-| U-turn | **−0.090** | **−3%** |
+**Three are bimodal, and the gains move the bad mode's FREQUENCY, not its depth:**
 
-**The loop and zigzag are 88% of it; the U-turn contributes nothing.** So the
-result is *stronger* than the mid-session reading: three shapes improve
-substantially and smoothly, and it is not mode selection.
+| shape | bad mode | tuned %bad | default %bad |
+| --- | --- | --- | --- |
+| zigzag | ~2.2–2.5 m | **2.6%** | **88.8%** |
+| tight V | ~0.78 m | 0.0% | 20.4% |
+| U-turn | ~2.5–2.9 m | 10.3% | 12.4% |
 
-**The bistability is still real, with its scope corrected.** Over 45 grid
-rollouts the U-turn is bimodal — 33% good (mean 1.555), 67% bad (mean 2.575),
-with no smooth dependence on `(q, r)`. It is a hazard when comparing
-**neighbouring gain points to each other**, not a contaminant of tuned-vs-default,
-where both arms sit in the good mode 5 times out of 5.
+**RETRACT "the tuned gains land the U-turn in its good mode."** 10.3% vs 12.4% is
+no difference at n≈285 — the gains do not control it at all. This also corrects
+yesterday's "33% good / 67% bad": that pooled 45 rollouts across *many* gain
+pairs, and at neither validated point is the bad mode remotely a majority.
 
-**Rule this establishes: a per-shape claim must name its baseline.**
+**The zigzag was never noisy.** Its sd of 0.2–0.5 in every earlier table was a
+~90/10 mixture of two reproducible outcomes sampled 3 times. That reframes every
+"run-to-run variance" number above it: on the bimodal shapes those are mixture
+widths, not measurement error, and the right estimator is a mode *frequency*
+(~100 samples) rather than a mean of 3. Mean-of-3 stays fine for **searching**;
+a per-shape **claim** now wants soak-scale n.
 
 ## Do this next, in order
 
-1. **Explain the U-turn's two modes.** Drive `floor_6_00031` ~10x at fixed gains
-   with `--trace-dir`, then `tuning/trace_diff.py` to find the step where the two
-   modes part and which column moves first — it distinguishes "our controller"
-   from "physics" from "a dropped step" directly. ~15 min, and a 1.5 m bimodal
-   split at fixed gains and fixed seed is a plant phenomenon worth more than
-   further tuning. The soak (below) is already accumulating the frequency data
-   this needs.
-2. **Then adopt the gains** in `tvlqr.TVLQRConfig` (still `10 / 0.25` in code).
-   The evidence supports them; the reason to wait is only that an unexplained
-   bimodality in the eval set is a bad thing to bake a default on top of.
-3. Reconsider the objective. An unweighted mean over seven shapes lets one
-   bistable shape move the aggregate by ~0.2 m. Per-shape normalisation against
-   the identity baseline would tune for "tracks well everywhere". Design
-   question, not a tweak — write down the reasoning before changing it.
-4. **Do not re-run a wide search yet.** Two summaries of this landscape have now
-   been wrong in the same way (binned over `q` hid the `r` structure, binned over
-   `r` hid the `q` structure). Treat any one-variable summary as suspect.
+1. **Read the ladder soak** (running now, see State). It answers the one question
+   the two-point soak could not: does bad-mode frequency vary smoothly with
+   `q_cross`, or is it a threshold? If smooth, mode frequency is the real
+   objective and the aggregate mean is a lossy proxy for it. Give it a few hours;
+   ~90 s per cycle over 3 shapes x 6 gain points.
+2. **Explain the U-turn's two modes.** Still unexplained, and now known to be
+   gain-independent — which makes it a *plant* phenomenon, and more interesting
+   than when we thought it was a tuning artifact. Drive `floor_6_00031` ~10x with
+   `--trace-dir`, then `tuning/trace_diff.py` for the step where the modes part
+   and which column moves first (controller vs physics vs dropped step). ~15 min,
+   but it needs the sim, so stop the soak first.
+3. **Reconsider the objective, now with evidence.** An unweighted mean over seven
+   shapes lets a bimodal shape move the aggregate by ~0.2 m, and we now know
+   exactly which shapes and by how much. Per-shape normalisation against identity
+   would tune for "tracks well everywhere". Design question — write the reasoning
+   down before changing it, and note that changing it costs nothing in data,
+   since the soak stores raw rows precisely so the objective can be recomputed.
+4. **Do not re-run a wide search yet.** Three summaries of this landscape have now
+   been wrong in the same way (binning over one variable hides the other's
+   structure; and a mean over a bimodal shape hides that it *is* bimodal). Treat
+   any one-variable summary as suspect.
 
 ## For the write-up
 
@@ -87,11 +93,17 @@ the repeat-level bimodality.
 
 - **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
   fresh 2026-08-12; the 5-day-old instance from 2026-08-07 was killed first.
-- **A soak is running** (`just soak`, tmux window `rl:soak`, log `/tmp/soak.log`,
-  data `~/soak.jsonl`). It cycles the tuned and default gain points forever,
-  writing raw per-rollout results, and never optimizes anything. **Stop it with
-  `just kill-sim` before any focused test** — `just check-sim` will refuse
-  otherwise, which is correct. It loses nothing when killed.
+- **The MODE-FREQUENCY LADDER soak is running** (`just soak`, tmux window
+  `rl:soak`, log `/tmp/soak.log`, data `~/soak.jsonl`). Three mode-bearing shapes
+  (zigzag, U-turn, tight V) x six gain points: `q_cross` = 0.1 / 0.276 / 0.6 /
+  1.5 / 10 all at `r_omega=2.618`, plus the old default `10 / 0.25` so the ladder
+  and the two-point soak share a rung. Holding `r` fixed across the ladder is the
+  point — it separates `q`'s effect on mode frequency from `r`'s. **Stop it with
+  `just soak-stop` before any focused test** (that leaves the sim up; `just
+  kill-sim` takes the sim too). It loses nothing when killed.
+- The finished two-point soak is archived on the VM as
+  `~/soak_20260813_twopoint.jsonl` (log `/tmp/soak_twopoint.log`) and locally in
+  gitignored `soak_data/`. Do not append the ladder to it — different conditions.
 - **Caches on the VM, all on the current plant and safe to resume onto:**
   `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
   `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,

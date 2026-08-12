@@ -165,7 +165,14 @@ def _simulate(e0, v_ref, omega_ref, steps, c, use_schedule=False):
     (-0.10, 0.15, -0.20),  # everything at once
 ])
 def test_closed_loop_converges_straight(e0):
-    hist = _simulate(e0, v_ref=0.3, omega_ref=0.0, steps=200, c=cfg())
+    # 600 steps (60 s at DT=0.1), was 200. The tuned gains of 2026-08-13 are
+    # ~36x gentler in q_cross, so the closed loop settles ~3x slower -- 0.2 m of
+    # cross-track decays to 27% in 200 steps and 1.6% in 600. THE PROPERTY UNDER
+    # TEST IS UNCHANGED (the linear feedback stabilizes the true nonlinear error
+    # kinematics); only the time constant moved, so the horizon moves and the
+    # 10x threshold stays. Weakening the threshold instead would have quietly
+    # turned a stability test into a "does not diverge" test.
+    hist = _simulate(e0, v_ref=0.3, omega_ref=0.0, steps=600, c=cfg())
     start = np.linalg.norm(hist[0])
     end = np.linalg.norm(hist[-1])
     assert end < 0.1 * start, f"error did not decay: {start:.3f} -> {end:.3f}"
@@ -179,7 +186,7 @@ def test_closed_loop_converges_on_arcs(omega_ref):
 
 
 def test_closed_loop_converges_with_time_varying_schedule():
-    hist = _simulate((0.0, 0.2, 0.0), v_ref=0.3, omega_ref=0.2, steps=200,
+    hist = _simulate((0.0, 0.2, 0.0), v_ref=0.3, omega_ref=0.2, steps=600,
                      c=cfg(), use_schedule=True)
     assert np.linalg.norm(hist[-1]) < 0.1 * np.linalg.norm(hist[0])
 
@@ -187,7 +194,7 @@ def test_closed_loop_converges_with_time_varying_schedule():
 def test_closed_loop_monotone_ish_decay():
     """No sustained oscillation: the error norm late in the run must be well
     below its early peak, and must not be growing at the end."""
-    hist = _simulate((0.0, 0.2, 0.0), v_ref=0.3, omega_ref=0.0, steps=200, c=cfg())
+    hist = _simulate((0.0, 0.2, 0.0), v_ref=0.3, omega_ref=0.0, steps=600, c=cfg())
     norms = np.linalg.norm(hist, axis=1)
     assert norms[-1] < norms[-20]  # still shrinking at the end
     assert norms[-1] < 0.05 * norms.max()
