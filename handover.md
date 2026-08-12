@@ -7,11 +7,10 @@ half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending. (The rule is written down
 at the top of CLAUDE.md's "Current work" section.)
 
-**2026-08-13 in one line:** the overnight soak returned **4065 usable rollouts**
-(~290 per shape per arm), the tuned gains are **adopted in `TVLQRConfig`**, and
-the win turns out to be a **mode-frequency flip on the zigzag** (88.8% bad → 2.6%)
-plus clean level shifts — not the mode luck we suspected, and not on the shape we
-suspected.
+**2026-08-13 in one line:** the tuned gains are **adopted**, and by evening two
+things about *why* had been corrected — the U-turn is a **narrow notch in
+`q_cross`**, not a mode frequency the gains can't touch, and scoring in the
+advisor's own **`J`** turns a 4-3 win into **7-0**.
 
 ## What happened this session
 
@@ -27,7 +26,24 @@ suspected.
 3. **Started the mode-frequency ladder** (below) — the natural follow-up now that
    the mechanism is known to be mode frequency.
 
-Full tables in CLAUDE.md, "What 4065 rollouts say". Raw rows in gitignored
+4. **Ran the `q_cross` ladder** (1047 rollouts). The zigzag is a wide *threshold*
+   with the adopted point safely inside it; the **U-turn is a narrow notch**, and
+   the morning's "the gains do not control the U-turn" is retracted — at `q=0.1`
+   and `q=0.6` it is deterministically bad (sd 0.007 / 0.002), so it was never a
+   mixture. Only two sampled points hid a non-monotonic curve.
+5. **Traced the U-turn and looked at it.** All the deviation is produced at ONE
+   corner, in the last quarter of the run; the first 12.5 of 17 m track to within
+   0.25 m in all 30 rollouts. `max|e_cross|` there is a single-event metric.
+6. **Computed `J` for the first time**, on 70 freshly traced rollouts (7 shapes ×
+   2 arms × 5). Tuned wins **all seven** shapes in `J` versus 4 of 7 in
+   `max|e_cross|`; the three flips are shapes that conceded peak deviation and
+   bought back accumulated error, effort and terminal miss.
+7. **Restructured `figures/`** — dated directories, committed images, a README
+   index per date, `render.py` beside the pictures it makes. See
+   `figures/README.md` and `figures/2026-08-13/README.md`.
+
+Full tables in CLAUDE.md, "What 4065 rollouts say", "The `q_cross` ladder" and
+"Scoring in `J`". Raw rows in gitignored
 `soak_data/soak_20260813_twopoint.jsonl`.
 
 ## What the soak changed about our understanding
@@ -82,22 +98,23 @@ Three of those findings reorder the work:
 
 ## Do this next, in order
 
-1. **Compute `J` for the runs we already have.** This is the highest-value thing
-   available and needs no sim time: implement the running + terminal cost from
-   `PlannerConfig` as a pure, unit-tested function of a recorded track, then
-   evaluate it on the soak data and the comparison runs. It turns every existing
-   result into the thesis's own currency and gives `epsilon` a number. Do it as a
-   pure module under `tuning/`, same rule as the rest.
-2. **Read the ladder soak** (running now, see State) — does bad-mode frequency
-   vary smoothly with `q_cross`, or is it a threshold? Now doubly interesting: if
-   the modes differ in `J` and not just in `e_cross`, that is the ε-framework
-   detecting something the tracking metric cannot.
-3. **Explain the U-turn's two modes.** Gain-independent (10.3% vs 12.4% at
-   n≈285), so it is a *plant* phenomenon. Drive `floor_6_00031` ~10x with
-   `--trace-dir`, then `tuning/trace_diff.py`. ~15 min, needs the sim, so stop
-   the soak first.
-4. **Then reconsider the objective** — but note (1) may answer this outright, by
-   replacing the ad-hoc 7-shape mean with the functional the theory names.
+1. **Read the U-turn sub-ladder** (running, see State). Does `q=0.276` have a
+   basin, or is it a spike between two 100%-bad neighbours? This decides whether
+   the adopted gains are defensible as a *choice* or merely as a *measurement*.
+   ~30 rollouts per rung per 18-minute batch.
+2. **Score it in `J` too — and capture tracks from now on.** The sub-ladder is
+   running without `--trace-dir`, so it produces metres only. Given that `J`
+   reversed three of seven per-shape verdicts, any future soak whose numbers
+   should be readable in the thesis's currency needs the track. Wiring
+   `--trace-dir` into `soak.py` is small and should land before the next long run.
+3. **Explain the U-turn's last corner.** The pictures narrow it from "17 m of
+   trajectory" to ~20 steps at one corner. Trace a few rollouts either side of the
+   notch edge (`q=0.4` vs `q=0.5`) and run `tuning/trace_diff.py`: `cmd*` moving
+   first means our controller, state moving first means the plant. ~10 min of sim.
+4. **Then reconsider the objective.** `J` is now computable and better behaved
+   than the 7-shape mean of `max|e_cross|`; the open question is whether to *tune*
+   against it, which needs `J` inside `objective.py` rather than as a post-hoc
+   script.
 5. **Measure the re-join PMP solve time** before committing to any architecture.
    `200388e` added acados and `0454d3d` removed it, after which online mode was
    documented as infeasible — so the "cannot solve online" premise is currently a
@@ -111,22 +128,35 @@ Three of those findings reorder the work:
 
 A clean, self-contained story: three tuning runs, the first two winner's curse
 and documented as such, the third surviving validation — and then the validation
-correcting our own reading of *why* it won. The methodological progression is
-itself the content. Figures: `figures/tvlqr_validation.png` (three panels) and
-the repeat-level bimodality.
+correcting our own reading of *why* it won, twice in one day (mode frequency,
+then a notch). The methodological progression is itself the content.
+
+Figures now live in dated, committed directories with a README index each —
+`figures/2026-08-13/` is the model, `figures/README.md` the convention. The
+paper-ready ones so far: `2026-08-13/02_uturn_modes.png` (the deviation is one
+corner), `03_ladder_modes.png` (threshold vs notch), `04_epsilon_vs_cross.png`
+(the objective change does not reverse the conclusion), and
+`archive/tvlqr_validation.png` (still the three-panel validation figure).
 
 ## State
 
 - **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
   fresh 2026-08-12; the 5-day-old instance from 2026-08-07 was killed first.
-- **The MODE-FREQUENCY LADDER soak is running** (`just soak`, tmux window
-  `rl:soak`, log `/tmp/soak.log`, data `~/soak.jsonl`). Three mode-bearing shapes
-  (zigzag, U-turn, tight V) x six gain points: `q_cross` = 0.1 / 0.276 / 0.6 /
-  1.5 / 10 all at `r_omega=2.618`, plus the old default `10 / 0.25` so the ladder
-  and the two-point soak share a rung. Holding `r` fixed across the ladder is the
-  point — it separates `q`'s effect on mode frequency from `r`'s. **Stop it with
-  `just soak-stop` before any focused test** (that leaves the sim up; `just
-  kill-sim` takes the sim too). It loses nothing when killed.
+- **The U-TURN SUB-LADDER soak is running** (`just soak`, tmux `rl:soak`, log
+  `/tmp/soak.log`, data `~/soak.jsonl`). `floor_6_00031` only, `q_cross` =
+  0.2 / 0.276 / 0.32 / 0.4 / 0.5 / 0.6 at `r_omega=2.618`, ~6 s a rollout,
+  180 per batch, self-restarting. **Question it answers:** the notch at 0.276 has
+  neighbours at 0.1 and 0.6 that are 100% bad, so does the adopted point have a
+  usable basin or is it a spike? First cycle already put 0.4 at 1.53 and 0.5 at
+  2.70, so the edge is between them. **Stop it with `just soak-stop`** before any
+  focused test; it loses nothing when killed.
+- Finished earlier today and archived on the VM: `~/soak_20260813_ladder.jsonl`
+  (1047 rollouts, the 6-point q ladder) and
+  `~/soak_20260813_uturn_subladder_partial.jsonl` (83 rows, first sub-ladder
+  attempt — same conditions as the running one, safe to pool). Both fetched into
+  gitignored `soak_data/`.
+- `~/jsweep.jsonl` + `~/jtraces/` — the 70-rollout traced sweep that produced the
+  first `J` numbers. Fetched locally into `jtraces/`, scored into `epsilon_data/`.
 - The finished two-point soak is archived on the VM as
   `~/soak_20260813_twopoint.jsonl` (log `/tmp/soak_twopoint.log`) and locally in
   gitignored `soak_data/`. Do not append the ladder to it — different conditions.

@@ -868,7 +868,10 @@ outcomes being sampled 3 times.
 
 **RETRACT: "the U-turn is bistable and the tuned gains land it in the good
 mode."** It is bistable — but the bad-mode rate is **10.3% vs 12.4%**, i.e.
-statistically indistinguishable, so *the gains do not control it at all*. This
+statistically indistinguishable, so *the gains do not control it at all*
+(**itself corrected the same evening — see "The `q_cross` ladder" below; the
+gains control it sharply, but non-monotonically, so two points could not see
+it**). This
 also corrects the 2026-08-12 grid figure of "33% good / 67% bad": that pooled 45
 rollouts across many gain pairs, and at neither validated point is the bad mode
 anywhere near a majority. The U-turn's mode is driven by something else, and it
@@ -888,6 +891,84 @@ being recorded as a sample. That is the 2026-08-01 guard working; at soak scale
 it is now measurable, and it is small enough not to bias anything.
 
 - **`reset_world=True` DESTROYS THE ROBOT — never use it.** A gz `WorldControl.reset.all` deletes runtime-spawned entities, including the `scout_mini`. Recovery is `just kill-sim` + `just remote-sim`, not debugging.
+
+### The `q_cross` ladder: a zigzag threshold and a U-turn notch (2026-08-13)
+
+1047 rollouts, the three mode-bearing shapes × six gain points, `r_omega` held at
+2.618 across the ladder so `q`'s effect is separable (`soak_data/soak_20260813_ladder.jsonl`,
+figure `figures/2026-08-13/03_ladder_modes.png`). n≈58 per cell. **They are two
+different phenomena, and only one of them is a mode frequency.**
+
+| shape | q=0.1 | q=0.276 | q=0.6 | q=1.5 | q=10 | q=10, r=0.25 |
+| --- | --- | --- | --- | --- | --- | --- |
+| zigzag %bad (>1.5 m) | 1.7 | 1.7 | 0.0 | 0.0 | **89.7** | 86.0 |
+| U-turn %bad (>2.0 m) | **100** | **15** | **100** | 82.8 | 96.6 | 14.0 |
+| tight V %bad (>0.6 m) | 0 | 0 | 0 | 0 | 0 | 10.5 |
+
+**The zigzag is a THRESHOLD in `q_cross`, and it is where most of the tuned
+gains' win comes from.** Flat at 0-2% across a 15× range of `q`, then a cliff
+between 1.5 and 10. `r_omega` is irrelevant to it (86.0 vs 89.7 at `q=10`). So
+the adopted point sits inside a *wide plateau*, not on an edge — the robust half
+of the result.
+
+**The U-turn is a NARROW NOTCH, and calling it bimodal was wrong.** At `q=0.1`
+all 59 rollouts fall in 2.634–2.665; at `q=0.6`, all 56 in 2.701–2.709. Those are
+tight, deterministic, **unimodal** distributions that happen to be bad — not a
+mixture whose frequency shifted. Only `q=0.276` and the old default drop to ~1.4,
+and they are isolated: their immediate neighbours in `q` are uniformly bad.
+**This retracts the same morning's "the gains do not control the U-turn at
+all"** — they control it sharply; two sample points could not see a notch.
+Whether 0.276 has a usable basin or is a spike is being measured now (sub-ladder
+at 0.2/0.276/0.32/0.4/0.5/0.6).
+
+**The tight V's mode was an `r_omega` effect, not a `q` one** — 0% bad at every
+rung with `r=2.618`, 10.5% at the old `r=0.25`. Small either way.
+
+**`max|e_cross|` and `final_err` rank the ladder DIFFERENTLY, and that is not
+noise.** On the U-turn, `q=1.5` is the *worst* rung by max|e_cross| (2.150) and
+the *best* at arriving (mean `final_err` 0.255, **0%** of 58 rollouts ending more
+than 0.5 m out), while the adopted `q=0.276` scores 1.605 and leaves 55% of
+rollouts short. A metric that disagrees with "did it get there" needs justifying,
+which is what the `J` work below is for.
+
+### Scoring in `J`: the objective change does not reverse the conclusion (2026-08-13)
+
+`tuning/epsilon.py` (pure, 23 tests) holds the tracking functional; `tools/score_epsilon.py`
+is the offline driver that scores recorded per-step traces with it. First real
+measurement: 7 shapes × {tuned, default} × 5 repeats **with traces**, so every
+rollout is scored both ways (`jtraces/`, `epsilon_data/jsweep.jsonl`, figure
+`figures/2026-08-13/04_epsilon_vs_cross.png`). Mean of 5:
+
+| shape | max\|e_cross\| tuned / default | J tuned / default | metrics agree? |
+| --- | --- | --- | --- |
+| straight | 0.054 / 0.074 | 0.22 / 1.84 | yes |
+| corner | 0.309 / **0.226** | **1.50** / 1.92 | **no** |
+| S | 1.582 / 2.129 | 21.8 / 84.8 | yes |
+| zigzag | 0.410 / 1.587 | 13.2 / 62.3 | yes |
+| tight V | 0.286 / **0.256** | **5.23** / 12.2 | **no** |
+| U-turn | 1.316 / **1.180** | **29.9** / 35.7 | **no** |
+| loop | 0.423 / 1.714 | 21.5 / 66.6 | yes |
+
+**In `max|e_cross|` the tuned gains win 4 and lose 3; in `J` they win all seven**,
+by 1.3× to 8.3×. Every one of the three losses is a shape where the tuned arm
+concedes a little peak deviation and buys back much more in accumulated error,
+correction effort and terminal miss. So `J` is not a different answer — it is a
+**cleaner version of the same answer**, and it is the quantity SVCM is stated in.
+
+Two things to hold onto:
+
+- **`J` is an upper bound on `epsilon`, never `epsilon` itself** (`J* > 0` under
+  slip and is unknown). The module docstring says so; say it in the write-up too.
+- **The correction, not the total command, is what `R` charges.** The nominal
+  command is what the planner already paid for; charging it again would score
+  every corrector for the plan's cost. `score_epsilon.py` recovers it as
+  applied-minus-nominal in wheel space.
+
+**Scoring needs the TRACK, so it must be captured at rollout time.** The ~4000
+soak rollouts cannot be rescored — `variance_probe.drive` reduces each to
+scalars. Any future soak whose numbers should be readable in `J` must be run with
+`--trace-dir`.
+
 ### Realistic friction, IMU gating, and repeats (2026-08-04)
 
 Three changes landed together. **They re-baseline everything: no number measured
@@ -1295,5 +1376,12 @@ default does not.
 - Node parameters are loaded from dataclasses via
   `agx_planning.utils.declare_and_load_dataclass`; add a field to the dataclass
   rather than a bare `declare_parameter`.
+- **Figures are dated, indexed and committed** — `figures/YYYY-MM-DD/{render.py,
+  README.md,*.png}`, convention in [figures/README.md](figures/README.md). This
+  reverses the usual "version the tool, not its output" rule on purpose: these
+  render from gitignored data directories, several of which cost hours of machine
+  time on a plant that will not exist forever, so the renderer alone does not
+  reproduce the picture. `tools/plot_*.py` keeps the old rule. Everything from
+  before 2026-08-13 is in `figures/archive/` with what provenance survives.
 - `acados/` at the repo root is untracked scratch; the Makefile's `ACADOS_*` /
   `t_renderer` bits are vestigial and unset by default.
