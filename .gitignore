@@ -15,7 +15,14 @@ skid_steer_vfield.json
 # server by `just fetch-runs` (CSVs are regenerable, so they stay out of git).
 acados/
 run_data/
-figures/
+# figures/ IS TRACKED -- images, renderers and indexes alike. This reverses the
+# repo's usual "version the tool, not its output" rule, and deliberately: these
+# figures render from the gitignored data directories below, some of which cost
+# hours of machine time on a plant that will not exist forever. The renderer
+# alone therefore does NOT reproduce the picture, so the picture is the record.
+# `tools/plot_*.py` keeps the old rule -- those regenerate from re-fetchable data.
+# Convention: figures/README.md.
+figures/archive/*.png
 # Same rule for the corrector-comparison measurements: `just fetch-compare` and
 # `just fetch-sweep` pull these off the server and they regenerate from a run.
 compare_data/
@@ -30,6 +37,14 @@ sweep_clean/
 # Soak output. Regenerable in principle, but a 4000-rollout soak is ~6 h of
 # machine time, so archive it off-box rather than casually deleting it.
 soak_data/
+
+# Per-step traces and their J scores. Traces are bulky (~1 MB per rollout) and
+# regenerate from `variance_probe --trace-dir`; the SCORES regenerate from the
+# traces via tools/score_epsilon.py. The figures built from them are committed,
+# which is the part that had to survive -- see figures/README.md.
+uturn_traces/
+jtraces/
+epsilon_data/
 
 # TensorBoard event files pulled off the server (~4 MB per run, regenerable by
 # re-fetching from ~/runs_<label>/tb/).
