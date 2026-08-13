@@ -4,7 +4,7 @@
 terrain patches on, seed 0. Gains: **tuned** = `q_cross 0.276 / r_omega 2.618`
 (adopted this day), **default** = `10 / 0.25`.
 
-Regenerate all five:
+Regenerate all six:
 
 ```bash
 .venv/bin/python figures/2026-08-13/render.py
@@ -20,6 +20,7 @@ cannot reproduce them (see [../README.md](../README.md)):
 | `soak_data/soak_20260813_ladder.jsonl` | 1047 rollouts, 3 shapes × 6 gain points | `just soak`, ~3 h |
 | `jtraces/{tuned,default}/<shape>/` | 70 traces, 7 shapes × 2 arms × 5 | `~/jsweep.sh` on the VM, ~14 min |
 | `epsilon_data/*.jsonl` | those traces scored in `J` | `tools/score_epsilon.py` |
+| `soak_data/soak_20260813_uturn_subladder.jsonl` | 5906 rollouts, U-turn × 6 gain points | `just soak`, ~10 h overnight |
 
 ---
 
