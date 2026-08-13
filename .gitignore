@@ -45,6 +45,8 @@ soak_data/
 uturn_traces/
 jtraces/
 epsilon_data/
+gaincheck/
+libsweep/
 
 # TensorBoard event files pulled off the server (~4 MB per run, regenerable by
 # re-fetching from ~/runs_<label>/tb/).
