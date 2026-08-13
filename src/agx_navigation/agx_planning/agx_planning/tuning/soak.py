@@ -26,6 +26,14 @@ later re-weighted or normalized per shape, every row already collected is
 recomputed for free. Nothing here encodes today's opinion about what the score
 should be.
 
+**That guarantee has a hard limit, learned 2026-08-13: it holds only for metrics
+computable from the SCALARS.** `variance_probe.drive` reduces each rollout to
+`max_cross` / `final_err` / counters, so a metric needing the per-step track --
+notably `J`, the cost functional the advisor's SVCM framework is stated in --
+cannot be recovered afterwards at any price. ~4000 soak rollouts were lost to
+this. Pass `--trace-dir` for any soak whose numbers should be readable in `J`;
+`--trace-every` keeps that affordable on a soak left running for days.
+
 It expires only if the PLANT changes, which `PLANT_VERSION` records in every row
 -- so a post-plant-change soak cannot be silently pooled with a pre-change one.
 
@@ -127,7 +135,27 @@ def main():
     ap.add_argument("--no-terrain", action="store_true")
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
+    ap.add_argument("--trace-dir",
+                    help="write a per-step state trace CSV per rollout here, and "
+                         "record its path in the row's `trace` field. Required to "
+                         "score a soak in J: tools/score_epsilon.py needs the "
+                         "track, and the JSONL row is only scalars. ~130 kB a "
+                         "rollout -- see --trace-every before leaving this on "
+                         "an unbounded soak.")
+    ap.add_argument("--trace-every", type=int, default=1, metavar="N",
+                    help="with --trace-dir, trace only every Nth rollout "
+                         "(default 1 = all). This file is built to be left "
+                         "running for days, which at ~130 kB a rollout fills a "
+                         "disk; subsampling keeps a J-scoreable sample of an "
+                         "arbitrarily long soak. Rows that were not traced have "
+                         "no `trace` field, so they are skipped rather than "
+                         "silently scored against a stale file.")
     args = ap.parse_args()
+
+    if args.trace_every < 1:
+        raise SystemExit("[soak] --trace-every must be >= 1")
+    if args.trace_dir:
+        os.makedirs(args.trace_dir, exist_ok=True)
 
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
@@ -169,6 +197,17 @@ def main():
                         if _STOP or (args.max_rollouts and n_done >= args.max_rollouts):
                             break
                         t0 = time.monotonic()
+                        # Gains go in the FILENAME as well as the row: a trace
+                        # dir outlives the JSONL it came from, and a per-step
+                        # track that cannot be attributed to a gain pair is not
+                        # scoreable in J.
+                        trace_path = None
+                        if args.trace_dir and n_done % args.trace_every == 0:
+                            trace_path = os.path.join(
+                                args.trace_dir,
+                                f"{name}_q{q_cross:.4f}_r{r_omega:.4f}"
+                                f"_{pid}_{n_done:06d}.csv")
+                            bridge.enable_trace(trace_path)
                         try:
                             rec = drive(bridge, cfg, tvcfg, nom, args.seed,
                                         use_terrain=not args.no_terrain)
@@ -184,6 +223,8 @@ def main():
                                    plant=PLANT_VERSION, cycle=cycle,
                                    pid=pid, process_index=n_done,
                                    t=time.time(), wall=time.monotonic() - t0)
+                        if trace_path is not None:
+                            rec["trace"] = trace_path
                         fh.write(json.dumps(rec) + "\n")
                         fh.flush()
                         os.fsync(fh.fileno())

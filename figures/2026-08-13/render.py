@@ -289,6 +289,62 @@ def fig_what_is_j(src="epsilon_data/uturn.jsonl"):
     plt.close(fig)
 
 
+def fig_uturn_basin(src="soak_data/soak_20260813_uturn_subladder.jsonl"):
+    """Figure 6 -- the U-turn notch resolved: n≈985 per rung across q_cross.
+
+    Added after figures 1-5, from the overnight sub-ladder. It supersedes
+    figure 3's right-hand panel as the U-turn's authoritative picture: the same
+    axis at 17x the samples and 6x the resolution in q.
+    """
+    if not os.path.exists(src):
+        print(f"[skip] {src} not present")
+        return
+    rows = [json.loads(l) for l in open(src) if l.strip()]
+    ok = [r for r in rows if r.get("max_cross") is not None]
+    g = collections.defaultdict(list)
+    for r in ok:
+        g[round(r["q_cross"], 4)].append((r["max_cross"], r["final_err"]))
+    qs = sorted(g)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.2))
+    ax = axes[0]
+    parts = [np.array([a for a, _ in g[q]]) for q in qs]
+    ax.violinplot(parts, positions=range(len(qs)), widths=.8, showmeans=True)
+    ax.axhline(2.0, color="k", ls=":", lw=1)
+    ax.set_xticks(range(len(qs)))
+    ax.set_xticklabels([f"{q:g}" for q in qs])
+    ax.set_xlabel("q_cross  (r_omega = 2.618)")
+    ax.set_ylabel("max |e_cross| (m)")
+    ax.set_title(f"every rollout, n≈{len(parts[0])} per rung")
+    ax.grid(alpha=.3)
+
+    ax = axes[1]
+    bad = [100 * (p > 2.0).mean() for p in parts]
+    ax.plot(qs, bad, "o-", lw=2, ms=8, color="#d62728")
+    ax.set_xlabel("q_cross")
+    ax.set_ylabel("% of rollouts in the bad mode")
+    ax.set_ylim(-4, 104)
+    ax.axvline(0.276, color="k", ls=":", lw=1.5)
+    ax.text(0.276, 50, " adopted", fontsize=9)
+    ax.set_title("the basin has sharp walls")
+    ax.grid(alpha=.3)
+
+    ax = axes[2]
+    fe = [np.array([b for _, b in g[q]]) for q in qs]
+    ax.plot(qs, [100 * (f > 0.5).mean() for f in fe], "s-", lw=2, ms=8, color="#1f77b4")
+    ax.set_xlabel("q_cross")
+    ax.set_ylabel("% ending > 0.5 m from the goal")
+    ax.set_ylim(-4, 104)
+    ax.axvline(0.276, color="k", ls=":", lw=1.5)
+    ax.set_title("and arriving agrees with it")
+    ax.grid(alpha=.3)
+
+    fig.suptitle("U-turn: the notch resolved (5906 rollouts, overnight)", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(f"{OUT}/06_uturn_basin.png", dpi=140)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     fig_shapes()
@@ -296,4 +352,5 @@ if __name__ == "__main__":
     fig_ladder()
     fig_epsilon()
     fig_what_is_j()
+    fig_uturn_basin()
     print(f"wrote {OUT}/")

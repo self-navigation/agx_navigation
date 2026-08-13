@@ -80,3 +80,29 @@ The right-hand panel is the clearest case: it peaks at 2.30 m against 1.46 m —
 and ends 2.7 m from the goal, so it costs `J = 188` against `18`, a 10× gap.
 **Note `J` is an upper bound on `epsilon`, not `epsilon`** (`J* > 0` under slip
 and is unknown); see `tuning/epsilon.py`'s docstring before quoting it.
+
+## 06_uturn_basin.png — the notch resolved (added after 01-05)
+
+The overnight sub-ladder: `floor_6_00031` alone, six rungs across the notch,
+**5906 usable rollouts, n≈985 per rung** (`soak_data/soak_20260813_uturn_subladder.jsonl`).
+It supersedes figure 3's right-hand panel — same axis, 17× the samples, 6× the
+resolution in `q`.
+
+| q_cross | 0.20 | **0.276** | 0.32 | 0.40 | 0.50 | 0.60 |
+| --- | --- | --- | --- | --- | --- | --- |
+| mean max\|e_cross\| | 2.647 | 1.637 | **1.494** | 1.546 | 2.685 | 2.707 |
+| sd | 0.120 | 0.594 | 0.154 | **0.090** | 0.029 | 0.002 |
+| % bad (> 2 m) | 99.2 | 17.9 | 1.8 | **0.7** | 99.9 | 100 |
+| % ending > 0.5 m out | 99.4 | 46.6 | **9.8** | 25.0 | 100 | 96.0 |
+
+**The basin is real, and the adopted `q=0.276` sits on its left edge rather than
+in its middle.** Walls are near-vertical: 0.2 and 0.5 are ~100% bad and 0.276-0.4
+are the interior. Inside the basin, `q=0.32-0.40` beats 0.276 on every column —
+mean, spread, bad-mode rate (0.7-1.8% against 17.9%) and arriving (9.8-25%
+against 46.6%). Note the third panel: `final_err` picks the same interior, so for
+once the two metrics agree about where the good region is.
+
+**This does not by itself justify re-adopting 0.32.** The U-turn is one of seven
+shapes and 0.276 was chosen on the seven-shape aggregate; whether 0.32-0.40 is
+neutral or harmful elsewhere is being measured (7 shapes × {0.276, 0.32, 0.40} ×
+5, traced).
