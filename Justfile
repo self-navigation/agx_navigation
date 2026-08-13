@@ -35,6 +35,9 @@ sync:
         --exclude='.git/' --exclude='build/' --exclude='install/' \
         --exclude='log/' --exclude='.*.stamp' --exclude='__pycache__/' \
         --exclude='*.pyc' --exclude='*.egg-info/' --exclude='acados/' \
+        --exclude='run_data/' --exclude='tune_data/' --exclude='soak_data/' \
+        --exclude='jtraces/' --exclude='uturn_traces/' --exclude='gaincheck/' \
+        --exclude='libsweep/' --exclude='epsilon_data/' --exclude='sweep_data/' \
         ./ {{host}}:{{remote}}/
 
 # Build the workspace on the server.

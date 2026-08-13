@@ -918,8 +918,8 @@ mixture whose frequency shifted. Only `q=0.276` and the old default drop to ~1.4
 and they are isolated: their immediate neighbours in `q` are uniformly bad.
 **This retracts the same morning's "the gains do not control the U-turn at
 all"** — they control it sharply; two sample points could not see a notch.
-Whether 0.276 has a usable basin or is a spike is being measured now (sub-ladder
-at 0.2/0.276/0.32/0.4/0.5/0.6).
+Whether 0.276 has a usable basin or is a spike was the open question; it is
+answered below.
 
 **The tight V's mode was an `r_omega` effect, not a `q` one** — 0% bad at every
 rung with `r=2.618`, 10.5% at the old `r=0.25`. Small either way.
@@ -967,7 +967,69 @@ Two things to hold onto:
 **Scoring needs the TRACK, so it must be captured at rollout time.** The ~4000
 soak rollouts cannot be rescored — `variance_probe.drive` reduces each to
 scalars. Any future soak whose numbers should be readable in `J` must be run with
-`--trace-dir`.
+`--trace-dir`. **`soak.py` now HAS `--trace-dir` (plus `--trace-every N` to keep
+an unbounded soak from filling the disk at ~130 kB a rollout), so this is wired
+rather than merely known.** Untraced rows carry no `trace` field and are skipped
+by the scorer rather than silently scored against someone else's file.
+
+### The U-turn basin has walls, and `q=0.276` stays adopted (2026-08-13 evening)
+
+Two runs closed the ladder question. **The adopted gains survive**, and the
+reason is more interesting than "they were right".
+
+**1. The sub-ladder: the basin is real, and 0.276 sits on its LEFT EDGE.**
+5906 usable rollouts, `floor_6_00031` only, n≈985 per rung, `r_omega=2.618`
+throughout (`soak_data/soak_20260813_uturn_subladder.jsonl`):
+
+| `q_cross` | mean | sd | %bad (>2.0 m) | mean `final_err` | %miss (>0.5 m) |
+| --- | --- | --- | --- | --- | --- |
+| 0.200 | 2.647 | 0.120 | 99.2 | 1.153 | 99.4 |
+| **0.276 (adopted)** | 1.637 | **0.594** | **17.9** | 0.643 | 46.6 |
+| 0.320 | **1.494** | 0.154 | 1.8 | **0.347** | **9.8** |
+| 0.400 | 1.546 | 0.090 | **0.7** | 0.363 | 25.0 |
+| 0.500 | 2.685 | 0.029 | 99.9 | 0.619 | 100.0 |
+| 0.600 | 2.707 | 0.002 | 100.0 | 0.530 | 96.0 |
+
+So the notch is a **basin roughly `[0.276, 0.4]` with near-vertical walls** —
+0.2 and 0.5 are ~100% bad and nearly deterministic (sd 0.12 / 0.03), not
+mixtures. **The adopted point is the noisiest rung in the entire ladder** (sd
+0.594, 17.9% bad) precisely because it straddles a wall: the interior is
+near-deterministic (0.7-1.8% bad). That is a better explanation of the U-turn's
+"bimodality" than the shape itself — it was never intrinsic, it was an artifact
+of measuring at a gain sitting on the edge.
+
+**2. The seven-shape check: `q=0.32` is NOT free, so do not re-adopt it.**
+7 shapes × `q` ∈ {0.276, 0.32, 0.40} at `r=2.618`, 5 repeats, **traced**, so it
+is scored in both currencies (`gaincheck/`, `epsilon_data/gaincheck_J.jsonl`):
+
+| shape | `J` 0.276 / 0.32 / 0.40 | max\|e_cross\| 0.276 / 0.32 / 0.40 |
+| --- | --- | --- |
+| straight | 0.22 / **0.21** / 0.84 | 0.055 / **0.046** / 0.127 |
+| S | **22.3** / 30.0 / 41.8 | **1.605** / 1.885 / 2.522 |
+| corner | 1.49 / 1.45 / **1.44** | 0.310 / 0.306 / **0.303** |
+| loop | 21.5 / **20.8** / 23.1 | 0.422 / **0.383** / 0.558 |
+| U-turn | 41.8 / 35.6 / **33.6** | 1.623 / **1.417** / 1.540 |
+| zigzag | 13.5 / 16.6 / **12.1** | **0.445** / 0.711 / 0.464 |
+| tight V | **5.23** / 5.30 / 5.94 | 0.286 / **0.285** / 0.297 |
+| **MEAN** | **15.15** / 15.71 / 16.98 | **0.678** / 0.719 / 0.830 |
+
+**`q=0.32` buys the U-turn and pays for it on the S and the zigzag**, and the
+aggregate says the trade is not worth making. The U-turn gain is real (`J` 41.8
+→ 35.6, `final_err` 0.641 → 0.252) — it is simply smaller than what it costs
+elsewhere. **`TVLQRConfig` is unchanged: `q_cross=0.276`, `r_omega=2.618`.**
+
+**`J` and `max|e_cross|` AGREE here, for the first time.** Both rank
+0.276 < 0.32 < 0.40 on the aggregate. That is worth noting because the same-day
+`J` section above found them disagreeing on 3 of 7 shapes: the metrics diverge
+on *per-shape* verdicts, not necessarily on aggregate ranking. Do not
+generalise either way from one case.
+
+**The methodological point, which is the durable part:** a per-shape optimum
+(`q=0.32` on the U-turn, at n≈985 and beyond argument) **did not survive the
+seven-shape aggregate**. A gain chosen on one trajectory is a gain overfitted to
+one trajectory, however many samples back it. The sub-ladder was still worth the
+night — it explains *why* 0.276 looks noisy on the U-turn — but the decision was
+always the aggregate's to make.
 
 ### Realistic friction, IMU gating, and repeats (2026-08-04)
 
@@ -1048,7 +1110,20 @@ could be changed (firmware), and **TVLQR is what any real-world demo runs**.
 `GazeboBridge.enable_trace(path)` writes one CSV row per control step and per
 reset phase: full pose (incl. z and quaternion), twist, wheel speeds, IMU, the
 command that produced the step, sim clock, step counters, and a digest of every
-`rl_*` entity pose. `variance_probe --trace-dir` writes one per rollout.
+`rl_*` entity pose. `variance_probe --trace-dir` writes one per rollout, and so
+does `soak.py --trace-dir` (with `--trace-every N` to subsample a long soak).
+
+**The two write DIFFERENT layouts, and that is the reason to score from the
+JSONL rather than the directory tree.** `variance_probe` writes
+`<dir>/<shape>_<pid>_<i>.csv` and is normally pointed at
+`<root>/<arm>/<shape>/`; `soak.py` writes one flat directory with the gains in
+the *filename*, because it cycles gain pairs within a single run. So
+`tools/score_sweep.py` has two pairing modes — a directory walker for the
+former, and `--from-jsonl`, which keys on each row's `trace` field, for the
+latter. **Prefer `--from-jsonl`**: a layout is a convention and conventions
+drift, but a row records where its own trace actually went. Scoring shape A's
+track against shape B's plan produces large, plausible, meaningless numbers
+rather than an error, so the pairing is worth making unguessable.
 
 `tuning/trace_diff.py` (pure, unit-tested) reports the FIRST step two rollouts
 differ at and which column moved first — the distinction that matters:

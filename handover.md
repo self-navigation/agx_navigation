@@ -7,10 +7,16 @@ half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending. (The rule is written down
 at the top of CLAUDE.md's "Current work" section.)
 
-**2026-08-13 in one line:** the tuned gains are **adopted**, and by evening two
-things about *why* had been corrected — the U-turn is a **narrow notch in
-`q_cross`**, not a mode frequency the gains can't touch, and scoring in the
-advisor's own **`J`** turns a 4-3 win into **7-0**.
+**2026-08-13 in one line:** the tuned gains are **adopted and now defended** —
+the U-turn's notch turned out to be a **basin with walls** whose left edge is
+exactly where `q=0.276` sits, but moving into its interior (`q=0.32`) loses more
+on the S and zigzag than it wins, in `J` *and* in metres.
+
+**FIRST THING TONIGHT:** two runs finished unattended. Read them in this order —
+`libsweep` (does "TVLQR halves the deviation" hold across 51 plans, or only the
+7 we picked?), then the `r_omega` ladder (is `r=2.618` mid-basin, or on an edge
+like `q=0.276` turned out to be?). Both are scoreable in `J`; commands in
+"State" below.
 
 ## What happened this session
 
@@ -98,15 +104,19 @@ Three of those findings reorder the work:
 
 ## Do this next, in order
 
-1. **Read the U-turn sub-ladder** (running, see State). Does `q=0.276` have a
-   basin, or is it a spike between two 100%-bad neighbours? This decides whether
-   the adopted gains are defensible as a *choice* or merely as a *measurement*.
-   ~30 rollouts per rung per 18-minute batch.
-2. **Score it in `J` too — and capture tracks from now on.** The sub-ladder is
-   running without `--trace-dir`, so it produces metres only. Given that `J`
-   reversed three of seven per-shape verdicts, any future soak whose numbers
-   should be readable in the thesis's currency needs the track. Wiring
-   `--trace-dir` into `soak.py` is small and should land before the next long run.
+1. **Read `libsweep` — the 51-plan library sweep** (finished unattended; see
+   State for the command). This is the biggest open question for the thesis:
+   every corrector claim we have rests on **7 hand-picked plans**, and a reviewer
+   will ask whether it generalises. Tuned vs default, 3 repeats, traced.
+   **Report the AGGREGATE only.** n=3 cannot support a per-plan verdict on the
+   bimodal shapes — that is the single-sample ranking this project has retracted
+   several times. If the aggregate holds, that is the headline result; if it
+   does not, find out which plans break it and *then* soak those at n≈100.
+2. **Read the `r_omega` ladder** (queued behind the sweep; see State). `r` moved
+   0.25 → 2.618 as half of a **joint** move, so we know the pair is good and
+   nothing about whether 2.618 is mid-basin or on a wall. `q` turned out to sit
+   on a wall, which is exactly why this is worth asking. `q=0.276` is held fixed
+   so `r`'s effect is separable, mirroring how the `q` ladder held `r`.
 3. **Explain the U-turn's last corner.** The pictures narrow it from "17 m of
    trajectory" to ~20 steps at one corner. Trace a few rollouts either side of the
    notch edge (`q=0.4` vs `q=0.5`) and run `tuning/trace_diff.py`: `cmd*` moving
@@ -142,19 +152,46 @@ corner), `03_ladder_modes.png` (threshold vs notch), `04_epsilon_vs_cross.png`
 
 - **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
   fresh 2026-08-12; the 5-day-old instance from 2026-08-07 was killed first.
-- **The U-TURN SUB-LADDER soak is running** (`just soak`, tmux `rl:soak`, log
-  `/tmp/soak.log`, data `~/soak.jsonl`). `floor_6_00031` only, `q_cross` =
-  0.2 / 0.276 / 0.32 / 0.4 / 0.5 / 0.6 at `r_omega=2.618`, ~6 s a rollout,
-  180 per batch, self-restarting. **Question it answers:** the notch at 0.276 has
-  neighbours at 0.1 and 0.6 that are 100% bad, so does the adopted point have a
-  usable basin or is it a spike? First cycle already put 0.4 at 1.53 and 0.5 at
-  2.70, so the edge is between them. **Stop it with `just soak-stop`** before any
-  focused test; it loses nothing when killed.
-- Finished earlier today and archived on the VM: `~/soak_20260813_ladder.jsonl`
-  (1047 rollouts, the 6-point q ladder) and
+- **The U-turn sub-ladder is DONE and stopped** — 5906 usable rollouts, archived
+  on the VM as `~/soak_20260813_uturn_subladder.jsonl`, fetched into
+  `soak_data/`. Result in CLAUDE.md, "The U-turn basin has walls". Metres only:
+  it predates `--trace-dir` on `soak.py`, so it can never be scored in `J`.
+- **`~/sweep2.sh` — a two-part run, detached, log `/tmp/sweep2.log`.** Part 1
+  (7 shapes × `q` ∈ {0.276, 0.32, 0.40}, 5 repeats, traced) **finished**: results
+  `~/gaincheck.jsonl` + `~/gaincheck/<arm>/<shape>/`, fetched to `gaincheck/`,
+  scored into `epsilon_data/gaincheck_J.jsonl`. It is what kept `q=0.276`.
+  **Part 2, `libsweep`, was still running at 12:05** — every plan ≥10 m (51 of
+  them), tuned `0.276/2.618` vs default `10/0.25`, 3 repeats, traced to
+  `~/libsweep/<arm>/<shape>/`, rows in `~/libsweep.jsonl`. ~50 min from its
+  start. Read it with:
+
+      rsync -a -e "ssh -F ssh_config" agx:~/libsweep/ libsweep/
+      .venv/bin/python tools/score_sweep.py libsweep --plans traj_data \
+          --out epsilon_data/libsweep_J.jsonl --quiet
+
+- **An `r_omega` ladder is QUEUED BEHIND IT, on the VM itself**
+  (`tools/queue_r_ladder.sh`, launched detached; log `/tmp/r_ladder.log`, data
+  `~/soak_r_ladder.jsonl`, traces `~/r_ladder_traces`). It polls until
+  `sweep2.sh` exits, then runs a self-restarting soak: all 7 shapes, `q=0.276`
+  fixed, `r_omega` ∈ {1.0, 1.8, 2.618, 3.5, 5.0}, `--trace-every 5`.
+  **The chaining is deliberately on the VM, not in an ssh loop from the laptop**,
+  because the laptop closes and the VPN drops; nothing about it depends on a live
+  session. It waits on the *script* rather than "no python is running", since
+  sweep2 spawns a fresh `variance_probe` per trajectory and the naive check fires
+  in the gap between two of them and puts a second driver on the one sim.
+  Read it with (note `--from-jsonl`, since soak writes a flat trace dir):
+
+      rsync -a -e "ssh -F ssh_config" agx:~/r_ladder_traces/ r_ladder_traces/
+      scp -F ssh_config agx:~/soak_r_ladder.jsonl soak_data/
+      .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_r_ladder.jsonl \
+          --trace-root r_ladder_traces --plans traj_data
+
+  **Stop it with `just soak-stop`** (it is a `soak.py`, so that still matches),
+  and kill `queue_r_ladder.sh` too or it will restart the soak.
+- Archived on the VM from earlier: `~/soak_20260813_ladder.jsonl` (1047
+  rollouts, the 6-point q ladder) and
   `~/soak_20260813_uturn_subladder_partial.jsonl` (83 rows, first sub-ladder
-  attempt — same conditions as the running one, safe to pool). Both fetched into
-  gitignored `soak_data/`.
+  attempt — same conditions, safe to pool). Both fetched into `soak_data/`.
 - `~/jsweep.jsonl` + `~/jtraces/` — the 70-rollout traced sweep that produced the
   first `J` numbers. Fetched locally into `jtraces/`, scored into `epsilon_data/`.
 - The finished two-point soak is archived on the VM as
@@ -175,6 +212,26 @@ corner), `03_ladder_modes.png` (threshold vs notch), `04_epsilon_vs_cross.png`
   patch; a patch below 0.45 deliberately means "no steering".
 - **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
   made xacro fail to parse and the sim never came up.
+- **More than one Claude session can be live on this checkout at once, and on
+  2026-08-13 that cost an attribution.** Another session ran `git add -A` on a
+  tree it assumed was its own and committed this session's uncommitted `soak.py`
+  work inside `7339e59`, whose message describes only the ladder. Nothing was
+  lost and the history was deliberately NOT rewritten (rewriting under a
+  concurrent checkout is the worse hazard). Habit adopted by both: `git status`
+  before committing, and explicit paths on `git add` rather than `-A`.
+  Related: **do not wake other sessions to coordinate** — resuming one costs a
+  full context load, and the user is the one who can actually decide. Ask the
+  user instead, with `notify_and_wait`.
+- **`notify_and_wait` now takes a REPLY** (`tools/attention_mcp/server.py`).
+  It was a doorbell — `zenity --info`, returning a fixed acknowledgement — which
+  could not carry an answer, so it was never worth ringing and in practice never
+  was. It is now `zenity --entry` and returns what the user types. Two
+  gotchas fixed along with it: zenity has no wrap option and `--width` sets only
+  the window minimum, so long text rendered as one line wider than the screen
+  (it is now hard-wrapped at 88 columns), and the desktop notification truncates
+  at ~60 characters, so **the question must come first** in the message.
+  Its best use is the one no metric covers: asking the user to look at the sim on
+  Moonlight and say whether the robot is actually driving the plan or stuck.
 
 ## Still open, unchanged from 2026-08-07
 
