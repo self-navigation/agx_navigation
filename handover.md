@@ -1,4 +1,4 @@
-# Handover — 2026-08-14
+# Handover — 2026-08-14 (evening)
 
 **Read this first, and keep it current.** It is the primary record of what we
 are doing; CLAUDE.md's "Current work" section is the cumulative record of what we
@@ -6,100 +6,212 @@ have *established*. This file describes **now**: what is running, what is
 half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending.
 
-**2026-08-14 in one line:** the tuned gains **generalise across 51 plans** — but
-as a *robustness trade*, not a uniform win — and the VM now has a **job queue**,
-so idle time between sessions gets absorbed instead of lost.
+**This session in one line:** the `r_omega` ladder came back and says **`r` is
+nearly a free parameter** — flat on five of seven shapes, with the adopted 2.618
+winning through **one plan** — and the queue that was supposed to keep the box
+busy had killed itself, so half a day was lost again.
 
-**FIRST THING NEXT SESSION:** `just queue-status`. Two jobs are queued (below).
-Read the `r_omega` ladder first, then the v2 trajectory library.
+**FIRST THING NEXT SESSION:** `just queue-status`, then read the jobs below in
+order. **There is one question for you (the user) at the bottom, under "For the
+user".**
 
 ## What happened this session
 
-1. **Read the 51-plan library sweep** (finished unattended overnight). Full
-   tables in CLAUDE.md, "The library sweep". The headline: tuned wins 45/51 in
-   `J` and the aggregate holds in both currencies — but in metres the **default
-   wins 30 of 51 plans**, because the tuned gains concede ~3 cm on easy plans to
-   prevent blow-ups on hard ones. 9.99 m gained against 2.03 m lost.
-2. **Found why the `r_omega` ladder never ran.** `tools/queue_r_ladder.sh` had
-   `set -u` on across `source /opt/ros/jazzy/setup.bash`, which reads
-   `AMENT_TRACE_SETUP_FILES` while unset. It waited for its predecessor
-   correctly, logged `starting the r_omega ladder`, and died on the next line.
-   **The VM sat idle ~17 h.** Written into CLAUDE.md's VM section.
-3. **Built a job queue** (`tools/jobq.sh`, `just queue-*`, jobs in
-   `tools/jobs/`) to replace bespoke chain scripts. See below.
-4. **Built the trajectory generator** (queue item 8) — and its design changed
-   under validation, which is the interesting part. See below.
-5. **Measured `trim_pivot`'s threshold** instead of inheriting it: 0.30 m was
-   too small, 0.70 m is where the label counts plateau.
+1. **The runner was dead and job 20 never started.** `jobq.sh` ran each job in a
+   **brace group** ending in `exit $rc` — not a subshell, so that `exit` ended
+   the runner itself. Job 10 finished at 05:00 UTC, wrote `EXIT rc=0`, and the
+   runner died on the next statement; job 20 sat pending for 13 h. Fixed
+   (subshell), and the signature is written into CLAUDE.md so it is recognisable:
+   **a job in `running` whose log already says `EXIT` + runner NOT RUNNING**.
+2. **Read the `r_omega` ladder** (1035 usable rollouts). Full table in CLAUDE.md.
+   Headline: `r` does nothing on straight, corner, zigzag, tight V and loop
+   across a 5× range; the aggregate's preference for 2.618 is the U-turn alone
+   (100% bad at every other rung, 20% at 2.618). **2.618 is an isolated notch —
+   the opposite of `q=0.276`, which sat on a wide plateau.**
+3. **Found two bugs in the traced-soak path**, which is why the ladder has no `J`
+   numbers. `--trace-every 5` aliased against the 35-rollout cycle (only 7 of 35
+   cells ever traced), and tracing was never turned off between traced rollouts,
+   so each file held ~5 rollouts from ~5 different cells. Both fixed
+   (`disable_trace()`, subsample by cycle). **Every existing `J` number is safe**
+   — they came from `variance_probe`, which traces every rollout.
+4. **Queued three jobs** (below) and rendered `figures/2026-08-14/`.
 
-## The queue is the new way to run long things
+## Do this next, in order
+
+1. **Read `30_r_ladder_low.sh`** — it decides whether the adopted `r_omega`
+   survives. The ladder swept r ∈ [1.0, 5.0]; the gain it *replaced* is r=0.25,
+   below the floor. So we still do not know whether r's half of the joint move
+   bought anything outside `floor_6_00031`. This sweeps {0.25, 0.5, 1.0, 2.618}
+   at q=0.276, carrying 2.618 in the same process so the ladders join without
+   assuming cross-run comparability.
+
+       scp -F ssh_config agx:~/soak_r_ladder_low.jsonl soak_data/
+       rsync -a -e "ssh -F ssh_config" agx:~/r_ladder_low_traces/ r_ladder_low_traces/
+       .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_r_ladder_low.jsonl \
+           --trace-root r_ladder_low_traces --plans traj_data
+
+   **How to read it.** Exclude the U-turn from the aggregate first — that is the
+   whole point. If r=0.25 is flat with r=2.618 on the other six shapes, then
+   `r_omega` is a free parameter that we tuned to one plan's notch, and the
+   honest write-up claim is that **the tuning result is a `q_cross` result**.
+   That is not a reason to un-adopt 2.618 (it costs nothing elsewhere and buys
+   the U-turn), but it is a reason not to *claim* it. If instead r=0.25 is
+   visibly worse across the six, the joint move stands as a joint move.
+
+   This is also the **first traced soak since the trace fix**, so scoring it in
+   `J` doubles as the check that the fix works. If `score_sweep` reports
+   `max|e_cross|` wildly different from the JSONL's own `max_cross` for the same
+   rollout, the fix did not take — that mismatch is exactly how the bug was
+   caught.
+
+2. **Read `40_uturn_generality.sh`** — the real prize, and the reason the v2
+   library was built. The `q ∈ [0.276, 0.4]` basin with near-vertical walls is
+   5906 rollouts of `floor_6_00031` and nothing else. This runs the same rungs
+   {0.2, 0.276, 0.4, 0.5} on up to 4 other library U-turns **plus 00031 as a
+   control in the same run**, n≈60 per cell.
+
+   - basin reproduces on the new U-turns ⇒ property of the SHAPE, notch story
+     stands;
+   - basin only on 00031 ⇒ `q=0.276` was adopted partly on a coincidence, and
+     CLAUDE.md's U-turn sections want rewriting.
+
+   **Before trusting it, look at the plans it picked** (the job prints their
+   paths). The labels come from the solved plan, not from the screen, but
+   `label()`'s own docstring calls itself a ranking aid; render them and confirm
+   they are U-turns by eye. This is the step that caught the last automatic
+   labelling being wrong.
+
+3. **Read the v2 library itself** (`20_generate_v2_library.sh`, running now) —
+   fetch `~/traj_data_v2`, render a gallery, **look at it**, and stratify ~5
+   plans per shape into a **second** eval set in `config/eval_trajectories.yaml`,
+   *added* alongside the seven rather than replacing them. The seven stay the
+   fast search set (mean-of-3 tuning must stay ~105 s/eval); the stratified set
+   is for **claims**. Swapping would silently re-baseline every number in
+   CLAUDE.md.
+
+   Its log also gives the **first read on PMP solve cost per plan**, which is
+   unmeasured and sets the data budget for the RL re-planner. Write the number
+   down whatever it is.
+
+4. **Read `25_uturn_notch_edge.sh`'s traces** — 10 rollouts either side of the
+   U-turn's `q` wall (0.4 vs 0.5), every one traced. Run `tuning/trace_diff.py`
+   on a good/bad pair: `cmd*` moving first means our controller, state moving
+   first under an equal command means the plant. All the U-turn's deviation is
+   produced at ONE corner in the last quarter of the run and nobody has explained
+   it. ~5 min of reading, the data is already paid for.
+
+5. **Then reconsider the objective.** `J` is computable and better behaved than
+   the 7-shape mean of `max|e_cross|`; the open question is whether to *tune*
+   against it, which needs `J` inside `objective.py` rather than as a post-hoc
+   script. The library sweep strengthens the case: `J` and metres disagree on 24
+   of 51 plans.
+
+6. **Measure the re-join PMP solve time** before committing to any architecture.
+   `200388e` added acados and `0454d3d` removed it, after which online mode was
+   documented as infeasible — so "cannot solve online" is currently a statement
+   about scipy, not about the problem. The source's justification for offloading
+   cites **DShot and PWM** frame budgets, i.e. a flight controller, not a Jetson.
+
+7. **Do not re-run a wide gain search yet**, and in particular do not start one
+   before item 1 — a search that includes `r_omega` as a free axis is mostly
+   resolving one plan's notch.
+
+## For the user — one question I could not settle alone
+
+**Should `r_omega` stay in the tuned story at all?**
+
+The measurement says it does essentially nothing on six of seven shapes, and its
+one win is a notch on the single U-turn plan we happen to own. Three defensible
+positions, and it is a judgement about what we are willing to claim rather than
+something another run resolves:
+
+- **keep 2.618, describe the result as `q_cross` tuning** — honest, and costs
+  nothing, since 2.618 is free elsewhere and buys the U-turn. My preference.
+- **keep 2.618 and claim the pair** — only defensible if job 40 shows the basin
+  is a property of U-turns rather than of `floor_6_00031`.
+- **revert to r=0.25** — cleanest story (one tuned gain), but throws away the
+  U-turn win and re-introduces the tight V's 10.5% bad mode.
+
+Job 30 (r=0.25 in the same conditions) and job 40 (other U-turns) between them
+supply the evidence for all three; the choice of what to *claim* is yours.
+
+## State
+
+- **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
+  fresh 2026-08-12, still up. The jobq runner is up **with the subshell fix**.
+- **RUNNING: `20_generate_v2_library.sh`** — screens 1200 pairs each on floors 1
+  and 6, keeps 500, PMP-solves into `~/traj_data_v2/`; candidates in
+  `~/candidates_v2.json`. Started 18:08 UTC 2026-08-14, screening at ~200 per
+  8 min ⇒ ~1.6 h for both maps, then an unmeasured solve phase. Log
+  `~/jobq/logs/20_generate_v2_library.log`. Needs no Gazebo.
+- **PENDING, in order:**
+  - `25_uturn_notch_edge.sh` — ~2 min, 20 rollouts, all traced,
+    `~/uturn_edge.jsonl` + `~/uturn_edge_traces/`.
+  - `30_r_ladder_low.sh` — ~1.4 h, 840 rollouts, `~/soak_r_ladder_low.jsonl` +
+    `~/r_ladder_low_traces/`.
+  - `40_uturn_generality.sh` — ~2 h, 1200 rollouts,
+    `~/soak_uturn_generality.jsonl` + `~/uturn_generality_traces/`. **Exits 1
+    and is skipped** if job 20 produced fewer than 2 UTURN plans; that is
+    deliberate — an empty library is a reason to skip, never to idle the box.
+- **Fetched and analysed this session:** `soak_data/soak_r_ladder.jsonl` (1050
+  rows) and `r_ladder_traces/` (210 files, **unscoreable — see the trace bugs**;
+  keep them only as evidence of the bug, they measure nothing).
+- **The U-turn sub-ladder** (5906 rollouts) is archived on the VM as
+  `~/soak_20260813_uturn_subladder.jsonl` and fetched. Metres only — it predates
+  `--trace-dir` on `soak.py`.
+- Archived on the VM: `~/soak_20260813_ladder.jsonl` (q ladder, 1047),
+  `~/soak_20260813_twopoint.jsonl`, `~/gaincheck.jsonl` + `~/gaincheck/`,
+  `~/jsweep.jsonl` + `~/jtraces/`, `~/libsweep.jsonl` + `~/libsweep/`,
+  `~/soak_r_ladder.jsonl` + `~/r_ladder_traces/`.
+- **Caches on the VM, current plant, safe to resume onto:**
+  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
+  `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
+  `~/local2d_20260812.jsonl`. All fetched into local `tune_data/`.
+- **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
+  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
+  `PLANT_VERSION` will refuse them.
+- **Two similarly-named plan directories on the VM.** The eval config points at
+  `~/pmp_trajectories_v2` (the existing 100-plan library); the new one being
+  built is `~/traj_data_v2`. Job scripts read the path out of
+  `config/eval_trajectories.yaml` rather than guessing.
+- Both worlds stay at **mu=1.0**. Slipperiness belongs in the wheel pair or a
+  patch; a patch below 0.45 deliberately means "no steering".
+- **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
+  made xacro fail to parse and the sim never came up.
+- **More than one Claude session can be live on this checkout at once.** On
+  2026-08-13 another session's `git add -A` committed this session's work under
+  an unrelated message. Habit: `git status` before committing, explicit paths on
+  `git add`. Do not wake other sessions to coordinate — ask the user.
+- **`notify_and_wait` takes a REPLY** (`tools/attention_mcp/server.py`), via
+  `zenity --entry`. The desktop notification truncates at ~60 characters, so
+  **the question must come first** in the message. Its best use is the one no
+  metric covers: asking the user to look at the sim on Moonlight and say whether
+  the robot is actually driving the plan.
+
+## The queue is the way to run long things
 
 `just queue-start` once, then `just queue-add <job>.sh` at any time — including
 while another job runs. Jobs live in `tools/jobs/`, logs in `~/jobq/logs/`.
 
 ```
 just queue-status              # runner, running/pending/done/failed, recent logs
-just queue-add 20_generate_v2_library.sh
-just queue-log 10_r_ladder     # a specific job's log
+just queue-add 30_r_ladder_low.sh
+just queue-log 30_r_ladder_low # a specific job's log
 just queue-stop                # stops the RUNNER; leaves the in-flight job alone
 ```
 
-Two rules that are easy to get wrong:
+Rules that are easy to get wrong:
 
-- **A queued job must terminate on its own.** `just soak` runs until stopped;
-  a job that does that blocks everything behind it forever. `tools/jobs/` scripts
+- **A queued job must terminate on its own.** `just soak` runs until stopped; a
+  job that does that blocks everything behind it forever. `tools/jobs/` scripts
   use a bounded batch count instead.
 - **The runner sources ROS, jobs do not.** That is what makes the `set -u` trap
   unreachable rather than merely known. Do not add sourcing to a job script.
-
-## Do this next, in order
-
-1. **Read the `r_omega` ladder** when it finishes (~1.8 h from 06:15 UTC on
-   2026-08-14). Question: `r` moved 0.25 → 2.618 as half of a **joint** move, so
-   we know the pair is good and nothing about whether 2.618 is mid-basin or on a
-   wall — `q` turned out to be on one. `q=0.276` is held fixed so `r` is
-   separable, mirroring the `q` ladder. Read it with:
-
-       scp -F ssh_config agx:~/soak_r_ladder.jsonl soak_data/
-       rsync -a -e "ssh -F ssh_config" agx:~/r_ladder_traces/ r_ladder_traces/
-       .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_r_ladder.jsonl \
-           --trace-root r_ladder_traces --plans traj_data
-
-2. **Read the v2 trajectory library** (queued behind the ladder). It screens
-   1200 pairs per map on floors 1 and 6, keeps the 500 best, and PMP-solves
-   them into `~/traj_data_v2/`, labelling each from the SOLVED plan. Then:
-   - fetch it, render a gallery, and **look at it** — the labels are a ranking
-     aid and the picture is the authority, which is how the last automatic
-     labelling was caught being wrong;
-   - stratify ~5 plans per shape into a **second** eval set in
-     `config/eval_trajectories.yaml`, *added* alongside the seven, not replacing
-     them. The seven stay the fast search set (mean-of-3 tuning must stay
-     ~105 s/eval); the stratified set is for **claims**. Swapping would silently
-     re-baseline every number in CLAUDE.md.
-   - then the real prize: **re-run the U-turn sub-ladder on 3-5 different
-     U-turns.** If the `q ∈ [0.276, 0.4]` basin is a property of U-turns it
-     reproduces; if it is a property of `floor_6_00031`, the "notch" story needs
-     rewriting and `q=0.276` wants re-examining.
-
-3. **Explain the U-turn's last corner** (unchanged from yesterday). All the
-   deviation is produced at ONE corner in the last quarter of the run. Trace
-   either side of the notch edge (`q=0.4` vs `q=0.5`) and run
-   `tuning/trace_diff.py`: `cmd*` moving first means our controller, state
-   moving first means the plant. ~10 min of sim.
-
-4. **Then reconsider the objective.** `J` is computable and better behaved than
-   the 7-shape mean of `max|e_cross|`; the open question is whether to *tune*
-   against it, which needs `J` inside `objective.py` rather than as a post-hoc
-   script. The library sweep strengthens the case: `J` and metres disagree on 24
-   of 51 plans.
-
-5. **Measure the re-join PMP solve time** before committing to any architecture.
-   `200388e` added acados and `0454d3d` removed it, after which online mode was
-   documented as infeasible — so "cannot solve online" is currently a statement
-   about scipy, not about the problem. The source's justification for offloading
-   cites **DShot and PWM** frame budgets, i.e. a flight controller, not a Jetson.
-
-6. **Do not re-run a wide gain search yet.**
+- **`queue-add` runs `sync` first**, so queueing rsyncs the working tree onto the
+  VM *under whatever is running*. Usually wanted; but an in-flight batch loop can
+  pick up edited code at its next iteration.
+- **Check the runner is alive, not just the queue.** See the failure signature in
+  CLAUDE.md — a job in `running` whose log says `EXIT` means the runner died.
 
 ## The trajectory generator, and why its design changed
 
@@ -122,49 +234,6 @@ sight, detour and pivot demand** (all downstream of the +0.96/+0.99 signals) and
 **shape is labelled from the solved plan.** Do not re-propose ranking candidates
 by predicted turning.
 
-## State
-
-- **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
-  fresh 2026-08-12. The jobq runner is up.
-- **RUNNING: `10_r_ladder.sh`** — 7 shapes, `q=0.276` fixed, `r_omega` ∈
-  {1.0, 1.8, 2.618, 3.5, 5.0}, 6 batches × 175 = 1050 rollouts (n=30 per cell),
-  traced every 5th. Data `~/soak_r_ladder.jsonl`, traces `~/r_ladder_traces`,
-  log `~/jobq/logs/10_r_ladder.log`. Started 06:15 UTC, ~1.8 h.
-- **PENDING: `20_generate_v2_library.sh`** — screens 1200 pairs each on floors 1
-  and 6, keeps 500, PMP-solves into `~/traj_data_v2/`; candidates in
-  `~/candidates_v2.json`. Needs no Gazebo but is queued anyway (CPU-heavy, and
-  one thing at a time is the rule). Solve time per plan is **unmeasured** — if
-  the log shows it is slow, that number is itself worth recording, since it sets
-  the data budget for the RL re-planner.
-- **Fetched and scored this session:** `soak_data/libsweep.jsonl` (306 rows),
-  traces in `libsweep/`, scored into `epsilon_data/libsweep_J.jsonl`.
-- **The U-turn sub-ladder** (5906 rollouts) is archived on the VM as
-  `~/soak_20260813_uturn_subladder.jsonl` and fetched. Metres only — it predates
-  `--trace-dir` on `soak.py`, so it can never be scored in `J`.
-- Archived on the VM: `~/soak_20260813_ladder.jsonl` (q ladder, 1047),
-  `~/soak_20260813_twopoint.jsonl`, `~/gaincheck.jsonl` + `~/gaincheck/`,
-  `~/jsweep.jsonl` + `~/jtraces/`, `~/libsweep.jsonl` + `~/libsweep/`.
-- **Caches on the VM, current plant, safe to resume onto:**
-  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
-  `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
-  `~/local2d_20260812.jsonl`. All fetched into local `tune_data/`.
-- **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
-  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
-  `PLANT_VERSION` will refuse them.
-- Both worlds stay at **mu=1.0**. Slipperiness belongs in the wheel pair or a
-  patch; a patch below 0.45 deliberately means "no steering".
-- **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
-  made xacro fail to parse and the sim never came up.
-- **More than one Claude session can be live on this checkout at once.** On
-  2026-08-13 another session's `git add -A` committed this session's work under
-  an unrelated message. Habit: `git status` before committing, explicit paths on
-  `git add`. Do not wake other sessions to coordinate — ask the user.
-- **`notify_and_wait` takes a REPLY** (`tools/attention_mcp/server.py`), via
-  `zenity --entry`. The desktop notification truncates at ~60 characters, so
-  **the question must come first** in the message. Its best use is the one no
-  metric covers: asking the user to look at the sim on Moonlight and say whether
-  the robot is actually driving the plan.
-
 ## Still open, unchanged
 
 - `sand` is unbuilt and blocked on the friction-anisotropy question: under
@@ -173,6 +242,9 @@ by predicted turning.
   A question for the advisor.
 - chi is a property of the **surface** (1.36 to 25.4 across the sweep), so it
   cannot be a constant on a floor with ice/sand zones.
+- The S-curve's **deterministic** bad spike at `r_omega=3.5` (2.548–2.552, sd
+  0.001, 100% of 30) is unexplained. New this session, and the only place a
+  non-U-turn shape cares about `r` at all.
 - The RL re-planner architecture (below) is decided but **not started**.
 
 ## Architecture: RL as a rough re-planner, not a residual

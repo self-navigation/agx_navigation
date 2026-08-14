@@ -67,13 +67,17 @@ runner() {
         mv "$Q/pending/$job" "$Q/running/$job" 2>/dev/null || continue
         log="$Q/logs/${job%.sh}.log"
         echo "[jobq] === START $job at $(date -Is) -> $log"
-        {
+        # A SUBSHELL, not a brace group. `exit` in a brace group exits the
+        # RUNNER -- which is exactly what happened on 2026-08-14: job 10 wrote
+        # its `EXIT rc=0` line, the runner died on the next statement before it
+        # could `mv` the job to done/, and job 20 sat pending for 13 h.
+        (
             echo "[jobq] START $job $(date -Is)"
             bash "$Q/running/$job"
             rc=$?
             echo "[jobq] EXIT $job rc=$rc $(date -Is)"
             exit $rc
-        } >>"$log" 2>&1
+        ) >>"$log" 2>&1
         rc=$?
 
         if [[ $rc -eq 0 ]]; then

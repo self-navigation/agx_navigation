@@ -1040,6 +1040,83 @@ one trajectory, however many samples back it. The sub-ladder was still worth the
 night — it explains *why* 0.276 looks noisy on the U-turn — but the decision was
 always the aggregate's to make.
 
+### The `r_omega` ladder: `r` is nearly a free parameter (2026-08-14)
+
+1035 usable rollouts (1050 run, 15 lost to the patch-spawn guard), 7 shapes ×
+`r_omega` ∈ {1.0, 1.8, 2.618, 3.5, 5.0}, `q_cross` held at the adopted 0.276 so
+`r` is separable — the mirror of the `q` ladder. `soak_data/soak_r_ladder.jsonl`,
+figures `figures/2026-08-14/`. n≈30 per cell. mean ± sd of max|e_cross|:
+
+| shape | r=1.0 | r=1.8 | r=2.618 | r=3.5 | r=5.0 |
+| --- | --- | --- | --- | --- | --- |
+| straight | 0.053±.003 | 0.048±.000 | 0.054±.001 | 0.054±.002 | 0.066±.008 |
+| corner | 0.304±.002 | 0.327±.000 | 0.310±.001 | 0.313±.005 | 0.312±.001 |
+| S | 1.704±.583 | 1.576±.095 | 1.589±.084 | **2.550±.001** | 1.696±.041 |
+| zigzag | 0.409±.088 | 0.471±.207 | 0.460±.129 | 0.446±.107 | 0.409±.020 |
+| tight V | 0.283±.020 | 0.303±.070 | 0.286±.000 | 0.287±.000 | 0.289±.000 |
+| U-turn | 2.646±.006 | 2.684±.005 | **1.663±.628** | 2.591±.006 | 2.644±.024 |
+| loop | 0.363±.021 | 0.448±.092 | 0.436±.051 | 0.465±.020 | 0.439±.104 |
+| **mean** | 0.823 | 0.837 | **0.685** | 0.958 | 0.837 |
+| **mean, no U-turn** | **0.519** | 0.529 | 0.522 | 0.686 | 0.535 |
+
+**`r_omega` does nothing on five of seven shapes across a 5× range.** Straight
+spans 0.048–0.066, corner 0.304–0.327, tight V 0.283–0.303, zigzag 0.409–0.471,
+loop 0.363–0.465 — every one of those is inside its own cell-to-cell spread.
+Drop the U-turn and the aggregate is **flat from r=1.0 to r=2.618** (0.519 vs
+0.522), i.e. the adopted value earns nothing there.
+
+**So `r=2.618` is an isolated NOTCH, and it is one plan's.** The U-turn is 100%
+bad (>2.0 m, and near-deterministic: sd 0.005–0.024) at 1.0, 1.8, 3.5 and 5.0,
+and 20% bad only at 2.618. This is the *opposite* shape of the `q` result, where
+0.276 sat on a wide plateau for the zigzag and the notch was a U-turn side-effect.
+**Consequence for the write-up: the tuning result is essentially a `q_cross`
+result.** `r`'s half of the joint move is defensible only through `floor_6_00031`.
+
+**Second isolated feature: the S has a deterministic bad spike at r=3.5** —
+2.548–2.552 over 30 rollouts, sd 0.001, 100% of them, against ~1.6 at every other
+rung. Not a mixture, not noise; unexplained, and the only place in this ladder
+where a non-U-turn shape cares about `r` at all.
+
+**Still open, and it is the half that decides the adoption:** the ladder's floor
+is r=1.0 while the gain it replaced is **r=0.25**, which is *below* the rungs. So
+nothing here says whether the move off 0.25 bought anything outside the U-turn.
+`tools/jobs/30_r_ladder_low.sh` sweeps {0.25, 0.5, 1.0, 2.618}, carrying 2.618 in
+the same process so the two ladders join without assuming cross-run comparability.
+**Do not re-adopt or abandon `r_omega` before reading it.** (The one thing already
+known from the `q` ladder: at `q=10`, r=0.25 vs 2.618 changed the zigzag not at
+all — 86.0% vs 89.7% bad — and the tight V from 10.5% to 0%.)
+
+**Not scoreable in `J`** — this run's traces are unusable, see below.
+
+### The traced-soak path had two bugs, and neither could fail loudly (2026-08-14)
+
+The `r_omega` ladder was the first soak run with `--trace-every`, and none of its
+210 traces can be scored. Both bugs are fixed; both are worth knowing because
+their failure mode is a *plausible number*, never an error.
+
+1. **The stride aliased against the cycle length.** `soak.py` cycles gains ×
+   trajectories — 5 × 7 = 35 rollouts per cycle — and `--trace-every 5` sampled
+   every 5th *rollout index*. `gcd(5, 35) = 5`, so the same 7 cells were traced
+   every cycle and the other 28 **never once**. Subsampling is now by **cycle**,
+   which keeps coverage balanced by construction.
+2. **Tracing is armed by FILE, not by rollout.** `enable_trace(path)` opened a
+   new file and kept writing; nothing turned it off, so the four untraced
+   rollouts after each traced one were appended to the traced one's CSV. Every
+   file held ~5 rollouts from ~5 different cells. Scored, that is one 1084-row
+   "track" for a 186-step plan: `max|e_cross|` came out at 29 m against the
+   soak's own 0.05 m for the same rollout. `GazeboBridge.disable_trace()` now
+   exists and `soak.py` calls it on every untraced rollout.
+
+**Every `J` number already in this file is safe.** They all came from
+`variance_probe`, which traces *every* rollout when `--trace-dir` is set, so it
+never armed a file it did not fill. Only `soak.py --trace-every` was affected,
+and only the `r_omega` ladder ever used it.
+
+**The general lesson, which is the reusable part:** a subsample stride and a
+cycle length are not independent, and a trace file is a *resource with a
+lifetime*, not a flag. Both failures produce data that parses, scores, and looks
+like a measurement.
+
 ### The library sweep: it generalises, but as a ROBUSTNESS TRADE (2026-08-14)
 
 Every corrector claim to date rested on 7 hand-picked plans, so the obvious
@@ -1146,6 +1223,19 @@ ROS itself**, so that trap is unreachable by construction rather than by anyone
 remembering. Its liveness check takes the lock rather than grepping the process
 table — a `pgrep -f` pattern matches the ssh wrapper asking the question, so it
 always reported a runner alive.
+
+**The runner killed itself on its first job (fixed 2026-08-14).** The job body
+ran inside a **brace group** ending in `exit $rc` — and a brace group is not a
+subshell, so that `exit` ended the *runner*. Job 10 wrote its `EXIT rc=0` line,
+the runner vanished before the `mv` to `done/`, and the next job sat pending
+13 h. It is a subshell now. The signature to recognise: `status` shows a job in
+**running** whose log already says `EXIT … rc=0`, and the runner NOT RUNNING —
+that combination means the runner died between the two, not that the job hung.
+
+`just queue-add` runs `sync` first, so **queueing a job rsyncs the working tree
+onto the VM under whatever is currently running.** That is usually what you want
+(a fix lands for the jobs behind it) but it does mean an in-flight job can pick
+up edited code at its next `python3 -m`; the batch loops make that a real window.
 
 ### Realistic friction, IMU gating, and repeats (2026-08-04)
 

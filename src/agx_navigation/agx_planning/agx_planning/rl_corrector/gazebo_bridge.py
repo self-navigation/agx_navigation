@@ -794,6 +794,21 @@ class GazeboBridge:
         self._trace_writer.writerow(self.TRACE_COLUMNS)
         self._trace_row = 0
 
+    def disable_trace(self) -> None:
+        """Stop tracing and close the current file.
+
+        Needed by any caller that traces only SOME rollouts: tracing is armed by
+        file, not by rollout, so leaving it on writes the next rollouts into the
+        previous rollout's file. That happened on 2026-08-14 -- `soak.py
+        --trace-every 5` produced files holding five concatenated rollouts from
+        five DIFFERENT (shape, gain) cells, which score as one enormous track
+        against one plan rather than failing. Idempotent.
+        """
+        if self._trace_fh is not None:
+            self._trace_fh.close()
+        self._trace_fh = None
+        self._trace_writer = None
+
     def _terrain_digest(self) -> str:
         """Every rl_* entity pose, rounded to 1e-6, as one stable string."""
         return "|".join(

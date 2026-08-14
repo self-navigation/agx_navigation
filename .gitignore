@@ -47,6 +47,10 @@ jtraces/
 epsilon_data/
 gaincheck/
 libsweep/
+r_ladder_traces/
+r_ladder_low_traces/
+uturn_generality_traces/
+uturn_edge_traces/
 
 # TensorBoard event files pulled off the server (~4 MB per run, regenerable by
 # re-fetching from ~/runs_<label>/tb/).

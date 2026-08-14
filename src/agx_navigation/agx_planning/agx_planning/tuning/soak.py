@@ -143,8 +143,11 @@ def main():
                          "rollout -- see --trace-every before leaving this on "
                          "an unbounded soak.")
     ap.add_argument("--trace-every", type=int, default=1, metavar="N",
-                    help="with --trace-dir, trace only every Nth rollout "
-                         "(default 1 = all). This file is built to be left "
+                    help="with --trace-dir, trace only every Nth CYCLE of the "
+                         "gain x trajectory grid (default 1 = all), so every "
+                         "cell is covered equally. Subsampling by rollout index "
+                         "instead would alias against the cycle length. This "
+                         "file is built to be left "
                          "running for days, which at ~130 kB a rollout fills a "
                          "disk; subsampling keeps a J-scoreable sample of an "
                          "arbitrarily long soak. Rows that were not traced have "
@@ -201,13 +204,26 @@ def main():
                         # dir outlives the JSONL it came from, and a per-step
                         # track that cannot be attributed to a gain pair is not
                         # scoreable in J.
+                        # Subsample by CYCLE, never by rollout index. A rollout
+                        # stride aliases against the cycle length: on 2026-08-14
+                        # `--trace-every 5` over 7 shapes x 5 gain points (35 per
+                        # cycle) traced the same 7 cells forever and the other 28
+                        # never once, because gcd(5, 35) = 5. Cycling is the only
+                        # stride that keeps coverage balanced by construction.
                         trace_path = None
-                        if args.trace_dir and n_done % args.trace_every == 0:
+                        if args.trace_dir and cycle % args.trace_every == 0:
                             trace_path = os.path.join(
                                 args.trace_dir,
                                 f"{name}_q{q_cross:.4f}_r{r_omega:.4f}"
                                 f"_{pid}_{n_done:06d}.csv")
                             bridge.enable_trace(trace_path)
+                        else:
+                            # Tracing is armed by FILE, not by rollout, so an
+                            # untraced rollout would otherwise be appended to the
+                            # previous rollout's file -- five cells' tracks in one
+                            # CSV, which scores as one huge track against one plan
+                            # rather than failing.
+                            bridge.disable_trace()
                         try:
                             rec = drive(bridge, cfg, tvcfg, nom, args.seed,
                                         use_terrain=not args.no_terrain)
