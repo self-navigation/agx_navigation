@@ -1,251 +1,179 @@
-# Handover — 2026-08-13
+# Handover — 2026-08-14
 
-**Read this first, and keep it current.** It is the primary record of what we are
-doing; CLAUDE.md's "Current work" section is the cumulative record of what we
+**Read this first, and keep it current.** It is the primary record of what we
+are doing; CLAUDE.md's "Current work" section is the cumulative record of what we
 have *established*. This file describes **now**: what is running, what is
 half-finished, what to do next, and the reasoning behind decisions that have not
-yet become findings. Rewrite it rather than appending. (The rule is written down
-at the top of CLAUDE.md's "Current work" section.)
+yet become findings. Rewrite it rather than appending.
 
-**2026-08-13 in one line:** the tuned gains are **adopted and now defended** —
-the U-turn's notch turned out to be a **basin with walls** whose left edge is
-exactly where `q=0.276` sits, but moving into its interior (`q=0.32`) loses more
-on the S and zigzag than it wins, in `J` *and* in metres.
+**2026-08-14 in one line:** the tuned gains **generalise across 51 plans** — but
+as a *robustness trade*, not a uniform win — and the VM now has a **job queue**,
+so idle time between sessions gets absorbed instead of lost.
 
-**FIRST THING TONIGHT:** two runs finished unattended. Read them in this order —
-`libsweep` (does "TVLQR halves the deviation" hold across 51 plans, or only the
-7 we picked?), then the `r_omega` ladder (is `r=2.618` mid-basin, or on an edge
-like `q=0.276` turned out to be?). Both are scoreable in `J`; commands in
-"State" below.
+**FIRST THING NEXT SESSION:** `just queue-status`. Two jobs are queued (below).
+Read the `r_omega` ladder first, then the v2 trajectory library.
 
 ## What happened this session
 
-1. **Read the soak.** 4108 rollouts, 43 failed (1.0%, all `terrain patches failed
-   to spawn`, correctly invalidated), 21 processes, 14 complete cycles.
-   Aggregate per cycle: tuned **0.6686 ± 0.0882** vs default **1.1273 ± 0.1108**,
-   n=14 each, distributions essentially disjoint. Fourth independent measurement
-   of the tuned point (0.614 / 0.621 / 0.643 / 0.669).
-2. **Adopted the gains** — `TVLQRConfig.q_cross` 10.0 → 0.276, `r_omega` 0.25 →
-   2.618. Note `r_omega` going *up* contradicts its own docstring comment
-   ("angular correction is cheaper"); the comment is left with the correction
-   beside it, since the argument was sound and the measurement disagreed.
-3. **Started the mode-frequency ladder** (below) — the natural follow-up now that
-   the mechanism is known to be mode frequency.
+1. **Read the 51-plan library sweep** (finished unattended overnight). Full
+   tables in CLAUDE.md, "The library sweep". The headline: tuned wins 45/51 in
+   `J` and the aggregate holds in both currencies — but in metres the **default
+   wins 30 of 51 plans**, because the tuned gains concede ~3 cm on easy plans to
+   prevent blow-ups on hard ones. 9.99 m gained against 2.03 m lost.
+2. **Found why the `r_omega` ladder never ran.** `tools/queue_r_ladder.sh` had
+   `set -u` on across `source /opt/ros/jazzy/setup.bash`, which reads
+   `AMENT_TRACE_SETUP_FILES` while unset. It waited for its predecessor
+   correctly, logged `starting the r_omega ladder`, and died on the next line.
+   **The VM sat idle ~17 h.** Written into CLAUDE.md's VM section.
+3. **Built a job queue** (`tools/jobq.sh`, `just queue-*`, jobs in
+   `tools/jobs/`) to replace bespoke chain scripts. See below.
+4. **Built the trajectory generator** (queue item 8) — and its design changed
+   under validation, which is the interesting part. See below.
+5. **Measured `trim_pivot`'s threshold** instead of inheriting it: 0.30 m was
+   too small, 0.70 m is where the label counts plateau.
 
-4. **Ran the `q_cross` ladder** (1047 rollouts). The zigzag is a wide *threshold*
-   with the adopted point safely inside it; the **U-turn is a narrow notch**, and
-   the morning's "the gains do not control the U-turn" is retracted — at `q=0.1`
-   and `q=0.6` it is deterministically bad (sd 0.007 / 0.002), so it was never a
-   mixture. Only two sampled points hid a non-monotonic curve.
-5. **Traced the U-turn and looked at it.** All the deviation is produced at ONE
-   corner, in the last quarter of the run; the first 12.5 of 17 m track to within
-   0.25 m in all 30 rollouts. `max|e_cross|` there is a single-event metric.
-6. **Computed `J` for the first time**, on 70 freshly traced rollouts (7 shapes ×
-   2 arms × 5). Tuned wins **all seven** shapes in `J` versus 4 of 7 in
-   `max|e_cross|`; the three flips are shapes that conceded peak deviation and
-   bought back accumulated error, effort and terminal miss.
-7. **Restructured `figures/`** — dated directories, committed images, a README
-   index per date, `render.py` beside the pictures it makes. See
-   `figures/README.md` and `figures/2026-08-13/README.md`.
+## The queue is the new way to run long things
 
-Full tables in CLAUDE.md, "What 4065 rollouts say", "The `q_cross` ladder" and
-"Scoring in `J`". Raw rows in gitignored
-`soak_data/soak_20260813_twopoint.jsonl`.
+`just queue-start` once, then `just queue-add <job>.sh` at any time — including
+while another job runs. Jobs live in `tools/jobs/`, logs in `~/jobq/logs/`.
 
-## What the soak changed about our understanding
+```
+just queue-status              # runner, running/pending/done/failed, recent logs
+just queue-add 20_generate_v2_library.sh
+just queue-log 10_r_ladder     # a specific job's log
+just queue-stop                # stops the RUNNER; leaves the in-flight job alone
+```
 
-**Four of seven shapes are near-deterministic** (sd ≤ 0.09): straight, corner, S,
-loop. Those are plain level shifts — three won by the tuned gains, and the
-**corner genuinely won by the default** (0.226 vs 0.311 at sd 0.000). No noise
-anywhere in them.
+Two rules that are easy to get wrong:
 
-**Three are bimodal, and the gains move the bad mode's FREQUENCY, not its depth:**
-
-| shape | bad mode | tuned %bad | default %bad |
-| --- | --- | --- | --- |
-| zigzag | ~2.2–2.5 m | **2.6%** | **88.8%** |
-| tight V | ~0.78 m | 0.0% | 20.4% |
-| U-turn | ~2.5–2.9 m | 10.3% | 12.4% |
-
-**RETRACT "the tuned gains land the U-turn in its good mode."** 10.3% vs 12.4% is
-no difference at n≈285 — the gains do not control it at all. This also corrects
-yesterday's "33% good / 67% bad": that pooled 45 rollouts across *many* gain
-pairs, and at neither validated point is the bad mode remotely a majority.
-
-**The zigzag was never noisy.** Its sd of 0.2–0.5 in every earlier table was a
-~90/10 mixture of two reproducible outcomes sampled 3 times. That reframes every
-"run-to-run variance" number above it: on the bimodal shapes those are mixture
-widths, not measurement error, and the right estimator is a mode *frequency*
-(~100 samples) rather than a mean of 3. Mean-of-3 stays fine for **searching**;
-a per-shape **claim** now wants soak-scale n.
-
-## THE SOURCE DOCUMENTS CHANGE THE PRIORITIES (read 2026-08-13)
-
-The advisor's dissertation draft and the paper seed were read directly for the
-first time. Full findings in CLAUDE.md, "What the source documents actually say".
-The method is **SVCM**, `epsilon`-optimality is `J[u] <= J* + epsilon`, and
-**Theorem 1** gives a dichotomy: either some admissible control achieves
-acceptable `J` and the template-catalogue scheme is provably ε-optimal, or none
-does and the failure is physics rather than algorithm.
-
-Three of those findings reorder the work:
-
-- **We measure `max|e_cross|`; the framework is stated in `J[u] - J*`.** Never
-  computed. It is computable offline from `PlannerConfig`'s cost weights plus
-  recorded tracks — but **not** retroactively. `variance_probe.drive` reduces
-  each rollout to scalars, so the ~4000 soak rollouts cannot be rescored; only
-  fixture runs (`run_recorder` writes `_track.csv`) can. Capturing tracks for
-  future rollouts is a small change and should land before the next long soak.
-- **The `mu2` steering cliff is an instance of Theorem 1's second branch**, which
-  the dissertation asserts but never demonstrates. That upgrades the friction
-  sweep from side-quest to contribution.
-- **RL belongs at the costates / transversality conditions**, not on the wheel
-  commands. An independent reason the residual was the wrong object.
+- **A queued job must terminate on its own.** `just soak` runs until stopped;
+  a job that does that blocks everything behind it forever. `tools/jobs/` scripts
+  use a bounded batch count instead.
+- **The runner sources ROS, jobs do not.** That is what makes the `set -u` trap
+  unreachable rather than merely known. Do not add sourcing to a job script.
 
 ## Do this next, in order
 
-1. **Read `libsweep` — the 51-plan library sweep** (finished unattended; see
-   State for the command). This is the biggest open question for the thesis:
-   every corrector claim we have rests on **7 hand-picked plans**, and a reviewer
-   will ask whether it generalises. Tuned vs default, 3 repeats, traced.
-   **Report the AGGREGATE only.** n=3 cannot support a per-plan verdict on the
-   bimodal shapes — that is the single-sample ranking this project has retracted
-   several times. If the aggregate holds, that is the headline result; if it
-   does not, find out which plans break it and *then* soak those at n≈100.
-2. **Read the `r_omega` ladder** (queued behind the sweep; see State). `r` moved
-   0.25 → 2.618 as half of a **joint** move, so we know the pair is good and
-   nothing about whether 2.618 is mid-basin or on a wall. `q` turned out to sit
-   on a wall, which is exactly why this is worth asking. `q=0.276` is held fixed
-   so `r`'s effect is separable, mirroring how the `q` ladder held `r`.
-3. **Explain the U-turn's last corner.** The pictures narrow it from "17 m of
-   trajectory" to ~20 steps at one corner. Trace a few rollouts either side of the
-   notch edge (`q=0.4` vs `q=0.5`) and run `tuning/trace_diff.py`: `cmd*` moving
-   first means our controller, state moving first means the plant. ~10 min of sim.
-4. **Then reconsider the objective.** `J` is now computable and better behaved
-   than the 7-shape mean of `max|e_cross|`; the open question is whether to *tune*
+1. **Read the `r_omega` ladder** when it finishes (~1.8 h from 06:15 UTC on
+   2026-08-14). Question: `r` moved 0.25 → 2.618 as half of a **joint** move, so
+   we know the pair is good and nothing about whether 2.618 is mid-basin or on a
+   wall — `q` turned out to be on one. `q=0.276` is held fixed so `r` is
+   separable, mirroring the `q` ladder. Read it with:
+
+       scp -F ssh_config agx:~/soak_r_ladder.jsonl soak_data/
+       rsync -a -e "ssh -F ssh_config" agx:~/r_ladder_traces/ r_ladder_traces/
+       .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_r_ladder.jsonl \
+           --trace-root r_ladder_traces --plans traj_data
+
+2. **Read the v2 trajectory library** (queued behind the ladder). It screens
+   1200 pairs per map on floors 1 and 6, keeps the 500 best, and PMP-solves
+   them into `~/traj_data_v2/`, labelling each from the SOLVED plan. Then:
+   - fetch it, render a gallery, and **look at it** — the labels are a ranking
+     aid and the picture is the authority, which is how the last automatic
+     labelling was caught being wrong;
+   - stratify ~5 plans per shape into a **second** eval set in
+     `config/eval_trajectories.yaml`, *added* alongside the seven, not replacing
+     them. The seven stay the fast search set (mean-of-3 tuning must stay
+     ~105 s/eval); the stratified set is for **claims**. Swapping would silently
+     re-baseline every number in CLAUDE.md.
+   - then the real prize: **re-run the U-turn sub-ladder on 3-5 different
+     U-turns.** If the `q ∈ [0.276, 0.4]` basin is a property of U-turns it
+     reproduces; if it is a property of `floor_6_00031`, the "notch" story needs
+     rewriting and `q=0.276` wants re-examining.
+
+3. **Explain the U-turn's last corner** (unchanged from yesterday). All the
+   deviation is produced at ONE corner in the last quarter of the run. Trace
+   either side of the notch edge (`q=0.4` vs `q=0.5`) and run
+   `tuning/trace_diff.py`: `cmd*` moving first means our controller, state
+   moving first means the plant. ~10 min of sim.
+
+4. **Then reconsider the objective.** `J` is computable and better behaved than
+   the 7-shape mean of `max|e_cross|`; the open question is whether to *tune*
    against it, which needs `J` inside `objective.py` rather than as a post-hoc
-   script.
+   script. The library sweep strengthens the case: `J` and metres disagree on 24
+   of 51 plans.
+
 5. **Measure the re-join PMP solve time** before committing to any architecture.
    `200388e` added acados and `0454d3d` removed it, after which online mode was
-   documented as infeasible — so the "cannot solve online" premise is currently a
-   statement about scipy, not about the problem. The source's own justification
-   for offloading cites **DShot and PWM** frame budgets, i.e. a flight
-   controller, not a Jetson. The architecture is sound where its premise holds;
-   whether the premise holds *here* is unverified and cheap to check.
-6. **Do not re-run a wide search yet.**
+   documented as infeasible — so "cannot solve online" is currently a statement
+   about scipy, not about the problem. The source's justification for offloading
+   cites **DShot and PWM** frame budgets, i.e. a flight controller, not a Jetson.
 
-## For the write-up
+6. **Do not re-run a wide gain search yet.**
 
-A clean, self-contained story: three tuning runs, the first two winner's curse
-and documented as such, the third surviving validation — and then the validation
-correcting our own reading of *why* it won, twice in one day (mode frequency,
-then a notch). The methodological progression is itself the content.
+## The trajectory generator, and why its design changed
 
-Figures now live in dated, committed directories with a README index each —
-`figures/2026-08-13/` is the model, `figures/README.md` the convention. The
-paper-ready ones so far: `2026-08-13/02_uturn_modes.png` (the deviation is one
-corner), `03_ladder_modes.png` (threshold vs notch), `04_epsilon_vs_cross.png`
-(the objective change does not reverse the conclusion), and
-`archive/tvlqr_validation.png` (still the three-panel validation figure).
+`agx_planning/tuning/shape.py` (pure, 27 tests) + `tools/sample_eval_trajectories.py`.
+
+The point is not "more plans" — it is that **every per-shape claim rests on one
+plan of that shape**. The U-turn notch is 5906 rollouts of `floor_6_00031`.
+
+It was first written to screen candidates by predicted tortuosity (a cheap grid
+route, ranked by turning). **Validating the proxy against all 100 recorded plans
+killed that**, and the number is worth remembering:
+
+    length +0.99   straightness +0.96   total_abs_turn +0.30   sign_changes +0.34
+
+The cheap route knows *where* a plan goes and not *how* it turns. Smoothing the
+lattice staircase raises label agreement 15% → 52% — but only because both
+distributions shift toward STRAIGHT, i.e. agreement with no predictive power,
+which would have passed for success. So the screen ranks on **blocked line of
+sight, detour and pivot demand** (all downstream of the +0.96/+0.99 signals) and
+**shape is labelled from the solved plan.** Do not re-propose ranking candidates
+by predicted turning.
 
 ## State
 
 - **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
-  fresh 2026-08-12; the 5-day-old instance from 2026-08-07 was killed first.
-- **The U-turn sub-ladder is DONE and stopped** — 5906 usable rollouts, archived
-  on the VM as `~/soak_20260813_uturn_subladder.jsonl`, fetched into
-  `soak_data/`. Result in CLAUDE.md, "The U-turn basin has walls". Metres only:
-  it predates `--trace-dir` on `soak.py`, so it can never be scored in `J`.
-- **`~/sweep2.sh` — a two-part run, detached, log `/tmp/sweep2.log`.** Part 1
-  (7 shapes × `q` ∈ {0.276, 0.32, 0.40}, 5 repeats, traced) **finished**: results
-  `~/gaincheck.jsonl` + `~/gaincheck/<arm>/<shape>/`, fetched to `gaincheck/`,
-  scored into `epsilon_data/gaincheck_J.jsonl`. It is what kept `q=0.276`.
-  **Part 2, `libsweep`, was still running at 12:05** — every plan ≥10 m (51 of
-  them), tuned `0.276/2.618` vs default `10/0.25`, 3 repeats, traced to
-  `~/libsweep/<arm>/<shape>/`, rows in `~/libsweep.jsonl`. ~50 min from its
-  start. Read it with:
-
-      rsync -a -e "ssh -F ssh_config" agx:~/libsweep/ libsweep/
-      .venv/bin/python tools/score_sweep.py libsweep --plans traj_data \
-          --out epsilon_data/libsweep_J.jsonl --quiet
-
-- **An `r_omega` ladder is QUEUED BEHIND IT, on the VM itself**
-  (`tools/queue_r_ladder.sh`, launched detached; log `/tmp/r_ladder.log`, data
-  `~/soak_r_ladder.jsonl`, traces `~/r_ladder_traces`). It polls until
-  `sweep2.sh` exits, then runs a self-restarting soak: all 7 shapes, `q=0.276`
-  fixed, `r_omega` ∈ {1.0, 1.8, 2.618, 3.5, 5.0}, `--trace-every 5`.
-  **The chaining is deliberately on the VM, not in an ssh loop from the laptop**,
-  because the laptop closes and the VPN drops; nothing about it depends on a live
-  session. It waits on the *script* rather than "no python is running", since
-  sweep2 spawns a fresh `variance_probe` per trajectory and the naive check fires
-  in the gap between two of them and puts a second driver on the one sim.
-  Read it with (note `--from-jsonl`, since soak writes a flat trace dir):
-
-      rsync -a -e "ssh -F ssh_config" agx:~/r_ladder_traces/ r_ladder_traces/
-      scp -F ssh_config agx:~/soak_r_ladder.jsonl soak_data/
-      .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_r_ladder.jsonl \
-          --trace-root r_ladder_traces --plans traj_data
-
-  **Stop it with `just soak-stop`** (it is a `soak.py`, so that still matches),
-  and kill `queue_r_ladder.sh` too or it will restart the soak.
-- Archived on the VM from earlier: `~/soak_20260813_ladder.jsonl` (1047
-  rollouts, the 6-point q ladder) and
-  `~/soak_20260813_uturn_subladder_partial.jsonl` (83 rows, first sub-ladder
-  attempt — same conditions, safe to pool). Both fetched into `soak_data/`.
-- `~/jsweep.jsonl` + `~/jtraces/` — the 70-rollout traced sweep that produced the
-  first `J` numbers. Fetched locally into `jtraces/`, scored into `epsilon_data/`.
-- The finished two-point soak is archived on the VM as
-  `~/soak_20260813_twopoint.jsonl` (log `/tmp/soak_twopoint.log`) and locally in
-  gitignored `soak_data/`. Do not append the ladder to it — different conditions.
-- **Caches on the VM, all on the current plant and safe to resume onto:**
+  fresh 2026-08-12. The jobq runner is up.
+- **RUNNING: `10_r_ladder.sh`** — 7 shapes, `q=0.276` fixed, `r_omega` ∈
+  {1.0, 1.8, 2.618, 3.5, 5.0}, 6 batches × 175 = 1050 rollouts (n=30 per cell),
+  traced every 5th. Data `~/soak_r_ladder.jsonl`, traces `~/r_ladder_traces`,
+  log `~/jobq/logs/10_r_ladder.log`. Started 06:15 UTC, ~1.8 h.
+- **PENDING: `20_generate_v2_library.sh`** — screens 1200 pairs each on floors 1
+  and 6, keeps 500, PMP-solves into `~/traj_data_v2/`; candidates in
+  `~/candidates_v2.json`. Needs no Gazebo but is queued anyway (CPU-heavy, and
+  one thing at a time is the rule). Solve time per plan is **unmeasured** — if
+  the log shows it is slow, that number is itself worth recording, since it sets
+  the data budget for the RL re-planner.
+- **Fetched and scored this session:** `soak_data/libsweep.jsonl` (306 rows),
+  traces in `libsweep/`, scored into `epsilon_data/libsweep_J.jsonl`.
+- **The U-turn sub-ladder** (5906 rollouts) is archived on the VM as
+  `~/soak_20260813_uturn_subladder.jsonl` and fetched. Metres only — it predates
+  `--trace-dir` on `soak.py`, so it can never be scored in `J`.
+- Archived on the VM: `~/soak_20260813_ladder.jsonl` (q ladder, 1047),
+  `~/soak_20260813_twopoint.jsonl`, `~/gaincheck.jsonl` + `~/gaincheck/`,
+  `~/jsweep.jsonl` + `~/jtraces/`, `~/libsweep.jsonl` + `~/libsweep/`.
+- **Caches on the VM, current plant, safe to resume onto:**
   `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
   `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
   `~/local2d_20260812.jsonl`. All fetched into local `tune_data/`.
 - **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
   `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
   `PLANT_VERSION` will refuse them.
-- One grid evaluation failed with `terrain patches failed to spawn:
-  ['rl_patch_2']` and was correctly invalidated rather than averaged over
-  survivors, then re-run. The 2026-08-01 guard working as designed; worth knowing
-  it still fires occasionally.
 - Both worlds stay at **mu=1.0**. Slipperiness belongs in the wheel pair or a
   patch; a patch below 0.45 deliberately means "no steering".
 - **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
   made xacro fail to parse and the sim never came up.
-- **More than one Claude session can be live on this checkout at once, and on
-  2026-08-13 that cost an attribution.** Another session ran `git add -A` on a
-  tree it assumed was its own and committed this session's uncommitted `soak.py`
-  work inside `7339e59`, whose message describes only the ladder. Nothing was
-  lost and the history was deliberately NOT rewritten (rewriting under a
-  concurrent checkout is the worse hazard). Habit adopted by both: `git status`
-  before committing, and explicit paths on `git add` rather than `-A`.
-  Related: **do not wake other sessions to coordinate** — resuming one costs a
-  full context load, and the user is the one who can actually decide. Ask the
-  user instead, with `notify_and_wait`.
-- **`notify_and_wait` now takes a REPLY** (`tools/attention_mcp/server.py`).
-  It was a doorbell — `zenity --info`, returning a fixed acknowledgement — which
-  could not carry an answer, so it was never worth ringing and in practice never
-  was. It is now `zenity --entry` and returns what the user types. Two
-  gotchas fixed along with it: zenity has no wrap option and `--width` sets only
-  the window minimum, so long text rendered as one line wider than the screen
-  (it is now hard-wrapped at 88 columns), and the desktop notification truncates
-  at ~60 characters, so **the question must come first** in the message.
-  Its best use is the one no metric covers: asking the user to look at the sim on
-  Moonlight and say whether the robot is actually driving the plan or stuck.
+- **More than one Claude session can be live on this checkout at once.** On
+  2026-08-13 another session's `git add -A` committed this session's work under
+  an unrelated message. Habit: `git status` before committing, explicit paths on
+  `git add`. Do not wake other sessions to coordinate — ask the user.
+- **`notify_and_wait` takes a REPLY** (`tools/attention_mcp/server.py`), via
+  `zenity --entry`. The desktop notification truncates at ~60 characters, so
+  **the question must come first** in the message. Its best use is the one no
+  metric covers: asking the user to look at the sim on Moonlight and say whether
+  the robot is actually driving the plan.
 
-## Still open, unchanged from 2026-08-07
+## Still open, unchanged
 
 - `sand` is unbuilt and blocked on the friction-anisotropy question: under
   min-combination with an isotropic ground, any ground below the wheel's `mu2`
   gives ratio 1, so "slides but still steers" is inexpressible at low friction.
   A question for the advisor.
 - chi is a property of the **surface** (1.36 to 25.4 across the sweep), so it
-  cannot be a constant on a floor with ice/sand zones. See "Handling chi when it
-  is not constant" below.
-- The RL re-planner architecture below is decided but **not started**. The PMP
-  solver needs a "re-join from an arbitrary state onto the nominal path" boundary
-  condition, and its per-solve cost needs measuring early since it sets the data
-  budget.
+  cannot be a constant on a floor with ice/sand zones.
+- The RL re-planner architecture (below) is decided but **not started**.
 
 ## Architecture: RL as a rough re-planner, not a residual
 
@@ -265,84 +193,57 @@ sample (nominal plan, deviation state, local chi)
 ```
 
 Which kills, one for one, every open RL problem: no exploration ⇒ no `ent_coef`
-runaway (queue item 1); no bootstrapped value ⇒ no `critic_loss` divergence (item
-2); no reward shaping; each label is an exact optimum rather than a noisy return;
-and **data generation needs no Gazebo at all**, so it is CPU-parallel. Gazebo
-returns only for validation, on the existing eval set and comparison harness.
-
-Runtime layering, which preserves the project's philosophy (one expensive optimal
-solve offline, cheap corrections online — nothing online is an optimizer):
+runaway; no bootstrapped value ⇒ no `critic_loss` divergence; no reward shaping;
+each label is an exact optimum rather than a noisy return; and **data generation
+needs no Gazebo at all**, so it is CPU-parallel. Gazebo returns only for
+validation, on the existing eval set and comparison harness.
 
 | layer | rate | cost | job |
 | --- | --- | --- | --- |
 | PMP | once/goal, offline | seconds | optimal plan on the **nominal** surface |
-| RL re-planner | ~2–5 Hz | one MLP forward pass | reference has become infeasible ⇒ emit a short re-join |
+| RL re-planner | exceptional | one MLP forward pass | reference infeasible ⇒ emit a short re-join |
 | TVLQR | 50 Hz | precomputed gains | track whichever reference is active |
-
-The split is real rather than nominal: TVLQR handles small deviations around a
-*feasible* reference, which is what LQR is optimal at; when a zone makes the
-reference infeasible no gain matrix helps and the *reference* must change, which
-is structurally outside TVLQR's reach. PMP is the right thing to call there and
-is a ~20 s BVP solve, so the policy is precisely its fast approximation.
-
-Side benefits: a planner emits waypoints, so the **4-wheel-vs-twist deployability
-problem disappears** (this supersedes the 2026-08-04 "keep the 4-wheel residual"
-decision); RL no longer has to beat TVLQR to justify itself; and the existing
-residual work becomes a documented negative result, which is usable material for
-the intro the advisor asked for.
 
 **SETTLED 2026-08-07 (user):** corrections run **on top of the frozen PMP path**.
 A full PMP re-solve is reserved for situations that cannot be corrected around at
-all — the example given was an unexpected wall in the way. So the frozen plan is
-the default reference and re-planning is an exceptional event, not a control
-layer running at some rate. Two consequences worth holding onto:
+all — the example given was an unexpected wall. So the frozen plan is the default
+reference and re-planning is an exceptional event, not a control layer running at
+some rate. Two consequences:
 
 - the RL re-planner's job is bounded — *re-join the existing path*, never *find a
-  new one* — which is a much smaller function to approximate and keeps the
-  project's "one expensive optimal solve offline" philosophy intact;
+  new one* — a much smaller function to approximate;
 - a full re-solve needs a **trigger**, and "the reference is infeasible" is a
   different test from "we are far off it". Nothing implements that yet.
 
-Open items on this: the PMP solver needs a "re-join from an arbitrary state onto
-the nominal path" boundary condition (a BC change, not a new solver), and its
-per-solve cost over a 2–3 s horizon needs measuring early since it sets the data
-budget.
+Open: the PMP solver needs a "re-join from an arbitrary state onto the nominal
+path" boundary condition (a BC change, not a new solver), and its per-solve cost
+needs measuring early since it sets the data budget. **Job 20's log will give a
+first read on PMP solve cost** — not the re-join problem, but the same solver.
 
 ## Handling chi when it is not constant
 
-Decided today, and the user confirmed reactive is acceptable ("that matches our
-original idea"):
-
-1. **The planner keeps one nominal chi** — correct by definition, since "nominal"
-   means the surface it was measured on. Today's bug is that the constant was
-   measured on the wrong surface, not that it is a constant.
+1. **The planner keeps one nominal chi** — correct by definition, since
+   "nominal" means the surface it was measured on.
 2. **chi becomes a measured signal online** in the correction layers:
    `chi_hat = omega_ideal(from wheel commands) / omega_measured(gyro)`, i.e.
    `slip_ident`'s computation run recursively. Feed it to TVLQR (its
    linearization uses `track_eff = track * chi`) and to the policy as an input.
-   **Observability caveat:** undefined when `omega ≈ 0` — you cannot measure yaw
-   loss driving straight — so it needs a validity gate that holds the last value.
-   Free side effect: this is exactly what the known-wrong `wheel_odometry` yaw
-   integration and the EKF bias are missing.
+   **Observability caveat:** undefined when `omega ≈ 0`, so it needs a validity
+   gate that holds the last value.
 3. **Reactive by construction.** You learn the ice is slippery by sliding on it.
-   Pre-emptive routing needs perception (a camera recognising ice) and is out of
-   scope.
+   Pre-emptive routing needs perception and is out of scope. (User confirmed:
+   "that matches our original idea".)
 
 ## Measuring chi on the real robot
 
-Yes, and it is the intended use of `slip_ident` — it references the **gyro**, so
-nothing about the method is sim-specific (`calibrator.py` cannot substitute: it
-compares commands against `/odom` and both sides share the missing slip term).
-Two things to get right, both now in CLAUDE.md:
+The intended use of `slip_ident` — it references the **gyro**, so nothing about
+the method is sim-specific (`calibrator.py` cannot substitute: it compares
+commands against `/odom` and both sides share the missing slip term).
 
 - **`cmd_mode:=wheels` is sim-only.** On the real Scout use `cmd_mode:=twist`,
-  which yields `chassis_gain_omega` — chi folded together with the firmware's
-  conversion. Do not paste that into `PlannerConfig.slip_chi`.
+  which yields `chassis_gain_omega` — chi folded with the firmware's conversion.
+  Do not paste that into `PlannerConfig.slip_chi`.
 - Drive **arcs at several radii**, both directions. Spins are load-dependent and
   reported separately; do not fit chi to them.
-
-**This is how the sim gets an empirical anchor.** Measuring `mu` directly is
-awkward; measuring chi is not. Drive the real robot on linoleum, on the ice
-mock-up and on sand, then tune each sim profile until the *sim's* chi matches.
-Chi, not mu, is the quantity to match — it is what the model consumes.
-
+- **It cannot run against an unthrottled sim** — `make rl-sim` puts `/imu/data`
+  at ~3295 Hz and the node drops nearly every sample.
