@@ -307,8 +307,36 @@ class Candidate:
         return interest_score(self)
 
 
+def screen_score(c: Candidate) -> float:
+    """Rank a candidate from a PREDICTED route, using only what a cheap route
+    predicts reliably.
+
+    MEASURED 2026-08-14, against all 100 recorded PMP plans: a clearance-weighted
+    grid route predicts a plan's `length` at corr +0.99 and its `straightness` at
+    +0.96, but its `total_abs_turn` at only +0.30 and `sign_changes` at +0.34 --
+    and smoothing the lattice staircase out does not help (corr +0.32 at best,
+    while label agreement rises 15%->52% only because both distributions shift
+    toward STRAIGHT). So the cheap route knows WHERE the plan goes and not HOW it
+    turns.
+
+    Therefore this deliberately omits every turning term. Screening on predicted
+    tortuosity would rank on a signal that is ~uncorrelated with the real thing,
+    and would do it invisibly. Shape is instead labelled from the SOLVED plan,
+    where the descriptors are real -- see `interest_score`.
+    """
+    return (
+        (1.0 if c.blocked else 0.0)
+        + min(c.detour - 1.0, 1.5)
+        + min((c.start_pivot + c.goal_pivot) / math.pi, 1.0)
+    )
+
+
 def interest_score(c: Candidate) -> float:
     """Rank candidates by how much of a problem the planner was given.
+
+    Applies to a SOLVED plan, whose descriptors are real. For ranking a
+    candidate before its solve, use `screen_score` -- the turning terms below
+    are not predictable from a cheap route (see there).
 
     Deliberately a sum of bounded terms rather than a product: a product lets
     any single zero term veto a candidate, and we want e.g. a genuinely tortuous

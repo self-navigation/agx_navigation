@@ -1040,6 +1040,113 @@ one trajectory, however many samples back it. The sub-ladder was still worth the
 night — it explains *why* 0.276 looks noisy on the U-turn — but the decision was
 always the aggregate's to make.
 
+### The library sweep: it generalises, but as a ROBUSTNESS TRADE (2026-08-14)
+
+Every corrector claim to date rested on 7 hand-picked plans, so the obvious
+reviewer question was whether they generalise. **They do.** 51 plans (every plan
+>= 10 m, chosen by a mechanical rule rather than by us), tuned `0.276/2.618` vs
+default `10/0.25`, 3 repeats, traced. 306 rollouts, 4 invalidated by the
+patch-spawn guard, 302 usable. Rows in `soak_data/libsweep.jsonl`, scored into
+`epsilon_data/libsweep_J.jsonl`.
+
+| | tuned | default | tuned wins |
+| --- | --- | --- | --- |
+| mean `max\|e_cross\|` | **0.449** | 0.605 | 21/51 |
+| median `max\|e_cross\|` | 0.255 | **0.214** | |
+| mean `J` | **10.40** | 42.26 | **45/51** |
+| median `J` | **6.64** | 8.14 | |
+| mean `final_err` | **0.294** | 0.387 | |
+
+**The aggregate holds in both currencies, but in metres the default wins the
+MAJORITY of plans (30/51) while losing the aggregate badly.** Split by
+difficulty, that resolves completely:
+
+| bucket | n | tuned | default | tuned wins |
+| --- | --- | --- | --- | --- |
+| easy (default < 0.3 m) | 37 | 0.213 | **0.182** | 11/37 |
+| medium (0.3-1.0) | 3 | 0.791 | **0.589** | 0/3 |
+| hard (> 1.0) | 11 | **1.150** | 2.032 | **10/11** |
+
+Totals: 9.99 m gained, 2.03 m lost, worst single regression 0.282 m. So the
+tuned gains **trade ~3 cm of precision on easy plans for preventing blow-ups on
+hard ones** — and `J` scores that trade as a near-sweep (45/51), because the
+easy-plan "losses" in peak deviation are paid back in accumulated error, control
+effort and terminal miss. `floor_6_00031` alone goes 1042.88 -> 40.73 in `J`.
+
+**Two things to carry into the write-up.** First, the honest claim is not "TVLQR
+tuning halves deviation everywhere" — it is a robustness trade that pays on hard
+trajectories and is ~free on easy ones. Second, **the 7-shape set is enriched for
+hard plans** (11 of 51 library plans are hard; most of our seven are), which is
+why it reads 0.67 vs 1.13 where the library reads 0.449 vs 0.605. That is the
+right design for a corrector test set, but it must be described as one and not
+as a representative sample of the robot's work.
+
+**`J` and `max|e_cross|` disagree on 24 of 51 plans while agreeing on the
+aggregate direction.** The 2026-08-13 gaincheck found them agreeing on the
+aggregate too; at n=51 the per-plan divergence is much larger than that suggested.
+
+### Generating evaluation trajectories by construction (2026-08-14)
+
+Queue item 8, built. Motivation is sharper than "more plans": **every per-shape
+claim rests on exactly ONE plan of that shape.** The U-turn notch is 5906
+rollouts of `floor_6_00031`; nothing distinguishes a property of U-turns from a
+property of that U-turn, and the sub-ladder's near-vertical walls make that a
+real risk rather than a pedantic one.
+
+`agx_planning/tuning/shape.py` (pure, 27 tests) holds the descriptors and the
+screen; `tools/sample_eval_trajectories.py` is the offline driver.
+
+**Measured: `trim_pivot`'s inherited 0.30 m is too small.** Real plans turn ~2.8
+rad within their first ~0.7 m of travel — a very tight arc, not a pure spin, so
+arc-length resampling does not remove it on its own. Sweeping the threshold over
+the 100-plan library moves the label counts until 0.7 m and then not at all
+(STRAIGHT/CORNER 41/25 at 0.30, 64/16 at 0.70, 65/16 at 2.00). The plateau is
+the evidence, and 64 STRAIGHT is what the gallery actually shows.
+`PIVOT_TRAVEL_M = 0.70`. (`tools/plot_trajectory_gallery.py` keeps 0.30 on
+purpose: display-only, and its figures are committed.)
+
+**The cheap route predicts WHERE a plan goes, not HOW it turns** — validated
+against all 100 recorded plans before being trusted, which is the whole reason
+the screen is not what it was first written to be:
+
+| descriptor | corr(PMP, predicted) |
+| --- | --- |
+| `length` | **+0.99** |
+| `straightness` | **+0.96** |
+| `total_abs_turn` | +0.30 |
+| `sign_changes` | +0.34 |
+
+Smoothing the 8-connected lattice staircase does not rescue it (+0.32 at best).
+Label agreement rises 15% -> 52% with smoothing, but **only because both
+distributions shift toward STRAIGHT** — agreement without predictive power, and
+exactly the kind of number that would have looked like success. **So screening
+on predicted tortuosity is out**; `screen_score` ranks on blocked line of sight,
+detour and pivot demand only, and shape is labelled afterwards from the SOLVED
+plan. Do not re-propose ranking candidates by predicted turning.
+
+The two screening constraints, both the user's: the straight line start->goal
+must be **blocked** (a distance filter cannot work — a long straight corridor
+passes it perfectly, which is how the current library became ~64% straight
+lines), and the start/goal **headings force in-place rotation**, which is the
+realistic case for a real deployment.
+
+### Serializing VM work: the job queue (2026-08-14)
+
+`tools/jobq.sh` + `just queue-{start,add,status,log,stop}` and a job library in
+`tools/jobs/`. A directory queue with one long-lived runner; jobs can be added
+at any time, including mid-run, so the idle stretch between a finished run and
+the next session gets absorbed instead of lost. **A queued job must terminate on
+its own** — a `while true` soak blocks everything behind it, so `tools/jobs/`
+scripts use a bounded batch count.
+
+It replaces per-run chain scripts, which failed twice over: they encode one
+successor, and `queue_r_ladder.sh` died on `set -u` + ROS's `setup.bash` after
+waiting correctly for its predecessor, idling the VM ~17 h. **The runner sources
+ROS itself**, so that trap is unreachable by construction rather than by anyone
+remembering. Its liveness check takes the lock rather than grepping the process
+table — a `pgrep -f` pattern matches the ssh wrapper asking the question, so it
+always reported a runner alive.
+
 ### Realistic friction, IMU gating, and repeats (2026-08-04)
 
 Three changes landed together. **They re-baseline everything: no number measured
@@ -1415,8 +1522,11 @@ default does not.
    meshes independently. The one thing that must be got right first:
    `just check-sim` currently refuses to launch if *any* Gazebo lives, and it has
    to become per-partition without losing its teeth.
-8. **Generate interesting trajectories by construction, instead of hoping for
-   them** (user's idea, 2026-08-02). The 100 recorded plans came from random
+8. ~~Generate interesting trajectories by construction.~~ **BUILT 2026-08-14**,
+   see "Generating evaluation trajectories by construction". The A*-as-proxy
+   caveat below turned out to be the important part: the proxy predicts route
+   *position* well and *turning* not at all, so shape is labelled from the
+   solved plan instead. Original note: The 100 recorded plans came from random
    goals, and it shows: ~20 have any shape at all, all on page 1 of the gallery,
    and pages 3-5 are straight lines. So the evaluation set is capped by what the
    library happens to contain. Proposed instead: sample start/goal pairs from the

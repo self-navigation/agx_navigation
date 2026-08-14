@@ -278,3 +278,23 @@ def test_stratify_returns_a_short_bucket_rather_than_padding():
     picked = stratify(cands, per_shape=3)
     assert len([c for c in picked if c.shape == "S"]) == 1
     assert len([c for c in picked if c.shape == "CORNER"]) == 3
+
+
+# ----------------------------------------------------------- screen_score
+
+
+def test_screen_score_ignores_turning():
+    """A cheap route predicts turning at corr ~+0.3, so screening must not use
+    it. Two candidates differing ONLY in predicted shape must rank equally."""
+    from agx_planning.tuning.shape import screen_score
+    straight_c = make_candidate(desc=descriptors(straight()))
+    wiggly = make_candidate(desc=descriptors(s_curve()))
+    assert screen_score(straight_c) == pytest.approx(screen_score(wiggly))
+
+
+def test_screen_score_uses_the_reliable_signals():
+    from agx_planning.tuning.shape import screen_score
+    base = make_candidate()
+    assert screen_score(make_candidate(blocked=True)) > screen_score(base)
+    assert screen_score(make_candidate(detour=1.5)) > screen_score(base)
+    assert screen_score(make_candidate(start_pivot=math.pi)) > screen_score(base)
