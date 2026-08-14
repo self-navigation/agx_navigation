@@ -394,6 +394,15 @@ Non-obvious facts about that box, all of which cost time to work out:
   kill the remote processes, which then fight the next launch (`pgrep -af`
   before relaunching). A fixture run is ~90 s: ~10 s discovery, ~20 s planning,
   ~15-60 s driving.
+- **Never leave `set -u` on across `source .../setup.bash`.** ROS's setup scripts
+  read `AMENT_TRACE_SETUP_FILES` while it is unset, so the script exits on that
+  line. Wrap the sourcing in `set +u` / `set -u` rather than dropping `set -u`.
+  This has cost time twice; on 2026-08-13 it killed `tools/queue_r_ladder.sh`
+  *after* it had correctly waited for the in-flight sweep and logged `starting
+  the r_omega ladder`, and the VM sat idle ~17 h before anyone read the log.
+  Corollary for any detached overnight job: **make the log print progress after
+  the setup, not just an intent line before it.** An "I am starting X" line that
+  is the last line in a log means the failure is in the next few statements.
 - **`packages.osrfoundation.org` is throttled to ~6 KB/s** from the VM (other
   mirrors run at ~800 KB/s), so `apt install gz-harmonic` stalls indefinitely.
   Workaround: `apt-get install --print-uris`, fetch the osrfoundation `.deb`s from

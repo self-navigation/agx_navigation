@@ -538,3 +538,43 @@ sim-console traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.npz': sync
         && source install/setup.bash \
         && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
         python3 -m agx_planning.tuning.sim_console --trajectory {{traj}}'
+
+# ---------------------------------------------------------------------------
+# Job queue -- serialize long runs on the VM's single sim
+#
+# The VM has one Gazebo and the user checks in occasionally, so the expensive
+# resource is the idle time between a finished run and the next session. The
+# queue absorbs it: drop a job in at any moment, including while another runs,
+# and it starts on its own when the box frees up. See tools/jobq.sh.
+# ---------------------------------------------------------------------------
+
+# Install jobq.sh + the job library on the VM and start the runner (idempotent).
+queue-start: sync
+    -{{_ssh}} 'mkdir -p ~/jobq/{pending,running,done,failed,logs}; \
+        install -m755 {{remote}}/tools/jobq.sh ~/jobq.sh; \
+        if ~/jobq.sh check; then \
+            echo "runner already up"; \
+        else \
+            setsid nohup ~/jobq.sh runner >>/tmp/jobq.log 2>&1 </dev/null & \
+            sleep 2; echo "runner started"; \
+        fi'
+    @just queue-status
+
+# Queue a job from tools/jobs/ (e.g. `just queue-add 10_r_ladder.sh`).
+# Safe while another job is running -- that is the point.
+queue-add job: sync
+    -{{_ssh}} 'cp {{remote}}/tools/jobs/{{job}} ~/jobq/pending/{{job}} && \
+        echo "queued {{job}}"'
+    @just queue-status
+
+queue-status:
+    -{{_ssh}} '~/jobq.sh status'
+
+queue-log job='':
+    -{{_ssh}} 'if [ -n "{{job}}" ]; then tail -60 ~/jobq/logs/{{job}}.log; \
+        else tail -40 /tmp/jobq.log; fi'
+
+# Stop the runner. Does NOT kill the job in flight -- that is `just soak-stop`
+# or a targeted pkill, deliberately, so stopping the queue never costs a run.
+queue-stop:
+    -{{_ssh}} 'pkill -u "$(id -u)" -f "jobq.sh runner" && echo "runner stopped (in-flight job left alone)"'
