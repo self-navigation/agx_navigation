@@ -41,8 +41,14 @@ LOG=/tmp/r_ladder.log
     echo "[queue] sweep2 done at $(date -Is); starting the r_omega ladder"
 
     cd "$REMOTE" || exit 1
+    # ROS's setup scripts read unset variables (AMENT_TRACE_SETUP_FILES), so
+    # `set -u` kills the script the instant it gets here. On 2026-08-13 that
+    # cost a whole night: the queue waited correctly, logged "starting", and
+    # died on the next line. Drop -u across the sourcing only.
+    set +u
     source /opt/ros/jazzy/setup.bash
     source install/setup.bash
+    set -u
     export PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH
 
     # Self-restarting, like `just soak`: each batch is a fresh process, which
