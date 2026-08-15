@@ -17,9 +17,13 @@ judgement.
 Gazebo partition and DDS domain, verified live beside a running job — see
 "Parallel sims are done" below. **The demo is no longer blocked by the queue.**
 
-**FIRST THING NEXT SESSION:** score job 50 — its data is already fetched
-(`soak_data/soak_broad_gains.jsonl`, 720 rows, + `broad_gains_traces/`), it just
-has not been read yet.
+**And job 50 answered the generality question: the MOVE off the old default
+holds on 40 plans we did not choose, the adopted VALUE 0.276 does not.** Jobs
+70/80/90 are queued to resolve where in the plateau to sit.
+
+**FIRST THING NEXT SESSION:** `just queue-status`, then fetch and score whichever
+of 70/80/90 finished — each one's fetch-and-score line is under "How to read
+them" below. `TVLQRConfig` is deliberately unchanged until job 70 is read.
 
 ## What the two overnight jobs said
 
@@ -97,8 +101,19 @@ of them done by ~19:00 UTC.
 | `80_broad_r_ladder.sh` | **r ∈ {0.25, 0.5, 1.0, 2.618, 5.0} at q=1.5**, same 40 plans, mean-of-3, 600 rollouts | ~20 min on 4 workers |
 | `90_validate_tuned_J_broad.sh` | job 60's winner **+ 0.276/2.618 + 1.5/2.618 as in-process controls**, 40 plans, mean-of-5 | ~25 min on 3 workers |
 
-Outputs: `~/soak_broad_q.jsonl` + `~/broad_q_traces/`, `~/soak_broad_r.jsonl` +
-`~/broad_r_traces/`, `~/soak_validate_J_broad.jsonl` + `~/validate_J_broad_traces/`.
+Fetch and score each (same shape for all three):
+
+    scp -F ssh_config agx:~/soak_broad_q.jsonl soak_data/
+    rsync -a -e "ssh -F ssh_config" agx:~/broad_q_traces/ broad_q_traces/
+    .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_broad_q.jsonl \
+        --trace-root broad_q_traces --plans traj_data_v2 --out epsilon_data/broad_q_J.jsonl
+
+…and likewise `soak_broad_r.jsonl` / `broad_r_traces/` and
+`soak_validate_J_broad.jsonl` / `validate_J_broad_traces/`. **`score_sweep.py`'s
+own MEAN row is ARITHMETIC**, which is the wrong reducer for `J` — aggregate the
+scored JSONL yourself with the geometric mean per `objective.DEFAULT_HOW`, and
+compare arms with a paired sign test over plans rather than by eyeballing means
+(that is what separated signal from noise in job 50).
 
 **How to read them.**
 
