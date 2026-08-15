@@ -36,7 +36,7 @@ sync:
         --exclude='log/' --exclude='.*.stamp' --exclude='__pycache__/' \
         --exclude='*.pyc' --exclude='*.egg-info/' --exclude='acados/' \
         --exclude='run_data/' --exclude='tune_data/' --exclude='soak_data/' \
-        --exclude='jtraces/' --exclude='uturn_traces/' --exclude='gaincheck/' \
+        --exclude='jtraces/' --exclude='*_traces/' --exclude='gaincheck/' \
         --exclude='libsweep/' --exclude='epsilon_data/' --exclude='sweep_data/' \
         ./ {{host}}:{{remote}}/
 
@@ -109,14 +109,28 @@ remote-detach cmd:
 # runtime_corrector trio is still alive and subscribed. The next fixture starts
 # clean by this check and then stacks a second planner on the first, each
 # planning from a different odom belief. So look for workspace nodes too.
-check-sim:
-    @{{_ssh}} 'if pgrep -u "$(id -u)" -a -f . 2>/dev/null | grep -v "pgrep\|grep\|rviz" \
-            | grep -E "gz[ -]sim|{{remote}}"; then \
-        echo; \
-        echo "REFUSING TO LAUNCH: Gazebo and/or workspace ROS nodes are already"; \
-        echo "running (see above). Stop them first:  just kill-sim"; \
-        exit 1; \
-      else echo "process table clear -- no Gazebo, no workspace ROS nodes"; fi'
+#
+# SCOPED BY PARTITION since parallel sims landed (2026-08-15). The check asks
+# "is anything running in the partition I am about to launch into", not "is
+# anything running at all" -- otherwise worker 2 could never start while worker
+# 1 was up, and the whole point of the partitions is that it safely can. The
+# default argument is `default`, the unnamespaced partition every `just
+# remote-sim` / `remote-fixture` uses, so the guard is exactly as strict as
+# before for anyone not passing a worker.
+#
+# It shells out to tools/kill_stack.sh in `list` mode rather than running its
+# own pgrep, so the guard and the sweep cannot disagree about what counts as a
+# conflicting process -- and it inherits kill_stack's provenance matching, which
+# catches launch children whose command line mentions nothing recognisable.
+#
+# Refuse to launch if anything is already running in the given partition.
+check-sim partition='default':
+    @{{_ssh}} 'bash -s {{remote}} list {{partition}}' < tools/kill_stack.sh \
+      || (echo; \
+          echo "REFUSING TO LAUNCH: Gazebo and/or workspace ROS nodes are already"; \
+          echo "running in partition '{{partition}}' (see above). Stop them with:"; \
+          echo "    just kill-sim {{partition}}"; \
+          exit 1)
 
 # Kill Gazebo AND every ROS 2 node of this workspace on the server, then confirm
 # the table is actually clear. Use this instead of `tmux kill-server`, which
@@ -128,8 +142,17 @@ check-sim:
 # process provenance (the workspace in the process's own environment), so new
 # packages are covered without editing anything, and it spares RViz, which only
 # subscribes and is the only view of a headless sim.
-kill-sim:
-    -@{{_ssh}} 'bash -s {{remote}}' < tools/kill_stack.sh
+#
+# The partition argument defaults to `all`, NOT to `default`: someone typing
+# `just kill-sim` after a bad night wants everything gone, and needing to
+# enumerate partitions to clean up is the kind of step that gets skipped.
+#   just kill-sim              # everything, every worker
+#   just kill-sim default      # only the unnamespaced sim
+#   just kill-sim agx1         # only worker 1
+#
+# Kill Gazebo and every workspace ROS node, in one partition or all of them.
+kill-sim partition='all':
+    -@{{_ssh}} 'bash -s {{remote}} kill {{partition}}' < tools/kill_stack.sh
 
 # ---------------------------------------------------------------- training
 
@@ -140,12 +163,20 @@ kill-sim:
 # training wants), rl_corrector_rt.world runs at 1x. Anything that DRIVES the
 # robot and MEASURES the response needs 1x -- at 33x the IMU publishes at ~3 kHz
 # and a normal subscriber drops almost all of it. See `just remote-chi`.
-remote-sim world='rl_corrector.world': sync check-sim
+#
+# `worker` (1-9) puts the sim in its own Gazebo partition and DDS domain, so
+# several can run at once -- `just remote-sim rl_corrector.world 1`. The tmux
+# window and logfile are suffixed to match, since two sims writing /tmp/rl-sim.log
+# would interleave into something unreadable. Leave it empty for the single
+# unnamespaced sim that every measurement to date used.
+#
+# Start the headless RL sim, optionally in its own partition.
+remote-sim world='rl_corrector.world' worker='': sync (check-sim if worker == "" { "default" } else { "agx" + worker })
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
-        tmux kill-window -t {{session}}:sim 2>/dev/null; \
-        tmux new-window -d -t {{session}} -n sim \
-        "cd {{remote}} && make rl-sim HEADLESS=true USE_GPU_RENDER_ACCELERATION=false WORLD={{world}} 2>&1 | tee /tmp/rl-sim.log"'
-    @echo "sim ({{world}}) starting -- follow it with:  just remote-log sim"
+        tmux kill-window -t {{session}}:sim{{worker}} 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n sim{{worker}} \
+        "cd {{remote}} && make rl-sim WORKER={{worker}} HEADLESS=true USE_GPU_RENDER_ACCELERATION=false WORLD={{world}} 2>&1 | tee /tmp/rl-sim{{worker}}.log"'
+    @echo "sim ({{world}}, worker '{{worker}}') starting -- follow it with:  just remote-log sim{{worker}}"
 
 # Identify slip_chi against whatever sim is currently up. REQUIRES the real-time
 # world (`just remote-sim rl_corrector_rt.world`) -- slip_ident integrates the
@@ -163,12 +194,18 @@ remote-chi:
 
 # Needs `remote-sim` up for every phase except p0 (kinematic, no Gazebo).
 # Run a training phase in tmux, e.g. `just remote-train p1`.
-remote-train target='p1': sync
+#
+# `worker` must MATCH the sim's -- a trainer in the default domain cannot see
+# worker 1's sim at all, and rather than failing loudly it sits waiting for
+# /clock. If a phase seems to hang before the first episode, check that first.
+#
+# Run a training phase in tmux, against the sim of the matching worker.
+remote-train target='p1' worker='': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
-        tmux kill-window -t {{session}}:train 2>/dev/null; \
-        tmux new-window -d -t {{session}} -n train \
-        "cd {{remote}} && make {{target}} TB=runs 2>&1 | tee /tmp/rl-train.log"'
-    @echo "training started -- follow it with:  just remote-log train"
+        tmux kill-window -t {{session}}:train{{worker}} 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n train{{worker}} \
+        "cd {{remote}} && make {{target}} WORKER={{worker}} TB=runs 2>&1 | tee /tmp/rl-train{{worker}}.log"'
+    @echo "training started (worker '{{worker}}') -- follow it with:  just remote-log train{{worker}}"
 
 # The controller test rig (`make fixture`): vec-pmp on the pre-baked map, no
 # SLAM and no rendering sensors. GUI on, so it can be watched over Moonlight.
@@ -178,26 +215,42 @@ remote-train target='p1': sync
 #                                          # geometry from slip excursions
 #   just remote-fixture tvlqr true amcl    # localize off the lidar instead of
 #                                          # ground truth (slower: needs sensors)
-remote-fixture corrector='tvlqr' patches='true' localization='truth': sync check-sim
+#
+# `worker` (1-9) runs the fixture in its own partition + DDS domain, so two can
+# run at once. Both GUIs land on the same X display and Moonlight streams the
+# whole desktop, so you genuinely can watch them side by side -- which is the
+# cheapest way to see two correctors, or two initial conditions, diverge on the
+# same plan. The cost is GPU: each GUI renders the full world through vglrun.
+#   just remote-fixture tvlqr true truth 1
+#   just remote-fixture identity true truth 2   # side by side with the above
+#
+# Start the controller test rig with a GUI, optionally in its own partition.
+remote-fixture corrector='tvlqr' patches='true' localization='truth' worker='': sync (check-sim if worker == "" { "default" } else { "agx" + worker })
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
-        tmux kill-window -t {{session}}:fixture 2>/dev/null; \
-        tmux new-window -d -t {{session}} -n fixture \
-        "cd {{remote}} && DISPLAY=:0 vglrun -d egl0 make fixture CORRECTOR={{corrector}} \
+        tmux kill-window -t {{session}}:fixture{{worker}} 2>/dev/null; \
+        tmux new-window -d -t {{session}} -n fixture{{worker}} \
+        "cd {{remote}} && DISPLAY=:0 vglrun -d egl0 make fixture WORKER={{worker}} CORRECTOR={{corrector}} \
          SURFACE_PATCHES={{patches}} LOCALIZATION={{localization}} \
-         HEADLESS=false USE_GPU_RENDER_ACCELERATION=false 2>&1 | tee /tmp/fixture.log"'
-    @echo "fixture starting -- follow it with:  just remote-log fixture"
+         HEADLESS=false USE_GPU_RENDER_ACCELERATION=false 2>&1 | tee /tmp/fixture{{worker}}.log"'
+    @echo "fixture starting (worker '{{worker}}') -- follow it with:  just remote-log fixture{{worker}}"
 
 # Attach a Gazebo GUI to the already-running headless server, on the server's
 # desktop (reach it with Moonlight). Open and close it as often as you like --
 # `gz sim -s` (the server) and `gz sim -g` (the GUI) are separate processes, so
 # closing the window leaves physics stepping untouched. vglrun renders on the
 # V100; without it the GUI falls back to llvmpipe and steals training cores.
-gui:
+#
+# Pass the sim's worker id to watch a namespaced sim -- `just gui 1`. Without
+# it the GUI joins the default partition and shows an empty world next to a
+# perfectly healthy worker sim, which looks like the sim died.
+#
+# Attach a Gazebo GUI to a running headless sim, on the server's desktop.
+gui worker='':
     {{_ssh}} -n 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:gui 2>/dev/null; \
         tmux new-window -d -t {{session}} -n gui \
         "cd {{remote}} && source /opt/ros/jazzy/setup.bash && source install/setup.bash && \
-         DISPLAY=:0 vglrun -d egl0 gz sim -g 2>&1 | tee /tmp/gz-gui.log"'
+         DISPLAY=:0 vglrun -d egl0 tools/with-worker {{quote(worker)}} gz sim -g 2>&1 | tee /tmp/gz-gui.log"'
     @echo "GUI opening on the server desktop -- connect with Moonlight."
 
 # Close the Gazebo GUI, leaving the server (and training) running.
