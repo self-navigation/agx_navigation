@@ -1237,6 +1237,73 @@ is the **second** automatic shape labeller to mislead here (the first:
 making any per-shape claim**; using a label to *stratify* a sample is fine, since
 that only needs correlation with geometry, not a correct name.
 
+### The broad gain check: the move off the default holds, the adopted VALUE does not (2026-08-15)
+
+**The generality question is now answered on plans we did not choose.** 40 plans
+from the constructed v2 library (`tools/select_broad_eval.py`, stratified on
+label and length, 8.7–36.0 m, **none of them among the seven**), six gain pairs,
+3 repeats, every rollout traced so both currencies are available. 720 rollouts,
+9 invalidated by the patch-spawn guard (1.2%), **711 usable**.
+`soak_data/soak_broad_gains.jsonl` → `epsilon_data/broad_gains_J.jsonl`.
+
+Per-plan mean-of-3, then aggregated over the 40 (`J` geometric, per
+`objective.DEFAULT_HOW`):
+
+| gains | geo `J` | mean max\|e_cross\| | mean `final_err` | miss rate (>0.5 m) |
+| --- | --- | --- | --- | --- |
+| **q=0.276 r=2.618 (adopted)** | 11.82 | 0.656 | 0.378 | 20.0% |
+| q=0.276 r=1.0 | 12.52 | 0.627 | 0.366 | 22.0% |
+| q=0.6 r=2.618 | **11.39** | 0.646 | 0.292 | 18.1% |
+| q=1.5 r=2.618 | 12.27 | 0.599 | **0.265** | **11.8%** |
+| q=4 r=2.618 | 14.08 | 0.688 | 0.328 | 14.2% |
+| q=10 r=0.25 (old default) | 17.59 | **0.575** | 0.314 | 15.3% |
+
+**1. The move off the old default is CONFIRMED, and this is the strongest
+version of that claim we have.** In `J` the old default is **1.49x worse** than
+the adopted point and wins only **5 of 40** plans (paired sign test p<0.001), on
+a plan set chosen mechanically and disjoint from the one the gains were tuned
+on. Everything the seven-plan work concluded about *moving* survives.
+
+**2. The adopted VALUE does not survive.** Paired against every other arm, `q=0.276`
+is the **worst of the six in metres** — every other arm beats it at p<=0.038,
+*including the old default* (0.79x, 29/40) — and it has the **worst miss rate**
+of all six. In `J` it is statistically indistinguishable from everything between
+q=0.276 and q=4 (p = 0.27 to 0.88). So the plateau is real and broad, and 0.276
+sits on its bad edge: it buys nothing in `J` and pays in both peak deviation and
+arrival.
+
+**3. `q≈1.5, r=2.618` dominates the adopted point** — `J` tied (+3.8%, p=0.88),
+max|e_cross| 0.917x (p=0.038), `final_err` 0.680x (p=0.006), miss rate 11.8% vs
+20.0%. Not adopted yet: it wants one confirmatory mean-of-5 at the three
+candidate points before `TVLQRConfig` moves again (see handover).
+
+**4. Where the default actually loses is CONTROL EFFORT, and that is the SVCM
+prescription showing up as a measurement.** Mean `J` split over the 40 plans:
+
+| gains | tracking | control | terminal |
+| --- | --- | --- | --- |
+| q=0.276 r=2.618 | 13.18 | 2.22 | 3.11 |
+| q=0.6 r=2.618 | 12.16 | **2.07** | 1.57 |
+| q=1.5 r=2.618 | 13.52 | 2.43 | **1.47** |
+| q=10 r=0.25 | 15.81 | **6.37** | 3.38 |
+
+The default achieves slightly *tighter peak tracking* while spending **~3x the
+control** to do it. That is exactly the trade p. 78 prescribes (a larger `R` in
+low traction), and it is why the two metrics rank the arms oppositely rather
+than noisily.
+
+**5. The metres-vs-`J` disagreement REVERSED direction from the library sweep,
+and the plan population is why.** The 51-plan sweep had the tuned gains gaining
+9.99 m and losing 2.03 m; here they gain 3.75 m and lose **7.02 m**, including
+**15 of 15 easy plans**. The v2 library is 100% turning shapes by construction,
+so this set has far fewer easy plans to lose cheaply on. **Neither sweep is
+"the" answer in metres** — which is itself the argument for scoring in `J`.
+
+**Consequence for tuning: a search on the seven plans cannot resolve `q` at
+all.** `J` is flat across a 15x range of `q` on independent plans, so any
+seven-plan optimum inside that range is an artifact of those seven. Validate a
+tuned point on the broad set before adopting it.
+
 ### Parallel sims: `WORKER` (built and verified 2026-08-15)
 
 **Several Gazebos now run on one box, and the "only ever ONE sim" rule is

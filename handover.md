@@ -54,9 +54,19 @@ plan, not to its shape and not even to its corridor. All five score
 
 ## RUNNING NOW / QUEUED
 
-**`50_broad_gain_generality.sh` — DONE (rc=0, 14:05 UTC), 720 rows, all traced,
-FETCHED but NOT YET SCORED.** Local copies: `soak_data/soak_broad_gains.jsonl`
-and `broad_gains_traces/` (720 files). Scoring it is the first job next session.
+**`50_broad_gain_generality.sh` — DONE, FETCHED, SCORED.** Full result in
+CLAUDE.md, "The broad gain check". The short version, because it changes what to
+do next:
+
+- **the move off the old default is confirmed** on 40 plans we did not choose —
+  1.49x worse in `J`, 5/40 wins, p<0.001;
+- **the adopted VALUE 0.276 does not survive**: worst of six arms in metres
+  (beaten by every other at p<=0.038, *including the old default*), worst miss
+  rate (20.0%), and in `J` indistinguishable from everything up to q=4;
+- **`q≈1.5, r=2.618` dominates it** — `J` tied, max|e_cross| 0.917x, `final_err`
+  0.680x, miss rate 11.8% vs 20.0%;
+- **a seven-plan search cannot resolve `q`** — `J` is flat across a 15x range of
+  it on independent plans.
 
 This is the direct answer to the user's question — *are the gains overfitted to
 seven plans, and can we optimise for all of them?* 40 plans chosen mechanically
@@ -120,18 +130,32 @@ strict as before for anyone not passing a worker) and now runs
 `tools/kill_stack.sh list` rather than its own `pgrep`, so the guard and the
 sweep cannot disagree. `just kill-sim` takes a partition, defaulting to `all`.
 
-**What is NOT done: the job queue is still single-lane.** `tools/jobq.sh` runs
-one job at a time in the default partition, so using workers today means driving
-them by hand. Per-worker queues are the follow-up, and they are what turns the
-re-planner's ~55 core-hours of PMP labelling into an overnight run. Two things
-to get right when building it: each lane needs its own lock and log directory,
-and `just queue-add` currently rsyncs the tree under whatever is running, which
-with N lanes means N in-flight jobs can pick up edited code at their next
-`python3 -m`.
+**The queue stays single-lane on purpose (user's call, 2026-08-15).** Parallelism
+belongs INSIDE a job — one job at a time, each free to fan out over several
+workers — not in a multi-lane runner. That keeps the queue's one real guarantee
+(a job never shares a world with another job) while still using the box, and it
+avoids per-lane locks, per-lane logs, and the fact that `just queue-add` rsyncs
+the tree under everything currently running. So: when a job is big enough to
+want parallelism, give *that script* a worker loop; do not touch `jobq.sh`.
 
 ## Do this next, in order
 
-1. **Read job 50** (above). Nothing else should start a wide gain search before it.
+1. **Decide `q_cross` on the broad set, then stop tuning.** Job 50 says the
+   adopted 0.276 is on the bad edge of a wide plateau and `q≈1.5` dominates it.
+   **`TVLQRConfig` is deliberately UNCHANGED pending the user's call** — the
+   evidence is a paired sign test at n=3 per cell, which is enough to act on but
+   not enough to skip a confirmation. The confirming run is cheap and specified:
+   the 40 broad plans, mean-of-5, at **q ∈ {0.276, 0.6, 1.5} with r=2.618**,
+   traced, ~600 rollouts ≈ 1.2 h — and it is the first job that should FAN OUT
+   OVER WORKERS (3 arms, one per worker, ~25 min).
+
+   Read it on `final_err` and `J` primarily; max|e_cross| is the metric that
+   ranks the old default best while it spends 3x the control, so it should not
+   decide this.
+
+   **Job 60's answer must be checked against the broad set before adoption**,
+   for the reason job 50 established: `J` is flat across a 15x range of `q` on
+   independent plans, so a seven-plan optimum inside that range is an artifact.
 2. ~~Put `J` inside `objective.py`.~~ **DONE 2026-08-15.** `J` is accumulated
    online by `epsilon.EpsilonAccumulator`, so `variance_probe.drive` returns
    `j_total` directly and no trace file is involved. `objective.metric_values`
