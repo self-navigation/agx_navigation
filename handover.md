@@ -99,11 +99,14 @@ sweep.
 2. ~~Put `J` inside `objective.py`.~~ **DONE 2026-08-15.** `J` is accumulated
    online by `epsilon.EpsilonAccumulator`, so `variance_probe.drive` returns
    `j_total` directly and no trace file is involved. `objective.metric_values`
-   selects the metric; `aggregate(..., how="geometric")` reduces it. **What
-   remains is to point the tuner at it** — `tune_tvlqr` still hardcodes
-   `max_cross`, and the wiring is a CLI flag plus passing `how` through.
-   Read `objective.py`'s docstring first: `J` needs the geometric mean because
-   one plan is 48% of the arithmetic one.
+   selects the metric; `aggregate(..., how="geometric")` reduces it. **The tuner
+   is wired too**: `tune_tvlqr --metric j_total`, with `--aggregate` defaulting
+   to the right reducer per metric, every metric recorded on every rollout
+   (`per_traj_metrics`) so a finished run is re-readable in the other currency,
+   and metric+aggregator in the cache key so a `max_cross` cache cannot be
+   replayed into a `J` search. Job 60 is the first run of it. Read
+   `objective.py`'s docstring first: `J` needs the geometric mean because one
+   plan is 48% of the arithmetic one.
 3. **Read `25_uturn_notch_edge.sh`'s traces** — 10 rollouts either side of the
    U-turn's `q` wall (0.4 vs 0.5), all traced, on the VM as `~/uturn_edge.jsonl`
    + `~/uturn_edge_traces/` and fetched to `soak_data/uturn_edge.jsonl`. Run
