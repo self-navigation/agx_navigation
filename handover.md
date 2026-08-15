@@ -82,12 +82,14 @@ sweep.
 ## Do this next, in order
 
 1. **Read job 50** (above). Nothing else should start a wide gain search before it.
-2. **Put `J` inside `objective.py`.** It is currently a post-hoc script
-   (`tools/score_epsilon.py`), so it can score a run but cannot *tune* one. `J`
-   is better behaved than the 7-shape mean of `max|e_cross|` (it won all seven
-   shapes where metres won four), it is monotone where metres are flat, and it is
-   the quantity SVCM is actually stated in. This is the highest-value remaining
-   tuning work, and it should land before any re-tune from (b) above.
+2. ~~Put `J` inside `objective.py`.~~ **DONE 2026-08-15.** `J` is accumulated
+   online by `epsilon.EpsilonAccumulator`, so `variance_probe.drive` returns
+   `j_total` directly and no trace file is involved. `objective.metric_values`
+   selects the metric; `aggregate(..., how="geometric")` reduces it. **What
+   remains is to point the tuner at it** — `tune_tvlqr` still hardcodes
+   `max_cross`, and the wiring is a CLI flag plus passing `how` through.
+   Read `objective.py`'s docstring first: `J` needs the geometric mean because
+   one plan is 48% of the arithmetic one.
 3. **Read `25_uturn_notch_edge.sh`'s traces** — 10 rollouts either side of the
    U-turn's `q` wall (0.4 vs 0.5), all traced, on the VM as `~/uturn_edge.jsonl`
    + `~/uturn_edge_traces/` and fetched to `soak_data/uturn_edge.jsonl`. Run
@@ -101,6 +103,18 @@ sweep.
    set (mean-of-3 tuning must stay ~105 s/eval); the broad set is for **claims**.
    Swapping would silently re-baseline every number in CLAUDE.md. Job 50's 40
    plans are a ready-made candidate — see `~/broad_eval_plans.txt` on the VM.
+4.5. **Read [docs/corrector-design.md](docs/corrector-design.md)** before
+   starting any RL work. Written 2026-08-15 from a proper transcription of the
+   source ([docs/svcm-source.md](docs/svcm-source.md) — the formulas are WMF
+   images and every earlier extraction dropped them silently). It separates the
+   two things RL could compress, which the previous RL effort conflated: the
+   **template library** (~9 continuous dims, needs a network) and the **cost
+   matrices per surface class** (one categorical index, needs a table — and is
+   our existing tuner, run once per surface). It also recommends **retiring the
+   SAC residual** rather than repairing it, and identifies the escalation
+   trigger as `CorrectionDiagnostics.saturated_*`, which is already implemented
+   and unused.
+
 5. **Start the RL re-planner.** The architecture is decided (below) and unstarted,
    and its one unknown just got measured: **PMP solves in ~1.84 s mean / 2.5 s
    p90 per plan on one core**, with no Gazebo. So ~100k supervised labels is

@@ -651,6 +651,69 @@ chosen point, in the same code path that produced the number being checked.
 re-measurement.** Both earlier ones (0.183 m, 0.9412 m) were minima of noisy
 draws and evaporated on inspection.
 
+### The source's formulas, read properly at last (2026-08-15)
+
+**Every text extraction of the dissertation we had was silently missing the
+math.** The formulas are legacy **WMF equation images**, so `pdftotext`, python
+docx readers and pandoc alike return the prose with holes in it — "with
+functional  and dynamics ,". The 2026-08-13 reading below was done on such an
+extraction, which is why it describes the architecture correctly and never
+quotes a formula. [docs/svcm-source.md](docs/svcm-source.md) now transcribes
+pp. 48–62 and 74–84 from the **rendered pages**, with LaTeX, page numbers and a
+symbol glossary. Route for any future docx with equations: `soffice
+--convert-to pdf`, then read the pages as images.
+
+Three things it establishes that change the design
+([docs/corrector-design.md](docs/corrector-design.md)):
+
+- **The catalogue is stored as small networks, in the source's own words**
+  (p. 77: «компактных аппроксиматоров, например, небольших сетей»). So
+  "RL as the library compressor" is the source's proposal, not our
+  extrapolation of it.
+- **`u_adm = u_J + u_bar`** (p. 52) — the control the agent already has, plus a
+  correction. Our frozen PMP plan *is* `u_J` and the corrector *is* `u_bar`.
+  The corrector structure is the theory's own form, not a shortcut around it.
+- **Crisis-scenario cost matrices are prescribed** (p. 78) as larger yaw and
+  wheel-speed-difference penalties plus an **increased control-effort penalty
+  `R`** to limit aggressive action in low traction. **We reproduced that
+  empirically without noticing**: tuning against slip terrain moved `r_omega`
+  *up* 0.25 → 2.618 and `q_cross` *down*. BO against Gazebo found the
+  prescription the text gives. That belongs in the write-up.
+
+**Two corrections to our own code and notes.** `epsilon.py` cited a section that
+does not contain the functional; the real one is **(1.7), §1.3.1**, and it
+differs from ours in two deliberate ways now argued in its docstring — (1.7)
+penalizes deviation from the **terminal target** and charges the **total**
+control, we penalize deviation from the **moving reference** and charge only the
+**correction**. Also, the dichotomy theorem is the source's **Theorem 2**, not
+Theorem 1 as the section below calls it.
+
+### `J` is computed online now (2026-08-15)
+
+`epsilon.EpsilonAccumulator` sums the functional as the rollout runs, so
+`variance_probe.drive` returns `j_total` (and its tracking/control/terminal
+split) beside `max_cross`. **Scoring from trace files is no longer the route to
+a number** — that was a pairing problem that produced large, plausible,
+meaningless results twice. `tools/score_epsilon.py` remains for already-recorded
+runs. One known difference between the two paths, documented at the seam: the
+online correction is taken before wheel clipping, the offline one after, so they
+disagree on a rollout that saturates a wheel.
+
+**`J` needs the GEOMETRIC mean across trajectories, and this is not a
+preference.** Across the 51-plan library sweep `J` spans 0.2 to 1043, and
+`floor_6_00031` alone contributes **48% of the arithmetic mean**:
+
+| aggregator | default | tuned | ratio | matches per-plan win rate (45/51)? |
+| --- | --- | --- | --- | --- |
+| arithmetic | 42.26 | 10.40 | 4.06 | **no** |
+| median | 8.14 | 6.64 | 1.23 | understates |
+| **geometric** | 9.72 | 5.14 | **1.89** | **yes** |
+
+So an arithmetic search on `J` would tune to whichever plan is worst.
+`objective.DEFAULT_HOW` encodes the split: arithmetic for `max_cross` (bounded,
+already validated), geometric for `j_total`. `-epsilon.step_cost(...)` is the
+per-step integrand and is the reward any future RL should use.
+
 ### What the source documents actually say (read 2026-08-13)
 
 Read directly from the advisor's own dissertation draft (`Киселёв_докторская_v1.docx`,
