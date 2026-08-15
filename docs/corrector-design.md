@@ -126,6 +126,68 @@ Two things stand between here and there:
   problem, because those failures become gaps in the catalogue. Measure it on
   the re-join problem before committing.
 
+### The build plan for Level A, in order (agreed with the user 2026-08-15)
+
+**This is the goal to build next.** Four phases, each of which produces something
+usable and each of which can stop the project honestly if it fails.
+
+**Phase 0 — measure whether there is a teacher at all.** Add the re-join BC and
+solve ~200 sampled re-join problems. The number that decides everything is the
+**solve failure rate**: the library build failed 36% of the time (timeouts + BVP
+mesh exhaustion). If the re-join problem inherits that, there is no reliable
+teacher and the whole supervised plan is wrong — see "when RL becomes necessary"
+below. Cheap, offline, no Gazebo. **Do this before writing any training code.**
+
+**Phase 1 — a dataset, sampled RANDOMLY and never on a grid.** This is the one
+place the design is easy to get wrong, because "curse of dimensionality" names
+two different things:
+
+- **Tabulating** the catalogue over a ~10-D input is hopeless — a grid at 5
+  points per axis is $5^{10} \approx 10^7$ solves, ~5000 core-hours at the
+  measured 1.84 s. That is the curse, and it is the reason a table is not an
+  option.
+- **Regressing** it is not. The sample count a network needs scales with the
+  complexity of the function, not the dimension of its input. ~100k *random*
+  samples is ~55 core-hours and covers the region that actually occurs.
+
+So: **sample the deviation distribution, do not enumerate it.** Inputs are the
+deviation state $(e_{along}, e_{cross}, e_\theta, w_l, w_r)$, local $\hat\chi$,
+the nominal geometry ahead, and possibly $T_w$ — ~10-13 dims. **The terminal
+condition is NOT sampled**: it is determined by the plan and the re-join index.
+
+**Phase 2 — close the distribution loop with DAgger, not RL.** A network trained
+on randomly sampled deviations visits a *different* distribution once it is
+driving, which is the standard imitation-learning failure. The fix is dataset
+aggregation: roll out the current student, observe the states it actually
+reaches, query PMP at exactly those states, add them, retrain.
+
+The user proposed this as an RL loop — sample a point, compare the network's
+output against PMP's, reward the difference. **The instinct (generate labels
+where they are needed rather than precomputing everything) is right and is what
+makes the space tractable. The mechanism should not be RL:** when the expert's
+answer is in hand, the network-minus-expert difference IS the exact gradient, so
+converting it to a scalar reward and using a policy-gradient estimator replaces
+an exact gradient with a high-variance estimate of the same quantity. Strictly
+worse, no compensating benefit.
+
+Where `J` enters: "how far apart are two re-join trajectories" needs a metric,
+and `J` is the principled one — weight the regression error by its consequence
+in the cost functional rather than treating all output coordinates equally.
+
+**Phase 3 (optional) — RL fine-tuning, which is the ONE place RL earns its keep.**
+PMP is optimal *for its model*, and the model is wrong under slip: it assumes the
+nominal $\chi$. So supervised learning is capped at teacher level by
+construction. Starting from the supervised policy and fine-tuning against the
+real plant can *exceed* the teacher, and the reward is available for free and
+principled: $-\texttt{epsilon.step\_cost}(\cdot)$, the same functional we report.
+This is also the version most defensible in the write-up — RL is contributing
+something PMP cannot, rather than re-deriving what it already knows.
+
+**When RL becomes necessary rather than optional:** if phase 0 shows the re-join
+solve fails often. A teacher that answers 64% of the time cannot label a dataset,
+and the fallback is to learn without one. That is the risk this ordering is
+designed to expose first and cheaply.
+
 ### The trigger — and it already exists
 
 Escalating from TVLQR to a re-join template needs a test for *"the reference has

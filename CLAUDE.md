@@ -1735,6 +1735,39 @@ real-time-throttled world**. Also note the node's `imu_topic` default is `/imu`
 while the actual topic is `/imu/data` — its own usage line has it right, the
 default does not.
 
+### The next build: the re-join re-planner (agreed 2026-08-15)
+
+Design and phasing in [docs/corrector-design.md](docs/corrector-design.md);
+current status in `handover.md`. Three things recorded here because they are the
+ones most likely to be re-litigated:
+
+- **The re-join BC is a change to the PMP problem statement, not a new solver.**
+  `x(t0)` = the actual off-plan state; `x(t0 + T_w)` = the nominal plan's state
+  at index `k + T_w/dt`, **all five components including wheel speeds** —
+  playback resumes by feeding the plan's commands from that index, which assume
+  the wheels already turn at the plan's rate. Because playback is time-indexed,
+  landing at `k + T_w/dt` keeps the robot on *schedule*, so `m` is determined by
+  `T_w` and `T_w` is the only free scalar.
+- **Sample randomly, NEVER on a grid.** The curse of dimensionality applies to
+  *tabulating* a ~10-D catalogue (5 points/axis is 1e7 solves, ~5000 core-hours
+  at the measured 1.84 s) and **not** to *regressing* it (~100k random samples,
+  ~55 core-hours). That distinction is the whole reason a network is the right
+  storage format, so do not let "curse of dimensionality" argue against the
+  sampling too.
+- **Label generation on demand is DAgger, not RL.** Querying the expert where the
+  student is currently wrong is right and necessary (distribution shift), but
+  when PMP's answer is in hand the student-minus-expert difference IS the exact
+  gradient — turning it into a scalar reward substitutes a high-variance
+  estimator for a quantity already known exactly. RL earns its keep in exactly
+  one place: **fine-tuning above the teacher**, since PMP is optimal for a model
+  that assumes nominal chi and the plant does not.
+
+**Phase 0 gates everything: measure the re-join SOLVE FAILURE RATE first.** The
+library build failed 36% (110 timeouts, 70 mesh exhaustions of 500). A teacher
+that answers two-thirds of the time cannot label a dataset, and that would make
+the supervised plan wrong rather than slow. It is offline, needs no Gazebo, and
+is cheap.
+
 ### Ideas queued, roughly in order of expected value
 
 1. **Fix SAC's entropy runaway before any retrain.** `ent_coef` reached 3.31.

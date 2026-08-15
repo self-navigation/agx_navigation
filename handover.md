@@ -115,12 +115,40 @@ sweep.
    trigger as `CorrectionDiagnostics.saturated_*`, which is already implemented
    and unused.
 
-5. **Start the RL re-planner.** The architecture is decided (below) and unstarted,
-   and its one unknown just got measured: **PMP solves in ~1.84 s mean / 2.5 s
-   p90 per plan on one core**, with no Gazebo. So ~100k supervised labels is
-   ~55 core-hours — an overnight run on a few cores. The blocking piece is not
-   compute, it is the **re-join boundary condition** in the PMP solver (a BC
-   change, not a new solver).
+5. **Build the re-join re-planner — THIS IS THE NEXT REAL GOAL**, agreed with the
+   user 2026-08-15. Full plan in [docs/corrector-design.md](docs/corrector-design.md)
+   ("The build plan for Level A"). Four phases, and **phase 0 is the one to do
+   first because it can invalidate the other three**:
+
+   - **Phase 0:** add the re-join boundary condition (`x(t0)` = actual off-plan
+     state, `x(t0+T_w)` = the plan's state at index `k + T_w/dt`, all five
+     components including wheel speeds) and solve ~200 sampled re-join problems.
+     **The number that decides everything is the solve failure rate** — the
+     library build failed 36% (timeouts + BVP mesh exhaustion). Inherit that and
+     there is no reliable teacher and the supervised plan is wrong. Offline, no
+     Gazebo, cheap. Do it before any training code.
+   - **Phase 1:** ~100k **randomly sampled** re-join solves. Never a grid — a
+     grid at 5 points/axis over ~10 dims is 1e7 solves (~5000 core-hours);
+     random sampling is ~55 core-hours at the measured 1.84 s/solve. The curse
+     of dimensionality applies to TABULATING the catalogue, not to regressing it.
+   - **Phase 2:** DAgger, not RL — roll out the student, query PMP at the states
+     it actually reaches, retrain. (The user proposed an RL version of this; the
+     instinct is right, the mechanism is not — with the expert's answer in hand
+     the difference IS the exact gradient, so a reward estimator is strictly
+     worse. Written up in the design doc.)
+   - **Phase 3, optional:** RL fine-tuning from the supervised policy, which is
+     the one place RL exceeds the teacher — PMP is optimal for a model that
+     assumes nominal chi, and the plant does not. Reward is
+     `-epsilon.step_cost(...)`, free and principled.
+
+   Why the wheel speeds must be in the terminal BC: playback resumes by feeding
+   the plan's commands from index `k+m`, which assume the wheels already turn at
+   the plan's rate — matching position but not phase reproduces the documented
+   stall-path bug deliberately. And because playback is time-indexed, landing at
+   `k + T_w/dt` keeps the robot on SCHEDULE, not merely on the path; `m` is
+   therefore determined by `T_w`, and `T_w` is the one free scalar (a
+   free-terminal-time problem whose missing equation is a transversality
+   condition — which is exactly where the advisor said learning acts).
 6. **Do not lower the ground plane to model a slippery floor.** Standing rule.
 
 ## Where the corrector work actually stands
