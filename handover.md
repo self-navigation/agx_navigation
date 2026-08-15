@@ -151,6 +151,32 @@ sweep.
    condition — which is exactly where the advisor said learning acts).
 6. **Do not lower the ground plane to model a slippery floor.** Standing rule.
 
+## The demo is closer than the re-planner — and should come first
+
+Roadmap in [docs/corrector-design.md](docs/corrector-design.md) ("Roadmap to a
+visible demo"). **"Robot drives, slips, gets back on track" is TWO demos and the
+first is already built**: TVLQR *is* a closed-loop corrector that returns to the
+trajectory. Checked in the tree 2026-08-15 — the rig
+(`just remote-fixture tvlqr true`, GUI over Moonlight), the plan-and-reference
+markers (`runtime_corrector` `~/debug_markers`), the RViz display (`corrector
+status` in `main.rviz`), the plan remap, deliberate patch placement, and
+`run_recorder` all exist and are wired.
+
+**What is missing is that nobody has ever watched it.** Every corrector number in
+this repo came from `compare_correctors`/`soak`, which drive `GazeboBridge`
+directly and **bypass the whole ROS stack** — so `vector_field` → `pmp_planner`
+→ `runtime_corrector` → playback → controllers has not been exercised during any
+of the corrector work. Expect bit-rot on the first run; that is the main cost.
+
+Do this **before** the re-planner build: it is the only end-to-end check that
+what we tuned for weeks works in the runtime pipeline and not just in the
+measurement harness. Two small gaps to fix while there: the patch list puts
+`icy` under the spawn point (fine for testing, useless for a demo — you want
+clean → one patch → excursion → recovery), and it is a hardcoded JSON literal in
+`gz_sim.launch.py`, so a `PATCH_LAYOUT` config file is the one code change worth
+making. Keep demo patches just ABOVE the wheel's mu2=0.45 knee — below it there
+is no steering at all, which looks like a broken robot rather than a slipping one.
+
 ## Where the corrector work actually stands
 
 Worth stating plainly, because six sessions of gain tuning can obscure it: the

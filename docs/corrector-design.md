@@ -261,6 +261,96 @@ not new machinery.
    widening a search whose objective is the wrong quantity resolves noise.
 4. **Do not** re-run a wide 2-D search on the seven-plan set. That is finished.
 
+## Roadmap to a visible demo
+
+Written 2026-08-15 in answer to "how much work until we can watch the robot drive,
+slip, and get back on track?"
+
+**The key realisation: that is TWO demos, and the first one is already built.**
+TVLQR *is* a closed-loop corrector that returns the robot to the trajectory —
+that is what 45-of-51 plans better in $J$ means. The re-planner is only needed
+for the case TVLQR **cannot** fix, i.e. where the reference has become
+infeasible. So:
+
+| | what you see | needs |
+| --- | --- | --- |
+| **Demo A** | drives the plan → slips → TVLQR pulls it back | **believed complete; never watched** |
+| **Demo B** | deviation exceeds the corrector's authority → a re-join is planned and executed | the phase 0–2 build above |
+
+### Demo A — the parts, and they are all present
+
+Checked in the tree 2026-08-15, not remembered:
+
+- **The rig**: `just remote-fixture tvlqr true` — full ROS stack, GUI on the VM
+  desktop, `vglrun` rendering on the V100, reachable over Moonlight.
+- **The plan is drawn**: `runtime_corrector` publishes `~/debug_markers`
+  (`MarkerArray`) carrying the plan path *and* an arrow at the sample currently
+  being commanded — "where it should be right now" versus where it is, which is
+  exactly what makes an excursion legible.
+- **RViz already displays it**: `main.rviz` has a `corrector status` MarkerArray
+  on `/wheel_corrector/debug_markers`, plus the vector field group.
+- **The plan reaches the corrector**: `vec_pmp.launch.py` remaps
+  `~/plan → /optimal_trajectory`.
+- **Slip exists and is deliberately placed**: `gz_sim.launch.py` holds an
+  explicit patch list (icy/slippery/rough/directional at named coordinates).
+- **The record**: `run_recorder` writes track/plan CSVs, `tools/plot_run.py`
+  renders path + deviation figures, and the desktop can be screenshotted headless
+  with `DISPLAY=:0 import -window root`.
+
+### What is actually missing for Demo A
+
+Small, and none of it is research:
+
+1. **Nobody has ever watched it.** Every corrector number in this repo came from
+   `compare_correctors` / `soak`, which drive `GazeboBridge` directly with
+   recorded plans and **bypass the entire ROS stack**. So the fixture path —
+   `vector_field` → `pmp_planner` action server → `runtime_corrector` action
+   client → playback → controllers — has not been exercised during any of the
+   corrector work. **Expect bit-rot; budget the first run for finding it.** This
+   is the single largest unknown in Demo A and the reason it is "believed
+   complete" rather than "complete".
+2. **The patch layout is wrong for a demo.** The current list puts `icy` *under
+   the spawn point*, so the robot starts already slipping — deliberate for
+   corrector testing, useless for a demo, where you want: drive clean → hit one
+   patch → visible excursion → visible recovery. It is a hardcoded JSON literal
+   in `gz_sim.launch.py`, so authoring a demo scenario currently means editing a
+   launch file. A `PATCH_LAYOUT` variable pointing at a config file would fix
+   that and is the one code change Demo A wants.
+3. **Patch strength for visibility.** The excursions we measure are 0.3–2 m.
+   Whether that reads as "off track" on screen is an eyeball question nobody has
+   asked. Adjacent knob: patches below the wheel's $\mu_2 = 0.45$ mean *no
+   steering at all* (deliberately), which looks like a broken robot rather than a
+   slipping one — so a demo patch should sit just above the knee, not at `icy`.
+4. **Recording**, if the demo needs to be shown rather than watched live —
+   `ffmpeg -f x11grab` on the VM, or capture Moonlight-side.
+
+**Expect this to be an afternoon, dominated by (1).** It is worth doing *before*
+the re-planner build, for a reason beyond the demo: it is the only end-to-end
+check that the thing we have been tuning for weeks behaves in the actual runtime
+pipeline, and not merely in the measurement harness.
+
+One thing that will look like a hang and is not: in `offline` mode the corrector
+buffers the **whole** rollout before driving, so the robot stands still for the
+entire planning phase (~20 s on the baked map) and then drives. Documented
+behaviour, not a fault.
+
+### Demo B — what it adds
+
+Everything in "The build plan for Level A", plus:
+
+- a **scenario where TVLQR genuinely cannot cope** — the natural one is a patch
+  below the friction knee, which is also Theorem 2's branch-2 case, so it doubles
+  as the experimental demonstration of the dichotomy the dissertation asserts but
+  never shows;
+- the **trigger** wired into `runtime_corrector._correct()`, reading
+  `CorrectionDiagnostics.saturated_*`;
+- the re-join trajectory **spliced into the playback buffer**, which is the one
+  genuinely new piece of runtime plumbing — `trajectory_buffer.py` currently
+  plays a fixed rollout and has no notion of substituting a segment and resuming.
+
+Demo B is gated on phase 0 (does the re-join solve reliably?), so the honest
+estimate is "unknown until phase 0 runs", and phase 0 is cheap.
+
 ## Open questions for the advisor
 
 - **Sand** is inexpressible in the current friction model: under min-combination
