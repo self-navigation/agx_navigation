@@ -46,7 +46,7 @@ plan, not to its shape and not even to its corridor. All five score
 `total_abs_turn` 7–9 rad, so the label cannot tell a hairpin from two same-sign
 90° corners. **Render plans before any per-shape claim.**
 
-## RUNNING NOW
+## RUNNING NOW / QUEUED
 
 **`50_broad_gain_generality.sh`** — started ~15:55 UTC 2026-08-15, ~1.5 h
 (720 rollouts at ~7 s). Log `~/jobq/logs/50_broad_gain_generality.log`, rows
@@ -61,6 +61,20 @@ the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map th
 
     (0.276, 2.618) adopted   (0.276, 1.0)   (0.6, 2.618)
     (1.5, 2.618)             (4.0, 2.618)   (10, 0.25) old default
+
+**QUEUED behind it: `60_tune_on_J.sh`** — re-tunes `(q_cross, r_omega)` against
+`J` instead of metres (~2-3 h, bounded at 60 evals), then measures the adopted
+0.276/2.618 in `J` in the same code path for comparison. Results
+`~/tvlqr_tuned_J.json` + `~/tvlqr_validate_J_adopted.json`, caches
+`~/tvlqr_tune_J.jsonl`. It searches the SEVEN-plan set on purpose — that stays
+the fast search set (mean-of-3 must stay ~105 s/eval); the broad library is for
+validating a winner, not for searching.
+
+**SCHEDULING CONFLICT, know this before planning the demo:** job 60 holds the
+only Gazebo for 2-3 h, and `make fixture` starts its OWN sim — two instances is
+the robot-disintegration failure. `just queue-stop` stops the runner and leaves
+the in-flight job alone; or kill job 60 mid-run, since the tuner caches every
+evaluation and a resumed run re-measures nothing.
 
 Fetch and score:
 
