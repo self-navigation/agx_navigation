@@ -10,11 +10,27 @@ they were written with. This needs no training and no policy.
 WHAT ONE EVALUATION IS
 ----------------------
 A fixed list of recorded plans, each driven start-to-goal under TVLQR with the
-candidate gains, on the same seeded terrain. The score is the mean of
-max|e_cross| over that list (see objective.py, including why a failed rollout
-invalidates the whole evaluation instead of shrinking the denominator).
+candidate gains, on the same seeded terrain. The score aggregates one metric
+over that list (see objective.py, including why a failed rollout invalidates the
+whole evaluation instead of shrinking the denominator).
 Nothing is sampled and no rollout is ever truncated: `--max-evals` bounds how
 many GAIN PAIRS are tried, never how far the robot drives.
+
+WHICH METRIC (added 2026-08-15)
+-------------------------------
+`--metric max_cross` (metres, the historical default) or `--metric j_total`, the
+SVCM cost functional from `epsilon.py` -- the quantity the advisor's framework is
+stated in and the one a claim should be made in. **Both are recorded on every
+rollout regardless of which is searched**, in `per_traj_metrics`, so a finished
+run can be re-read in the other currency without re-driving Gazebo.
+
+`--aggregate` defaults to the right reducer for the chosen metric and should
+normally be left alone: `j_total` needs the GEOMETRIC mean because it spans ~4
+orders of magnitude across plans, so an arithmetic mean of it is dominated by
+the single worst plan. objective.py has the measurement.
+
+The cache key records both, so a `max_cross` cache cannot be replayed into a `J`
+search.
 
 OPTIMIZER
 ---------
@@ -66,7 +82,9 @@ from ..rl_corrector.nominal import load_recorded
 from ..runtime_corrector import tvlqr as tvlqr_mod
 from .bayesopt import minimize as bayes_minimize
 from .cache import EvalCache
-from .objective import aggregate, reduce_repeats
+from .objective import (DEFAULT_HOW, METRICS, aggregate,
+                        metric_values, reduce_repeats)
+from . import epsilon as epsilon_mod
 from .simplex import minimize
 
 # Log10 bounds. q_cross below 0.1 is no cross-track feedback at all; above 1000
@@ -125,8 +143,15 @@ class _Deadline:
         raise EvalTimeout(f"evaluation exceeded {self.seconds}s")
 
 
-def run_trajectories(bridge, cfg, traj_paths, q_cross, r_omega, seed, log=print):
-    """Drive every trajectory under one candidate. Returns {name: max|e_cross|}.
+def run_trajectories(bridge, cfg, traj_paths, q_cross, r_omega, seed, log=print,
+                     metric="max_cross"):
+    """Drive every trajectory under one candidate. Returns {name: score}.
+
+    `metric` selects what the returned scalar IS -- `max_cross` (metres, the
+    historical default) or `j_total` (the SVCM cost functional). Every metric is
+    computed on every rollout regardless, because they cost nothing next to the
+    physics and because a run that recorded only one of them cannot be re-read
+    in the other later; the full record goes to `per_traj_metrics`.
 
     A trajectory missing from the returned dict is a FAILED rollout, and
     objective.aggregate turns that into an invalid evaluation rather than a
@@ -135,7 +160,7 @@ def run_trajectories(bridge, cfg, traj_paths, q_cross, r_omega, seed, log=print)
     from ..rl_corrector.terrain import along_path_terrain_sampler
 
     tvcfg = tvlqr_mod.TVLQRConfig(enabled=True, q_cross=q_cross, r_omega=r_omega)
-    out = {}
+    records = {}
     for path in traj_paths:
         name = os.path.basename(path)[:-4]
         try:
@@ -148,21 +173,36 @@ def run_trajectories(bridge, cfg, traj_paths, q_cross, r_omega, seed, log=print)
                 np.random.default_rng(seed))
             st = bridge.reset(tuple(nom.poses[0]), terrain)
             max_cross = 0.0
-            for k in range(len(nom)):
+            acc = epsilon_mod.EpsilonAccumulator(nom.dt)
+            n_steps = len(nom)
+            for k in range(n_steps):
                 planned = nom.poses[k]
                 left, right = float(nom.wheels[k][0]), float(nom.wheels[k][1])
-                wheels, _ = _tvlqr_wheels(left, right, planned, st.pose,
-                                          cfg, tvcfg, cache, k)
+                wheels, diag = _tvlqr_wheels(left, right, planned, st.pose,
+                                             cfg, tvcfg, cache, k)
                 st = bridge.step(wheels, nom.dt)
                 err = tvlqr_mod.tracking_error(planned, st.pose)
                 max_cross = max(max_cross, abs(err[1]))
-            out[name] = float(max_cross)
+                acc.push(err, (diag.dv, diag.domega))
+            # Index n_steps is the goal, matching compare_correctors and
+            # variance_probe exactly; [-1] would silently differ if the recorder
+            # ever pads.
+            goal = nom.poses[n_steps]
+            final_err = float(np.hypot(st.pose[0] - goal[0],
+                                       st.pose[1] - goal[1]))
+            score = acc.finalize(final_err)
+            records[name] = {"max_cross": float(max_cross),
+                             "final_err": final_err,
+                             "j_total": score.j_total,
+                             "j_tracking": score.j_tracking,
+                             "j_control": score.j_control,
+                             "j_terminal": score.j_terminal}
         except Exception as exc:                      # noqa: BLE001
             # Deliberately broad: any failure to complete a rollout must reach
             # aggregate() as a MISSING entry. Swallowing it into a partial mean
             # is the bug objective.py exists to prevent.
             log(f"    !! {name} failed: {exc.__class__.__name__}: {exc}")
-    return out
+    return metric_values(records, metric), records
 
 
 def main():
@@ -210,6 +250,20 @@ def main():
                          "resolves the effect a real gain improvement produces. "
                          "1 reproduces the old single-sample behaviour and is "
                          "NOT enough to rank candidates on this eval set.")
+    ap.add_argument("--metric", default="max_cross", choices=list(METRICS),
+                    help="what the search MINIMIZES. `max_cross` is metres and "
+                         "the historical default; `j_total` is the SVCM cost "
+                         "functional (epsilon.py) and is the quantity a claim "
+                         "should be made in. Every metric is recorded on every "
+                         "rollout either way, so a finished run can be re-read "
+                         "in the other currency without re-driving Gazebo.")
+    ap.add_argument("--aggregate", default=None,
+                    choices=["arithmetic", "geometric"],
+                    help="how per-trajectory scores are combined. Defaults to "
+                         "the right one for --metric (arithmetic for max_cross, "
+                         "geometric for j_total): J spans ~4 orders of magnitude "
+                         "across plans, so an arithmetic mean of it is dominated "
+                         "by the single worst plan -- see objective.py.")
     ap.add_argument("--reduce", default="mean", choices=["mean", "median", "max"],
                     help="how to combine repeats, per trajectory. mean is the "
                          "measured best for search (see objective.py)")
@@ -231,6 +285,12 @@ def main():
     ap.add_argument("--r-bounds", type=float, nargs=2, metavar=("LO", "HI"),
                     default=None, help="same, for r_omega")
     args = ap.parse_args()
+    # Each metric has one correct aggregator and it is not a matter of taste:
+    # J spans ~4 orders of magnitude across plans, so an arithmetic mean of it
+    # is a one-plan objective (objective.py has the measurement). Explicit
+    # --aggregate still wins, for anyone deliberately testing the other.
+    if args.aggregate is None:
+        args.aggregate = DEFAULT_HOW[args.metric]
 
     trajectories = args.trajectories
     if args.trajectory_config:
@@ -270,7 +330,12 @@ def main():
     # on the old ice-heavy terrain would silently mix two different problems.
     from rudn_ordjo_building.surface_patches import DEFAULT_PATCH_WEIGHTS
     key = {"trajectories": sorted(names), "seed": args.seed,
-           "metric": "mean_max_cross", "plant": PLANT_VERSION,
+           # The metric and the aggregator are BOTH part of the problem: a
+           # cache of max_cross evaluations replayed into a J search would be
+           # read as real measurements of a quantity nobody measured. Same rule
+           # that already covers repeats/reduce/patch_weights.
+           "metric": args.metric, "aggregator": args.aggregate,
+           "plant": PLANT_VERSION,
            "repeats": args.repeats, "reduce": args.reduce,
            "patch_weights": {k: round(v, 4)
                              for k, v in sorted(DEFAULT_PATCH_WEIGHTS.items())}}
@@ -305,16 +370,20 @@ def main():
         # measured table. Each repeat re-drives every trajectory with the same
         # seed and terrain: the spread is per-rollout physics, not sampling.
         reps = []
+        rep_records = []
         try:
             with _Deadline(args.eval_timeout * args.repeats):
                 for _ in range(args.repeats):
-                    reps.append(run_trajectories(bridge, cfg, trajectories,
-                                                 q_cross, r_omega, args.seed))
+                    sel, recs = run_trajectories(bridge, cfg, trajectories,
+                                                 q_cross, r_omega, args.seed,
+                                                 metric=args.metric)
+                    reps.append(sel)
+                    rep_records.append(recs)
         except EvalTimeout as exc:
             print(f"        !! {exc}", flush=True)
             reps.append({})
         per = reduce_repeats(reps, names, how=args.reduce)
-        score = aggregate(per, names)
+        score = aggregate(per, names, how=args.aggregate)
 
         # A dead sim fails every rollout in milliseconds. Unbounded, the search
         # would "evaluate" thousands of points in seconds and converge on noise;
@@ -339,8 +408,16 @@ def main():
                         # the noise can be re-analysed (and a different
                         # estimator tried) without re-driving anything.
                         per_traj_repeats=reps,
+                        # EVERY metric of every rollout, not just the one being
+                        # searched on. An hour of Gazebo is far too expensive to
+                        # keep only the scalar the search happened to minimize,
+                        # and re-reading a finished run in the OTHER currency is
+                        # exactly the question that keeps coming up.
+                        per_traj_metrics=rep_records,
+                        metric=args.metric, aggregator=args.aggregate,
                         failed=[n for n in names if n not in per])
-        print(f"        -> mean max|e_cross| = {score:.4f} m   "
+        unit = " m" if args.metric == "max_cross" else ""
+        print(f"        -> {args.aggregate} {args.metric} = {score:.4f}{unit}   "
               f"{ {k: round(v, 3) for k, v in per.items()} }"
               f"   [{time.monotonic() - t_start:.0f}s elapsed]", flush=True)
         return score
@@ -392,14 +469,18 @@ def main():
     finally:
         bridge.close()
 
+    # `score` rather than `mean_max_cross`: the searched quantity is now a
+    # choice, and a field named for one metric holding another is how a table
+    # ends up labelled wrong. `metric`/`aggregator` say which it is.
     best = {"q_cross": float(10.0 ** res.x[0]), "r_omega": float(10.0 ** res.x[1]),
-            "mean_max_cross": res.fx, "n_evals": res.n_evals,
+            "score": res.fx, "metric": args.metric, "aggregator": args.aggregate,
+            "n_evals": res.n_evals,
             "optimizer": args.optimizer, "plant": PLANT_VERSION,
             "repeats": args.repeats, "reduce": args.reduce,
             "trajectories": names, "seed": args.seed,
             "start": {"q_cross": args.q_cross, "r_omega": args.r_omega}}
     if args.optimizer == "bayes":
-        # Record BOTH, and label them. `mean_max_cross` is the posterior mean --
+        # Record BOTH, and label them. `score` is the posterior mean --
         # what we believe the gains are worth. `observed` is the luckiest single
         # measurement, which is what the old runs reported and is biased low.
         # Quoting the observed value is how 0.183 m and 0.9412 m got into two
@@ -408,7 +489,8 @@ def main():
         best["observed"] = {
             "q_cross": float(10.0 ** res.x_observed[0]),
             "r_omega": float(10.0 ** res.x_observed[1]),
-            "mean_max_cross": res.fx_observed,
+            "score": res.fx_observed,
+            "metric": args.metric, "aggregator": args.aggregate,
             "note": "best single measurement; biased low, do not quote",
         }
         best["converged"] = res.converged
