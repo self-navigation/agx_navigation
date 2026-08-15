@@ -78,8 +78,8 @@ the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map th
     (0.276, 2.618) adopted   (0.276, 1.0)   (0.6, 2.618)
     (1.5, 2.618)             (4.0, 2.618)   (10, 0.25) old default
 
-**RUNNING NOW: `60_tune_on_J.sh`** (started 14:05 UTC, at eval 5 of 60 as of
-14:15, ~103 s per evaluation ⇒ ~1.7 h) — re-tunes `(q_cross, r_omega)` against
+**RUNNING NOW: `60_tune_on_J.sh`** (started 14:05 UTC, eval 13 of 60 at 14:40,
+~160 s per evaluation ⇒ finishes ~16:50 UTC) — re-tunes `(q_cross, r_omega)` against
 `J` instead of metres (~2-3 h, bounded at 60 evals), then measures the adopted
 0.276/2.618 in `J` in the same code path for comparison. Results
 `~/tvlqr_tuned_J.json` + `~/tvlqr_validate_J_adopted.json`, caches
@@ -87,25 +87,57 @@ the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map th
 the fast search set (mean-of-3 must stay ~105 s/eval); the broad library is for
 validating a winner, not for searching.
 
-**The scheduling conflict this section used to warn about is GONE.** Job 60 no
-longer monopolises Gazebo: run the demo in its own partition beside it —
+**QUEUED, in order — all three fan out over workers, all three traced.** They
+were queued 2026-08-15 ~14:45 UTC to fill a ~6 h unattended window; expect all
+of them done by ~19:00 UTC.
 
-    just remote-fixture tvlqr true truth 1
+| job | what | cost |
+| --- | --- | --- |
+| `70_broad_q_ladder.sh` | **q ∈ {0.276, 0.6, 1.0, 1.5, 2.5, 4.0} at r=2.618**, 40 broad plans, mean-of-**5**, 1200 rollouts | ~40 min on 4 workers |
+| `80_broad_r_ladder.sh` | **r ∈ {0.25, 0.5, 1.0, 2.618, 5.0} at q=1.5**, same 40 plans, mean-of-3, 600 rollouts | ~20 min on 4 workers |
+| `90_validate_tuned_J_broad.sh` | job 60's winner **+ 0.276/2.618 + 1.5/2.618 as in-process controls**, 40 plans, mean-of-5 | ~25 min on 3 workers |
 
-Score job 50 (data already local):
+Outputs: `~/soak_broad_q.jsonl` + `~/broad_q_traces/`, `~/soak_broad_r.jsonl` +
+`~/broad_r_traces/`, `~/soak_validate_J_broad.jsonl` + `~/validate_J_broad_traces/`.
 
-    .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_broad_gains.jsonl \
-        --trace-root broad_gains_traces --plans traj_data_v2
+**How to read them.**
 
-**How to read it.** The aggregate over 40 independent plans is the number that
-either does or does not support the adopted point. Three outcomes worth naming in
-advance: (a) 0.276 wins broadly ⇒ the seven-plan result generalises, say so and
-stop tuning; (b) some other rung wins broadly ⇒ **re-tune against the broad set,
-not the seven**, and treat every per-shape number in CLAUDE.md as the enriched
-subset it is; (c) the ranking is flat and dominated by which plans are hard ⇒ the
-gains matter less than the objective does, which points at item 2 below.
-Score in **both** currencies — they disagreed on 24 of 51 plans in the library
-sweep.
+- **70 decides `q_cross`.** Read `final_err` and `J`, *not* max|e_cross| — job 50
+  showed that metric ranks the old default best while it spends ~3x the control.
+  If a rung inside [0.6, 2.5] beats 0.276 on both, adopt it in `TVLQRConfig`;
+  the plateau is flat in `J` so the tie-break is arrival.
+- **80 tests whether `q` and `r` INTERACT.** Every r ladder so far held q=0.276.
+  If the r=0.5→1.0 threshold is still there at q=1.5, the two separate and all
+  earlier r conclusions carry over; if it moved or vanished, they do not, and
+  every r claim in CLAUDE.md needs scoping to q=0.276.
+- **90 is the only way job 60's answer can be believed.** It reads
+  `~/tvlqr_tuned_J.json` at run time and measures whatever is in it beside two
+  known points **in the same process**, which also finally removes the
+  standing "do not compare a tuned number against a `compare` number" caveat.
+  If job 60's winner lands inside the plateau and does not beat 1.5/2.618 on
+  arrival, **do not adopt it** — that is the artifact job 50 predicted.
+
+Fan-out is `tools/parallel_soak.sh` (smoke-tested 2026-08-15 beside a running
+job: 2 workers, both arms merged, teardown clean, and q=0.276 reproduced
+`floor_6_v2_00003/4` to three decimals). It splits by **gain arm**, so a worker
+that dies costs one arm rather than a slice of every arm. It never builds —
+`just remote-build` owns that, because N concurrent colcon builds would rewrite
+`install/` under whatever else is running.
+
+**The scheduling conflict this section used to warn about is GONE.** Nothing in
+the queue monopolises Gazebo any more: run the demo in its own partition beside
+whatever is running —
+
+    just remote-fixture tvlqr true truth 5
+
+(worker 5 deliberately, so it cannot collide with the queue's workers 1-4).
+
+**Job 50 landed as outcome (b)+(c) together**, of the three named in advance:
+the ranking IS flat in `J` across the plateau (c), *and* a different rung wins
+on the axes that separate (b). That is why jobs 70-90 exist rather than an
+adoption commit. Note for the write-up: the three-outcome framing was written
+before the run and the result did not fit any single branch cleanly — worth
+remembering next time a pre-registered reading looks exhaustive.
 
 ## Parallel sims are done (2026-08-15)
 
