@@ -31,6 +31,7 @@ compared, at which gains, on which plant — so none of it was usable for a writ
 
 | date | what it establishes |
 | --- | --- |
+| [2026-08-15](2026-08-15/) | `r_omega` matters below 1.0 after all; the U-turn `q_cross` basin is one plan's, not the shape's |
 | [2026-08-14](2026-08-14/) | `r_omega` is flat on 5 of 7 shapes; 2.618 is a one-plan notch |
 | [2026-08-13](2026-08-13/) | the U-turn's deviation is one corner; the `q_cross` notch; `J` vs `max\|e_cross\|` disagree |
 | [archive](archive/) | everything from before this convention — provenance mostly unrecoverable |

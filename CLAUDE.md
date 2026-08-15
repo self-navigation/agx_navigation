@@ -1007,6 +1007,12 @@ near-deterministic (0.7-1.8% bad). That is a better explanation of the U-turn's
 "bimodality" than the shape itself — it was never intrinsic, it was an artifact
 of measuring at a gain sitting on the edge.
 
+**Scope correction (2026-08-15): this basin is `floor_6_00031`'s, not the
+U-turn's.** See "The U-turn basin does not generalise" below. Everything in this
+section is still true *of that plan* — 5906 rollouts do not stop being 5906
+rollouts — but it must never again be written as a statement about U-turns, and
+it is not a reason to prefer any `q` on a plan we have not driven.
+
 **2. The seven-shape check: `q=0.32` is NOT free, so do not re-adopt it.**
 7 shapes × `q` ∈ {0.276, 0.32, 0.40} at `r=2.618`, 5 repeats, **traced**, so it
 is scored in both currencies (`gaincheck/`, `epsilon_data/gaincheck_J.jsonl`):
@@ -1040,7 +1046,7 @@ one trajectory, however many samples back it. The sub-ladder was still worth the
 night — it explains *why* 0.276 looks noisy on the U-turn — but the decision was
 always the aggregate's to make.
 
-### The `r_omega` ladder: `r` is nearly a free parameter (2026-08-14)
+### The `r_omega` ladder: `r` is flat ABOVE 1.0, and matters below it (2026-08-14, corrected 2026-08-15)
 
 1035 usable rollouts (1050 run, 15 lost to the patch-spawn guard), 7 shapes ×
 `r_omega` ∈ {1.0, 1.8, 2.618, 3.5, 5.0}, `q_cross` held at the adopted 0.276 so
@@ -1059,34 +1065,133 @@ figures `figures/2026-08-14/`. n≈30 per cell. mean ± sd of max|e_cross|:
 | **mean** | 0.823 | 0.837 | **0.685** | 0.958 | 0.837 |
 | **mean, no U-turn** | **0.519** | 0.529 | 0.522 | 0.686 | 0.535 |
 
-**`r_omega` does nothing on five of seven shapes across a 5× range.** Straight
+**`r_omega` does nothing on five of seven shapes across this 5× range.** Straight
 spans 0.048–0.066, corner 0.304–0.327, tight V 0.283–0.303, zigzag 0.409–0.471,
 loop 0.363–0.465 — every one of those is inside its own cell-to-cell spread.
 Drop the U-turn and the aggregate is **flat from r=1.0 to r=2.618** (0.519 vs
-0.522), i.e. the adopted value earns nothing there.
+0.522), i.e. the adopted value earns nothing *within this range*.
 
-**So `r=2.618` is an isolated NOTCH, and it is one plan's.** The U-turn is 100%
-bad (>2.0 m, and near-deterministic: sd 0.005–0.024) at 1.0, 1.8, 3.5 and 5.0,
-and 20% bad only at 2.618. This is the *opposite* shape of the `q` result, where
-0.276 sat on a wide plateau for the zigzag and the notch was a U-turn side-effect.
-**Consequence for the write-up: the tuning result is essentially a `q_cross`
-result.** `r`'s half of the joint move is defensible only through `floor_6_00031`.
+Within this range `r=2.618` is an isolated notch and it is one plan's: the U-turn
+is 100% bad (>2.0 m, near-deterministic: sd 0.005–0.024) at 1.0, 1.8, 3.5 and 5.0,
+and 20% bad only at 2.618. The S's spike at 3.5 is the only other place a
+non-U-turn shape reacts to `r` at all.
+
+**But this ladder's floor was r=1.0, and the value it replaced is r=0.25 — below
+it. The low half (2026-08-15, next section) shows `r` DOES matter down there, so
+the conclusion drawn here that "the tuning result is essentially a `q_cross`
+result" is RETRACTED.** What survives is narrower and still useful: `r` is a free
+parameter **above ~1.0**, so the specific value 2.618 is not load-bearing outside
+`floor_6_00031` — but the move *off* 0.25 is.
 
 **Second isolated feature: the S has a deterministic bad spike at r=3.5** —
 2.548–2.552 over 30 rollouts, sd 0.001, 100% of them, against ~1.6 at every other
 rung. Not a mixture, not noise; unexplained, and the only place in this ladder
 where a non-U-turn shape cares about `r` at all.
 
-**Still open, and it is the half that decides the adoption:** the ladder's floor
-is r=1.0 while the gain it replaced is **r=0.25**, which is *below* the rungs. So
-nothing here says whether the move off 0.25 bought anything outside the U-turn.
-`tools/jobs/30_r_ladder_low.sh` sweeps {0.25, 0.5, 1.0, 2.618}, carrying 2.618 in
-the same process so the two ladders join without assuming cross-run comparability.
-**Do not re-adopt or abandon `r_omega` before reading it.** (The one thing already
-known from the `q` ladder: at `q=10`, r=0.25 vs 2.618 changed the zigzag not at
-all — 86.0% vs 89.7% bad — and the tight V from 10.5% to 0%.)
-
 **Not scoreable in `J`** — this run's traces are unusable, see below.
+
+### The low half of the `r_omega` ladder: the move off 0.25 DID pay (2026-08-15)
+
+840 rollouts, 7 shapes × `r_omega` ∈ {0.25, 0.5, 1.0, 2.618}, `q_cross` held at
+0.276, `r=2.618` carried in the same process as the overlap arm so the two
+ladders join without assuming cross-run comparability.
+`soak_data/soak_r_ladder_low.jsonl`, figure `figures/2026-08-15/01_r_ladder_low.png`.
+n≈29 per cell. mean ± sd of max|e_cross|:
+
+| shape | r=0.25 | r=0.5 | r=1.0 | r=2.618 |
+| --- | --- | --- | --- | --- |
+| straight | 0.067±.014 | 0.048±.026 | 0.053±.003 | 0.054±.001 |
+| corner | 0.304±.003 | 0.306±.001 | 0.306±.004 | 0.311±.007 |
+| S | 1.982±1.110 | **2.566±.014** | 1.577±.249 | 1.584±.091 |
+| **zigzag** | **0.803±.010** | **0.812±.039** | **0.387±.029** | 0.486±.145 |
+| tight V | 0.271±.000 | 0.275±.000 | 0.279±.000 | 0.289±.021 |
+| U-turn | 2.381±1.363 | 2.619±.006 | 2.604±.199 | **1.714±.740** |
+| loop | 0.385±.024 | 0.436±.005 | 0.369±.032 | 0.438±.042 |
+| **mean** | 0.885 | 1.009 | 0.796 | **0.697** |
+| **mean, no U-turn** | 0.635 | 0.740 | **0.495** | 0.527 |
+
+**The zigzag HALVES between r=0.5 and r=1.0** (0.812 → 0.387), at sd 0.010–0.039
+on both sides — as reproducible as anything measured here, and nothing to do with
+the U-turn. That alone moves the six-shape aggregate from 0.635 to 0.495. So the
+previous ladder's "flat" verdict was **an artifact of where its floor was**: `r`
+has a threshold somewhere in (0.5, 1.0) and is genuinely flat above it.
+
+**`final_err` is monotone in `r` across the whole range** — 0.661 / 0.440 / 0.379
+/ **0.343** m averaged over the seven shapes, improving at every rung including
+the ones where `max|e_cross|` is flat. The U-turn (2.102 → 0.655) and the S
+(1.291 → 0.556) carry most of it, but no shape gets worse. A metric that
+improves monotonically where the other is flat is the second time these two have
+ranked a ladder differently (see the `q` ladder), and it is again `final_err`
+that agrees with "did it arrive".
+
+**Consequence: the joint move stands as a joint move**, and `r_omega=2.618`
+remains adopted. The honest description is two-part, and the halves have
+different strengths: **the move off `r=0.25` is real and general** (zigzag,
+`final_err`, six-shape aggregate), while **the specific value 2.618 versus
+anything in [1.0, 5.0] is defensible only through `floor_6_00031`** — and after
+2026-08-15's generality run, not even as a shape claim. Anything ≥ 1.0 would
+serve; 2.618 is kept because it is measured, not because it is special.
+
+### The U-turn basin does not generalise, and the labels do not survive looking (2026-08-15)
+
+1200 rollouts, `q_cross` ∈ {0.2, 0.276, 0.4, 0.5} at `r=2.618`, on four U-turn
+plans from the constructed v2 library **plus `floor_6_00031` as an in-run
+control**, n≈59 per cell. `soak_data/soak_uturn_generality.jsonl`, figures
+`figures/2026-08-15/02_*.png` and `03_*.png`. mean ± sd, %bad = >2.0 m:
+
+| plan | q=0.2 | q=0.276 | q=0.4 | q=0.5 |
+| --- | --- | --- | --- | --- |
+| **floor_6_00031** (control) | 2.612 / 97% | 1.613 / 18% | **1.540 / 0%** | 2.686 / 100% |
+| floor_6_v2_00003 | 0.325 / 0% | 0.290 / 0% | 0.441 / 0% | 0.355 / 0% |
+| floor_6_v2_00004 | 0.289 / 0% | 0.290 / 0% | 0.287 / 0% | 0.286 / 0% |
+| floor_6_v2_00008 | 2.497 / 100% | 2.616 / 100% | 2.305 / 100% | 2.333 / 100% |
+| floor_6_v2_00010 | 1.709 / 30% | 1.673 / 20% | 1.844 / 34% | 1.466 / 18% |
+
+**Only the control has a basin.** The others are flat-and-easy (two of them, ~0.29 m
+at every rung, sd 0.000–0.198), flat-and-hopeless (00008, 100% bad everywhere,
+sd 0.001–0.018), or weakly bimodal with **no `q` dependence at all** (00010,
+18–34% bad in no order). So `q_cross`'s near-vertical walls are a property of one
+plan, and the U-turn sections above are hereby scoped to it.
+
+**The stronger form of the refutation came from LOOKING at the plans, not from
+the numbers.** Rendered (`03_uturn_plans.png`), the five are: one true hairpin
+(00010), one rectangular U of two same-sign 90° corners (00004), one **bent line
+that is not a U-turn at all** (00003) — and 00008, which is a **near-duplicate of
+the control**: same corridor, same three-sided route, ~1 m of difference at the
+start. That is what closes the obvious objection ("you picked plans that were not
+really U-turns"): the plan most geometrically similar to `floor_6_00031` is the
+one *most* clearly lacking the basin. It is the route's exact plan, not its shape
+and not even its corridor.
+
+**The `shape` label is a ranking aid and nothing more.** All five score
+`total_abs_turn` 7.0–9.3 rad — the descriptor cannot separate a 180° hairpin from
+two same-sign 90° corners, and it still counts the leading in-place pivot. This
+is the **second** automatic shape labeller to mislead here (the first:
+`classify_plans.py` calling 58 of 100 plans CORNER). **Render the plans before
+making any per-shape claim**; using a label to *stratify* a sample is fine, since
+that only needs correlation with geometry, not a correct name.
+
+### The constructed plan library, and the first PMP solve cost (2026-08-15)
+
+`tools/jobs/20_generate_v2_library.sh` screened 1200 start/goal pairs per floor,
+kept 500, and PMP-solved them into `~/traj_data_v2` (fetched to `traj_data_v2/`).
+
+**320 solved, 180 failed (36%)** — 110 `Exceeded max_rollout_sim_time=60 s`,
+70 `BVP solve failed … maximum number of mesh nodes is exceeded`. The screen
+works as designed: the library is **100% turning shapes, zero straight lines**
+(labels, unreliable as above, are 131 UTURN / 100 S / 76 CORNER / 13 ZIGZAG),
+against a random-goal library that was ~64% straight.
+
+**PMP solve cost, measured for the first time: mean 1.84 s, median 1.7 s, p90
+2.5 s, max 4.3 s per plan**, single core. This is the number the RL re-planner's
+data budget depends on: ~2 s a label means 100k supervised labels is ~55 core-hours,
+i.e. an overnight run on a handful of cores and **no Gazebo at all**. It also
+bounds the re-join solve from above — the re-join problem is strictly smaller
+than a full plan — so "PMP cannot be solved online" remains a statement about
+scipy's `solve_bvp`, not about the problem.
+
+`tools/select_broad_eval.py` picks a geometry-diverse subset from a library,
+stratifying on the (untrusted) label and on path length.
 
 ### The traced-soak path had two bugs, and neither could fail loudly (2026-08-14)
 
