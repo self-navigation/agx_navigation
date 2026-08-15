@@ -156,6 +156,103 @@ def cost_functional(errors: Sequence[Sequence[float]],
                         j_terminal=j_term, n_steps=len(e), dt=dt)
 
 
+def step_cost(err: Sequence[float],
+              correction: Sequence[float],
+              dt: float,
+              weights: CostWeights | None = None) -> float:
+    """The running cost of ONE control step: `(e' Q e + u' R u) * dt`.
+
+    This is the integrand of `cost_functional`, exposed on its own for two
+    callers that cannot wait for the rollout to finish:
+
+    * `EpsilonAccumulator`, which sums it online so a rollout yields `J` without
+      anyone storing or re-pairing a trace;
+    * **a reinforcement-learning reward**, which is `-step_cost(...)`. That
+      identity is the point: a policy maximizing the undiscounted return of
+      `-step_cost` is minimizing `J` minus its terminal block, so the training
+      signal and the reported score become the SAME functional rather than two
+      hand-weighted opinions that happen to correlate. `rl_corrector/reward.py`
+      predates this and does not have that property -- it carries eight
+      independently tuned weights and is not comparable to anything we report.
+
+    Raises on non-finite input, for the reason `cost_functional` does.
+    """
+    w = weights or CostWeights()
+    e = np.asarray(err, dtype=float)
+    u = np.asarray(correction, dtype=float)
+    if e.shape != (3,):
+        raise ValueError(f"err must be (3,), got {e.shape}")
+    if u.shape != (2,):
+        raise ValueError(f"correction must be (2,), got {u.shape}")
+    if dt <= 0:
+        raise ValueError(f"dt must be positive, got {dt}")
+    if not np.isfinite(e).all() or not np.isfinite(u).all():
+        raise ValueError("non-finite value in err/correction -- refusing to score")
+    return float((e @ w.q() @ e + u @ w.r() @ u) * dt)
+
+
+class EpsilonAccumulator:
+    """Sum the tracking functional online, one control step at a time.
+
+    WHY THIS EXISTS RATHER THAN SCORING A TRACE AFTERWARDS. `J` needs the
+    per-step track, so the first implementation wrote a CSV per rollout and
+    paired it up offline. That pairing is a whole class of silent failure: the
+    2026-08-14 traced soak produced files holding five rollouts each (tracing was
+    armed by file and never disarmed) and a stride that aliased against the cycle
+    length, and BOTH bugs scored to plausible numbers rather than raising. A
+    rollout that accumulates its own `J` as it runs cannot be paired with the
+    wrong plan, cannot be subsampled unevenly, and needs no disk at all.
+
+    Traces remain worth writing for *diagnosis* (`trace_diff` needs them). They
+    are no longer the route to a score.
+
+    Usage:
+
+        acc = EpsilonAccumulator(dt)
+        for step in rollout:
+            acc.push(err, correction)
+        score = acc.finalize(final_err)
+    """
+
+    def __init__(self, dt: float, weights: CostWeights | None = None) -> None:
+        if dt <= 0:
+            raise ValueError(f"dt must be positive, got {dt}")
+        self.dt = float(dt)
+        self.weights = weights or CostWeights()
+        self._track = 0.0
+        self._ctrl = 0.0
+        self._n = 0
+
+    def push(self, err: Sequence[float], correction: Sequence[float]) -> float:
+        """Accumulate one step; returns that step's cost (usable as `-reward`)."""
+        e = np.asarray(err, dtype=float)
+        u = np.asarray(correction, dtype=float)
+        c = step_cost(e, u, self.dt, self.weights)  # validates
+        self._track += float(e @ self.weights.q() @ e) * self.dt
+        self._ctrl += float(u @ self.weights.r() @ u) * self.dt
+        self._n += 1
+        return c
+
+    def finalize(self, final_err: float) -> EpsilonScore:
+        """Close the rollout with its terminal miss and return the score.
+
+        Refuses an EMPTY rollout. A rollout that produced no control steps did
+        not happen, and returning `J = w_terminal * final_err^2` for it would
+        report a small, plausible number for a run that never drove -- the exact
+        shape of error this module's docstring exists to prevent.
+        """
+        if self._n == 0:
+            raise ValueError("no steps accumulated -- refusing to score an empty "
+                             "rollout; a rollout that never drove is a failure, "
+                             "not a cheap one")
+        if not np.isfinite(final_err):
+            raise ValueError("non-finite final_err")
+        j_term = float(self.weights.w_terminal * float(final_err) ** 2)
+        return EpsilonScore(j_total=self._track + self._ctrl + j_term,
+                            j_tracking=self._track, j_control=self._ctrl,
+                            j_terminal=j_term, n_steps=self._n, dt=self.dt)
+
+
 def compare(scores_a: Sequence[EpsilonScore],
             scores_b: Sequence[EpsilonScore]) -> dict:
     """Mean J and its spread for two arms.

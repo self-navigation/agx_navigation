@@ -11,8 +11,9 @@ Pure: no ROS, no Gazebo, no skfmm.
 import numpy as np
 import pytest
 
-from agx_planning.tuning.epsilon import (CostWeights, EpsilonScore, compare,
-                                         cost_functional)
+from agx_planning.tuning.epsilon import (CostWeights, EpsilonAccumulator,
+                                         EpsilonScore, compare, cost_functional,
+                                         step_cost)
 
 
 def _score(e, u, dt=0.1, final=0.0, w=None):
@@ -161,3 +162,63 @@ def test_compare_reports_spread_not_just_means():
 def test_compare_requires_both_arms():
     with pytest.raises(ValueError):
         compare([], [EpsilonScore(1.0, 1.0, 0.0, 0.0, 10, 0.1)])
+
+
+# ------------------------------------------------- online accumulation (J live)
+
+
+def test_accumulator_matches_batch_scoring():
+    """The load-bearing property of the online path: accumulating step by step
+    must give byte-for-byte what scoring the whole trace gives. If these two ever
+    disagree, every number computed either way becomes unattributable."""
+    rng = np.random.default_rng(7)
+    e = rng.normal(size=(60, 3)) * 0.3
+    u = rng.normal(size=(60, 2)) * 0.1
+    acc = EpsilonAccumulator(dt=0.05)
+    for k in range(len(e)):
+        acc.push(e[k], u[k])
+    online = acc.finalize(final_err=0.4)
+    batch = cost_functional(e, u, 0.05, 0.4)
+    assert online.j_total == pytest.approx(batch.j_total, rel=1e-12)
+    assert online.j_tracking == pytest.approx(batch.j_tracking, rel=1e-12)
+    assert online.j_control == pytest.approx(batch.j_control, rel=1e-12)
+    assert online.j_terminal == pytest.approx(batch.j_terminal, rel=1e-12)
+    assert online.n_steps == batch.n_steps
+
+
+def test_accumulator_refuses_empty_rollout():
+    """A rollout that never drove must not score as a cheap one. Without this it
+    would return w_terminal*final_err^2 -- a small plausible number for a run
+    that did not happen."""
+    with pytest.raises(ValueError, match="no steps"):
+        EpsilonAccumulator(dt=0.1).finalize(final_err=0.1)
+
+
+def test_accumulator_rejects_nonfinite_step():
+    acc = EpsilonAccumulator(dt=0.1)
+    with pytest.raises(ValueError):
+        acc.push([0.0, float("nan"), 0.0], [0.0, 0.0])
+
+
+def test_push_returns_the_step_cost_that_is_the_reward():
+    """push() returns the per-step cost so an RL env can use -cost as its reward
+    without recomputing it, and the sum of returned costs is the running part
+    of J (everything but the terminal block)."""
+    e = np.full((10, 3), 0.1)
+    u = np.full((10, 2), 0.05)
+    acc = EpsilonAccumulator(dt=0.1)
+    total = sum(acc.push(e[k], u[k]) for k in range(10))
+    s = acc.finalize(0.0)
+    assert total == pytest.approx(s.j_tracking + s.j_control, rel=1e-12)
+
+
+def test_step_cost_is_zero_only_at_the_ideal():
+    assert step_cost([0, 0, 0], [0, 0], 0.1) == 0.0
+    assert step_cost([0, 0.1, 0], [0, 0], 0.1) > 0.0
+    assert step_cost([0, 0, 0], [0.1, 0], 0.1) > 0.0
+
+
+def test_step_cost_scales_linearly_with_dt():
+    a = step_cost([0.1, 0.2, 0.3], [0.1, 0.2], 0.05)
+    b = step_cost([0.1, 0.2, 0.3], [0.1, 0.2], 0.10)
+    assert b == pytest.approx(2 * a, rel=1e-12)

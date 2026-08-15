@@ -75,29 +75,115 @@ Budget guidance: mean-of-3 (sd 0.055) resolves the ~0.2 m effect a real gain
 improvement would produce; use mean-of-5 to VALIDATE a winner, where the extra
 precision is cheap because only a few candidates need it.
 
+SCORING IN `J`, AND WHY IT NEEDS A DIFFERENT AGGREGATOR (added 2026-08-15)
+--------------------------------------------------------------------------
+`max|e_cross|` is a tracking error in metres; `J` (see `epsilon.py`) is the cost
+functional the advisor's SVCM framework is stated in, so it is the quantity a
+claim should be made in. `metric_values` selects between them, and the tuner can
+now search either.
+
+**They cannot share an aggregator.** `max|e_cross|` is bounded and comparable
+across plans -- a hard plan costs 2 m where an easy one costs 0.05 m, a factor of
+40. `J` is an INTEGRAL of a quadratic, so across the 51-plan library sweep it
+spans 0.2 to 1043, a factor of 5000. Measured on that sweep
+(`epsilon_data/libsweep_J.jsonl`, 51 plans, both arms):
+
+    aggregator    default    tuned    ratio    agrees with per-plan win rate?
+    mean            42.26    10.40     4.06    NO  -- 45/51 plans won, ratio 1.6
+    median           8.14     6.64     1.23    understates
+    geometric        9.72     5.14     1.89    YES
+
+The plain mean is a ONE-PLAN objective: `floor_6_00031` alone contributes 1043 of
+the default arm's 2155 total, i.e. **48% of the aggregate comes from 2% of the
+plans**. Optimizing that mean would tune the corrector to whichever plan happens
+to be worst, which is precisely the overfitting the broad plan library was built
+to escape.
+
+So `how="geometric"` is the default for `J`: the geometric mean is a mean of
+logs, so it scores a 2x improvement on an easy plan the same as a 2x improvement
+on a hard one, which is the intent -- "make every plan better" rather than
+"rescue the worst plan". It also matches the per-plan win rate, which is the
+model-free check on any aggregator.
+
+Keep `how="arithmetic"` for `max|e_cross|`, where it is already validated and
+where the metric's bounded range makes the outlier problem much milder.
+
 Pure module: no ROS, no Gazebo, no numpy needed.
 """
 
 import math
-from typing import Dict, List, Sequence
+from typing import Dict, List, Mapping, Sequence
+
+#: Per-trajectory metrics a search may minimize. All are "lower is better".
+#: `j_total` is the SVCM currency and wants `how="geometric"`; see the module
+#: docstring for the measurement that establishes that.
+METRICS = ("max_cross", "j_total", "final_err")
+
+#: The aggregator each metric should be reduced ACROSS TRAJECTORIES with.
+DEFAULT_HOW = {"max_cross": "arithmetic", "j_total": "geometric",
+               "final_err": "arithmetic"}
 
 
-def aggregate(per_traj: Dict[str, float], expected: Sequence[str]) -> float:
-    """Mean max|e_cross| over `expected`, or inf if any is missing/non-finite.
+def aggregate(per_traj: Dict[str, float], expected: Sequence[str],
+              how: str = "arithmetic") -> float:
+    """Reduce per-trajectory scores to one number, or inf if any is missing.
 
     `expected` is the fixed trajectory list, so the denominator cannot drift.
+    `how` is "arithmetic" (the default, correct for `max|e_cross|`) or
+    "geometric" (correct for `J`) -- see the module docstring for the
+    measurement behind that split.
+
+    The metric is not named here on purpose: this reduces whatever scalar the
+    caller selected with `metric_values`, so adding a metric does not mean
+    touching this function.
     """
     if not expected:
         raise ValueError("expected trajectory list is empty")
-    total = 0.0
+    if how not in ("arithmetic", "geometric"):
+        raise ValueError(f"unknown aggregator {how!r}; use 'arithmetic' or 'geometric'")
+    vals: List[float] = []
     for name in expected:
         if name not in per_traj:
             return math.inf
         v = per_traj[name]
         if v is None or not math.isfinite(v):
             return math.inf
-        total += float(v)
-    return total / len(expected)
+        vals.append(float(v))
+    if how == "arithmetic":
+        return sum(vals) / len(vals)
+    # Geometric mean, computed in logs so a long list cannot overflow the
+    # product. A metric of exactly 0 is a PERFECT trajectory, not an error, so
+    # it is floored rather than allowed to send the log to -inf and drag the
+    # whole aggregate to zero -- one flawless plan must not make every candidate
+    # look equally perfect.
+    if any(v < 0 for v in vals):
+        raise ValueError("geometric aggregation needs non-negative values; "
+                         "got a negative score")
+    floor = 1e-12
+    return math.exp(sum(math.log(max(v, floor)) for v in vals) / len(vals))
+
+
+def metric_values(per_traj: Mapping[str, Mapping[str, float]],
+                  metric: str) -> Dict[str, float]:
+    """Pull one metric out of per-trajectory records, ready for `aggregate`.
+
+    `per_traj` maps a trajectory name to its record (`{"max_cross": ...,
+    "j_total": ...}`), as a rollout now reports directly -- `J` is accumulated
+    online by `epsilon.EpsilonAccumulator`, so no trace file is involved.
+
+    A trajectory whose record LACKS the metric is dropped, which makes
+    `aggregate` return inf. That is the same all-or-nothing rule the module
+    docstring argues for, and it matters most here: rollouts recorded before a
+    metric existed carry no `j_total`, and silently averaging over the ones that
+    do would compare candidates on different trajectory sets.
+    """
+    if metric not in METRICS:
+        raise ValueError(f"unknown metric {metric!r}; known: {METRICS}")
+    out: Dict[str, float] = {}
+    for name, rec in per_traj.items():
+        if metric in rec and rec[metric] is not None:
+            out[name] = float(rec[metric])
+    return out
 
 
 def median(values: Sequence[float]) -> float:

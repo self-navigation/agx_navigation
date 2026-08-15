@@ -45,6 +45,7 @@ from ..rl_corrector.compare_correctors import _tvlqr_wheels
 from ..rl_corrector.config import RLCorrectorConfig
 from ..rl_corrector.nominal import load_recorded
 from ..runtime_corrector import tvlqr as tvlqr_mod
+from . import epsilon as epsilon_mod
 
 
 def drive(bridge, cfg, tvcfg, nom, seed, use_terrain=True):
@@ -75,22 +76,47 @@ def drive(bridge, cfg, tvcfg, nom, seed, use_terrain=True):
     max_cross = 0.0
     cross_sq = 0.0
     n_steps = len(nom)
+    # J is accumulated ONLINE, so a rollout reports the SVCM cost functional
+    # directly instead of via a trace file scored afterwards. The offline route
+    # (`tools/score_epsilon.py`) still exists for already-recorded runs, but it
+    # is a pairing problem -- match a track to the wrong plan and you get a
+    # large, plausible, meaningless number -- and 2026-08-14 lost a whole soak's
+    # traces to exactly that. The pairing convention here is deliberately the
+    # SAME as the offline scorer's (post-step pose against poses[k], correction
+    # as applied-minus-nominal at k) so numbers from the two are comparable.
+    #
+    # ONE KNOWN DIFFERENCE, not yet quantified: `diag.dv/domega` is the
+    # correction TVLQR applied in twist space, already saturated by its own
+    # dv_max/domega_max but taken BEFORE `_tvlqr_wheels` clips the wheel
+    # commands at `wheel_cmd_max`. The offline scorer reads the clipped wheel
+    # commands back and differences those, so on a rollout that clips a wheel
+    # the two disagree, with the offline one charging less. Neither is wrong --
+    # they answer "what did the corrector ask for" vs "what reached the plant" --
+    # but do not mix them in one table without checking `saturated_*` first.
+    acc = epsilon_mod.EpsilonAccumulator(nom.dt)
     for k in range(n_steps):
         planned = nom.poses[k]
         left, right = float(nom.wheels[k][0]), float(nom.wheels[k][1])
-        wheels, _ = _tvlqr_wheels(left, right, planned, st.pose,
-                                  cfg, tvcfg, cache, k)
+        wheels, diag = _tvlqr_wheels(left, right, planned, st.pose,
+                                     cfg, tvcfg, cache, k)
         st = bridge.step(wheels, nom.dt)
         err = tvlqr_mod.tracking_error(planned, st.pose)
         max_cross = max(max_cross, abs(err[1]))
         cross_sq += err[1] ** 2
+        acc.push(err, (diag.dv, diag.domega))
     # `poses` holds n_steps+1 entries; index n_steps is the goal, matching
     # compare_correctors exactly. Using [-1] would silently measure something
     # else if the recorder ever pads.
     goal = nom.poses[n_steps]
     final_err = float(np.hypot(st.pose[0] - goal[0], st.pose[1] - goal[1]))
+    score = acc.finalize(final_err)
     out = {"max_cross": float(max_cross), "final_err": final_err,
            "rms_cross": float((cross_sq / n_steps) ** 0.5) if n_steps else 0.0,
+           # The SVCM currency, and its split: a single J cannot say WHETHER a
+           # rollout was expensive because it wandered or because it fought the
+           # plan, and those are the two failure modes.
+           "j_total": score.j_total, "j_tracking": score.j_tracking,
+           "j_control": score.j_control, "j_terminal": score.j_terminal,
            "end_pose": [float(v) for v in st.pose[:3]],
            # Steps whose physics never happened before the wall-clock deadline
            # expired. Non-zero means this rollout is not the trajectory the
