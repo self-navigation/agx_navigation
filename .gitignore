@@ -31,6 +31,7 @@ tools/attention_mcp/.venv/
 
 # Fetched measurement data (see Justfile fetch-* recipes)
 traj_data/
+traj_data_v2/
 tune_data/
 compare_data_new/
 sweep_clean/
