@@ -1,0 +1,217 @@
+# The corrector: design, and what tuning it still needs
+
+**Written 2026-08-15.** Source of record for *what we are building and why*.
+CLAUDE.md's "Current work" holds measured findings; `handover.md` holds current
+state; this holds the architecture and the argument for it. Formulas cited here
+are transcribed in [svcm-source.md](svcm-source.md) with page numbers.
+
+## The objective, stated once
+
+Hold a **frozen, open-loop PMP plan** under slip that the planner did not know
+about, using **closed-loop, immediate-mode corrections computed onboard**, and
+stay ε-optimal in the cost functional — not merely close in metres.
+
+The source states the decomposition we are implementing directly (p. 52):
+
+$$u_{adm} = u_J + \bar{u}$$
+
+the control the agent already has, plus a correction drawn from the ε-optimal
+set. **Our frozen PMP plan is $u_J$ and the corrector is $\bar u$.** That is
+worth stating because it settles a recurring question: the residual/corrector
+structure is not a shortcut around the theory, it is the theory's own form.
+
+## What the source actually prescribes, and where we already agree
+
+Three findings from reading the dissertation directly (2026-08-15), each of
+which changes what we build:
+
+**1. The catalogue is stored as small networks — explicitly.** p. 77: PMP
+solutions "можно хранить как в форме параметрических траекторий, так и в виде
+компактных аппроксиматоров, например, небольших сетей". So "RL as the library
+compressor" is the source's own proposal, not an extrapolation of it. The
+motivation we arrived at independently — a tabulated catalogue over a continuous
+deviation state is defeated by dimensionality — is the reason the source offers
+the alternative.
+
+**2. Nominal and crisis scenarios are the same PMP problem with different
+$Q_c, R_c, P_f$** (p. 76–78). The scenario index is the surface/environment
+class. Crisis matrices are prescribed as: **larger yaw penalty, larger
+wheel-speed-difference penalty (to suppress skid), and an INCREASED
+control-effort penalty $R$ to limit aggressive action in low-traction zones.**
+
+**3. We independently reproduced (2) empirically, and did not notice.** Tuning
+against slip terrain moved `r_omega` **up** 0.25 → 2.618 and `q_cross` **down**
+10 → 0.276 — an increased control-effort penalty on $\omega$ and a relaxed
+cross-track penalty. That is the crisis-matrix prescription, found by Bayesian
+optimization against Gazebo without reference to the text. It is the strongest
+available evidence that the two lines of work describe the same system, and it
+belongs in the write-up.
+
+It also reframes what our tuner *is*: the source says $\theta^p$ (which fixes
+$Q_c, R_c$) is "фиксируется в результате обучения" — determined by learning. Our
+BO tuner is that step, done with a different optimizer. We have simply only ever
+run it for **one** scenario.
+
+## The architecture
+
+Four components. Two exist, two do not.
+
+| # | component | rate | status |
+| --- | --- | --- | --- |
+| 1 | PMP planner — nominal plan on the nominal surface | once per goal, offline | **built** |
+| 2 | TVLQR — track the active reference | 50 Hz onboard | **built, tuned** |
+| 3 | Scenario recognition — measure the surface, pick the catalogue index | continuous onboard | **not built** |
+| 4 | Re-join template network — the compressed catalogue | on trigger | **not built** |
+
+### The distinction that was blurred, and matters
+
+There are **two different things RL could compress, at different levels**, and
+conflating them is why the previous RL work had no clear target:
+
+- **Level A — the template library.** A map from (deviation state, surface
+  class) to a short re-join trajectory. Input is ~8–10 continuous dimensions:
+  $(e_{along}, e_{cross}, e_\theta, v, \omega, \hat\chi)$ plus a little local
+  geometry. **This is where the curse of dimensionality bites** — a tabulated
+  catalogue at even 5 samples per axis is $5^9 \approx 2\times10^6$ entries, and
+  the sampling is not the problem, the *storage and interpolation* is. A small
+  network is the compression. **This is the RL/regression job.**
+- **Level B — the cost matrices $(Q_c, R_c)$ per scenario.** Input is one
+  categorical index (nominal / ice / sand). Output is ~5 numbers. **This is a
+  table with a handful of rows and needs no compression at all.**
+
+The source runs actor-critic at Level B and stores networks at Level A; it does
+not separate them sharply, and read quickly it suggests "RL" is one thing. It is
+not. **Level B is our existing tuner, run once per surface class. Level A is a
+supervised regression problem.** Neither is a SAC residual on wheel commands.
+
+### 3. Scenario recognition — the step both documents assume and neither specifies
+
+`chi_hat = omega_ideal(from wheel commands) / omega_measured(gyro)`, i.e.
+`slip_ident`'s computation run recursively online. Undefined when $\omega
+\approx 0$, so it needs a validity gate that holds the last value. Maps to a
+catalogue index by thresholding.
+
+This is well-founded here because **chi is a property of the surface** — measured
+1.36 to 25.4 across the ground-friction sweep — which is exactly what makes it
+both an index into a surface-keyed catalogue and, unavoidably, *non-constant
+within one trajectory*. The latter is the structural reason a frozen plan needs
+correction at all.
+
+### 4. The re-join template network — Level A
+
+```
+sample (nominal plan, deviation state, local chi)
+    -> solve the real PMP re-join problem      (teacher)
+    -> regress                                  (student = the compressed catalogue)
+```
+
+Supervised, not SAC, and every open RL failure dies with the switch: no
+exploration so no `ent_coef` runaway; no bootstrapped value so no `critic_loss`
+divergence; no reward shaping; each label is an exact optimum rather than a noisy
+return. **Data generation needs no Gazebo**, so it is CPU-parallel. Gazebo
+returns only for validation.
+
+The data budget is now measured rather than guessed: **PMP solves in ~1.84 s
+mean / 2.5 s p90 on one core**, so ~100k labels is ~55 core-hours. That is an
+overnight run on a few cores.
+
+Two things stand between here and there:
+
+- **The re-join boundary condition.** The solver currently goes start → goal; it
+  needs "from an arbitrary state, back onto the nominal path". A BC change, not
+  a new solver.
+- **A 36% solve-failure rate** on fresh start/goal pairs (110 timeouts, 70 mesh
+  exhaustion of 500). Tolerable when building a library offline — you discard
+  the failures — and **not** tolerable if it carries over to the re-join
+  problem, because those failures become gaps in the catalogue. Measure it on
+  the re-join problem before committing.
+
+### The trigger — and it already exists
+
+Escalating from TVLQR to a re-join template needs a test for *"the reference has
+become infeasible"*, which is **not** the same as *"we are far off it"*. The
+signal is already implemented and unused: `CorrectionDiagnostics.saturated_v` /
+`saturated_omega`, whose own docstring says a persistently saturated corrector
+"is being asked to fix a deviation beyond its authority, which means either the
+limits are too tight or the trajectory needs replanning". That is the trigger,
+stated in the codebase before we knew we needed it. The source's own version is
+the accumulated model-prediction error (p. 80).
+
+## Does the existing RL code match this? No — and here is exactly where
+
+`rl_corrector/` trains a SAC policy emitting a **4-wheel multiplicative residual
+on the commands**, rewarded by a hand-shaped 8-term function.
+
+| piece | verdict |
+| --- | --- |
+| action = per-wheel multiplicative coefficient | **wrong object.** Not a re-join trajectory (Level A) and not a cost matrix (Level B). It is a third thing the framework has no place for. Also undeployable: the physical Scout takes only $(v,\omega)$. |
+| reward = 8 independently tuned weights (`w_ontrack`, `w_cross`, `w_heading`, `w_progress`, `w_effort`, `w_smooth`, `term_penalty`, `success_bonus`) | **wrong currency.** Not comparable to anything we report, and not $J$. |
+| SAC / off-policy exploration | **wrong method** for a problem with an exact teacher. |
+| observation layout, `Bridge`, terrain sampler, env harness | **keep.** Sound, tested, and reusable. |
+| `compare_correctors`, eval sets, soak, tuner | **keep.** Plant-independent measurement machinery. |
+| identity fail-safe (`policy_path` unset ⇒ byte-identical pass-through) | **keep.** It is why none of this is deployed and nothing is at risk. |
+
+**Recommendation: retire the SAC residual rather than repair it.** Its reward is
+not worth converting to $J$, because the object it rewards is wrong at the action
+level; fixing the currency of a mis-specified action buys nothing. The harness
+around it is most of the value and survives intact.
+
+This is consistent with what was already measured: no RL checkpoint ever showed
+a learning trend on the real task (r = 0.111 over 20 checkpoints, 0 of 20 beat
+TVLQR). We now have an architectural reason for that, not just an empirical one.
+
+## What $J$ changes, now that it is computed online
+
+`epsilon.EpsilonAccumulator` sums the functional as a rollout runs, so `j_total`
+comes back with `max_cross` and no trace file is involved. Three consequences:
+
+1. **Tuning can target $J$.** `objective.metric_values` selects the metric and
+   `aggregate(..., how="geometric")` reduces it.
+2. **$J$'s aggregator had to differ from metres'.** $J$ spans 0.2 to 1043 across
+   the 51-plan library, and `floor_6_00031` alone is **48% of the arithmetic
+   mean** — so a search on that mean tunes to whichever plan is worst. The
+   geometric mean tracks the per-plan win rate (45/51) where the arithmetic mean
+   does not.
+3. **Any future RL gets its reward for free**: `-epsilon.step_cost(...)` is the
+   per-step integrand, so the training signal and the reported score become the
+   same functional instead of two hand-weighted opinions.
+
+**$J$ is an upper bound on $\varepsilon$, never $\varepsilon$ itself** — $J^* > 0$
+under slip and is unknown. That is the honest reading and the useful one: an
+ε-admissibility claim is established by bounding.
+
+## The tuning that remains
+
+In priority order. Note that (1) and (2) are *the same tuner*, run more times —
+not new machinery.
+
+1. **Re-tune against $J$ on the broad plan library, not the seven.** Every gain
+   we hold was chosen on 7 hand-picked plans against `max|e_cross|`. The
+   library sweep already showed that set is enriched for hard plans, and the
+   U-turn episode showed a per-shape optimum need not survive an aggregate.
+2. **One $(Q_c, R_c)$ per surface class — the Level B catalogue.** We have one
+   row, measured on mixed terrain. The source prescribes distinct crisis
+   matrices; we should *measure* them, per profile, with terrain pinned. This is
+   both a deliverable and a test of finding (3) above: if tuning on pinned ice
+   moves the gains further in the same direction, the correspondence is real.
+3. **Widen beyond $(q_{cross}, r_\omega)$** to the full diagonal
+   ($q_{along}, q_{heading}, r_v$). Deferred until (1) fixes the objective —
+   widening a search whose objective is the wrong quantity resolves noise.
+4. **Do not** re-run a wide 2-D search on the seven-plan set. That is finished.
+
+## Open questions for the advisor
+
+- **Sand** is inexpressible in the current friction model: under min-combination
+  with an isotropic ground, any ground below the wheel's $\mu_2$ gives ratio 1,
+  so "slides but still steers" cannot be represented at low friction. Needs a
+  different mechanism, not a parameter.
+- **The platform mismatch.** The source's model is a 3-state unicycle
+  $(x, y, \theta)$ with controls $(v, \omega)$; ours is a 5D skid-steer
+  wheel-space model with per-wheel accelerations, and the skid-steer $\chi$ has
+  no counterpart in the source formulation.
+- **The server.** Theorem 2 makes the communication delay $\tau$ an explicit
+  hypothesis, and the offloading argument cites DShot/PWM frame budgets — a
+  flight controller, not a Jetson. On our platform the *premise* wants
+  re-checking even though the architecture is sound where it holds. Note the
+  user's position, which is narrower and compatible: keep the catalogue onboard
+  in compressed form, so no solve and no round trip happens at correction time.

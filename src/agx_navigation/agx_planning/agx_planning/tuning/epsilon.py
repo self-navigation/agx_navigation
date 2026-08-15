@@ -23,16 +23,42 @@ pure, and answers a question we are not asking. The planner's optimality is not
 in doubt; the CORRECTOR's is.
 
 So this module scores the *trajectory-following* functional, which is the one the
-corrector actually optimizes and which the advisor's own §1.1 gives as the worked
-example for exactly this task:
+corrector actually optimizes:
 
     L = (x - x_ref)' Q (x - x_ref)  +  u' R u
 
 with `x - x_ref` the (along, cross, heading) tracking error already computed by
-`tvlqr.tracking_error`, and `u` the CORRECTION (dv, domega) -- not the total
-command. Correction rather than total command is the substantive choice: the
-nominal command is what the planner already paid for, so charging it again would
-score every corrector for the plan's cost instead of its own.
+`tvlqr.tracking_error`, and `u` the CORRECTION (dv, domega).
+
+RELATION TO THE SOURCE'S FUNCTIONAL (1.7) -- TWO DELIBERATE DEVIATIONS
+----------------------------------------------------------------------
+The dissertation's functional is (1.7), §1.3.1, transcribed in
+`docs/svcm-source.md`:
+
+    J = 1/2 * int( q_x (x-x_T)^2 + q_y (y-y_T)^2 + q_th (th-th_T)^2
+                   + r_v v^2 + r_omega omega^2 ) dt
+
+Our Q/R has exactly that structure and even its variable names, but the form
+above differs from it in two places, both on purpose and neither previously
+written down (an earlier version of this docstring claimed to mirror the source
+and cited a section number that does not contain the functional -- corrected
+2026-08-15):
+
+* **Reference, not terminal target.** (1.7) penalizes deviation from the
+  terminal state `x_T`; we penalize deviation from the moving reference
+  `x_ref(t)`. (1.7) is the PLANNER's functional -- it is what produces the
+  trajectory. Scoring a corrector against `x_T` would reward cutting the corner
+  off the plan it is supposed to be tracking.
+* **Correction, not total control.** (1.7) charges the total `(v, omega)`; we
+  charge only `(dv, domega)`. The nominal command is what the planner already
+  paid for, so charging it again would score every corrector for the plan's
+  cost instead of its own. This is also the decomposition the source itself
+  gives on p. 52, `u_adm = u_J + u_bar` -- the existing control plus a
+  correction -- so charging `u_bar` alone is scoring the object that
+  decomposition names.
+
+Both make this a *tracking* functional rather than the planning one. Say so when
+reporting it; do not present a number from here as (1.7).
 
 WHAT THE NUMBER MEANS -- READ THIS BEFORE QUOTING IT
 ----------------------------------------------------
