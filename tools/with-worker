@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Run a command inside worker N's isolated Gazebo + ROS graph.
+#
+#     tools/with-worker 1 python3 -m agx_planning.tuning.soak ...
+#     tools/with-worker "" make rl-sim HEADLESS=true     # unchanged environment
+#
+# WHY THIS IS ONLY ENV VARS. Nothing in the workspace talks to Gazebo or ROS
+# through a hand-built endpoint: GazeboBridge constructs a `gz_transport.Node()`
+# and rclpy constructs its own, and both libraries read their isolation setting
+# from the environment at library init. So a second, fully separate sim needs no
+# code change anywhere -- not in the bridge, not in the launch files, not in the
+# tuner. Verified 2026-08-15 against a live sim on the VM: a client with
+# GZ_PARTITION=agx1 listed ZERO gz topics while the default partition listed the
+# running sim's, and ROS_DOMAIN_ID=41 saw only /rosout and /parameter_events.
+#
+# The two variables isolate different layers and BOTH are required:
+#
+#   GZ_PARTITION   -- gz-transport namespaces topics and services by partition.
+#                     Without it two `gz sim` servers both advertise
+#                     /world/rl_corrector/set_pose and every reset goes to
+#                     whichever answers first.
+#   ROS_DOMAIN_ID  -- DDS domain. Without it both stacks publish /clock,
+#                     /joint_states and the wheel command topic, and each
+#                     robot receives the other's commands. That is the
+#                     "wheels detach and links fall through the floor" failure
+#                     documented in CLAUDE.md; it is a ROS-side collision, so
+#                     GZ_PARTITION alone does NOT prevent it.
+#
+# WORKER UNSET IS SACRED. An empty first argument execs the command with the
+# environment untouched -- not with GZ_PARTITION="" or ROS_DOMAIN_ID=0, which
+# are observably different from unset to some tooling. Every measurement in this
+# repo was taken in the default partition, and a parallel-sim change that
+# silently moved the default one would invalidate the lot.
+set -uo pipefail
+
+usage() {
+    echo "usage: $(basename "$0") <worker-id|''> <command> [args...]" >&2
+    echo "  worker-id: integer 1-9, or empty for the default (unnamespaced) sim" >&2
+    exit 2
+}
+
+[ $# -ge 2 ] || usage
+
+worker=$1
+shift
+
+if [ -z "$worker" ]; then
+    exec "$@"
+fi
+
+case "$worker" in
+    [1-9]) ;;
+    *)
+        echo "with-worker: worker id must be 1-9 (got '$worker')" >&2
+        echo "with-worker: the cap is deliberate -- see tools/with-worker" >&2
+        exit 2
+        ;;
+esac
+
+# ROS_DOMAIN_ID is bounded in practice: domains above ~101 push DDS's port
+# calculation into the ephemeral range, where it collides with whatever the OS
+# hands out. Base 40 keeps workers 1-9 at 41-49, clear of the default 0 that
+# every existing run and every hand-typed `ros2 topic echo` uses.
+export ROS_DOMAIN_ID=$((40 + worker))
+export GZ_PARTITION="agx${worker}"
+export AGX_WORKER="$worker"
+
+exec "$@"

@@ -41,6 +41,29 @@ else
 GPU_PREFIX :=
 endif
 
+# ---- parallel sims: WORKER -------------------------------------------------
+# WORKER=n runs the whole stack in its own Gazebo transport partition (agxN) AND
+# its own DDS domain (40+n), so N sims coexist on one box. Both are needed and
+# why is documented in tools/with-worker, which is the same mapping for anything
+# invoked outside make (`tools/with-worker 1 python3 -m agx_planning.tuning.soak`).
+#
+# UNSET MUST STAY BYTE-IDENTICAL to the single-sim behaviour: every number in
+# CLAUDE.md was measured in the default partition, so the plain `make rl-sim` /
+# `make fixture` path may not gain an env var it did not have before. Hence the
+# empty WORKER_ENV rather than a "worker 0" that exports defaults explicitly.
+#
+#   make rl-sim WORKER=1 HEADLESS=true     # sim on partition agx1, domain 41
+#   make rl-train WORKER=1 ...             # trainer that talks to THAT sim
+WORKER ?=
+ifneq ($(strip $(WORKER)),)
+ifeq ($(filter 1 2 3 4 5 6 7 8 9,$(strip $(WORKER))),)
+$(error WORKER must be an integer 1-9 (got '$(WORKER)'); leave it unset for the default sim)
+endif
+WORKER_ENV := GZ_PARTITION=agx$(strip $(WORKER)) ROS_DOMAIN_ID=$(shell expr 40 + $(strip $(WORKER))) AGX_WORKER=$(strip $(WORKER))
+else
+WORKER_ENV :=
+endif
+
 ifeq ($(TELEOP_RAW),false)
 ASSISTED_TELEOP_START := ros2 action send_goal /assisted_teleop nav2_msgs/action/AssistedTeleop "{time_allowance: {sec: 0, nanosec: 0}}"
 ASSISTED_TELEOP_END := ros2 service call /assisted_teleop/_action/cancel_goal action_msgs/srv/CancelGoal
@@ -145,6 +168,7 @@ can-bus:
 run: build can-bus
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
+		$(WORKER_ENV) \
 		$(GPU_PREFIX) \
 		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
@@ -201,6 +225,7 @@ FIXTURE_SENSORS := $(if $(filter amcl,$(FIXTURE_LOCALIZATION)),true,false)
 
 fixture:
 	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline \
+		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
 		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS)"
 
@@ -240,6 +265,7 @@ TB_FLAG := $(if $(TB),--tensorboard $(TB),)
 rl-sim: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
+		$(WORKER_ENV) \
 		$(GPU_PREFIX) \
 		ros2 launch agx_bringup rl_corrector_sim.launch.py \
 		headless:=$(call lc,$(HEADLESS)) \
@@ -249,6 +275,7 @@ rl-sim: build
 rl-train: build
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
+		$(WORKER_ENV) \
 		ros2 run agx_planning rl_corrector_train \
 		--timesteps $(TIMESTEPS) \
 		$(TERRAIN_FLAG) \

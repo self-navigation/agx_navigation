@@ -13,7 +13,13 @@ U-turn `q_cross` basin belongs to one plan, not to the shape** — so the open
 question from last session's "For the user" is settled by data rather than by
 judgement.
 
-**FIRST THING NEXT SESSION:** `just queue-status`; job 50 should be done.
+**Then, same session: parallel sims landed.** `WORKER=n` gives a sim its own
+Gazebo partition and DDS domain, verified live beside a running job — see
+"Parallel sims are done" below. **The demo is no longer blocked by the queue.**
+
+**FIRST THING NEXT SESSION:** score job 50 — its data is already fetched
+(`soak_data/soak_broad_gains.jsonl`, 720 rows, + `broad_gains_traces/`), it just
+has not been read yet.
 
 ## What the two overnight jobs said
 
@@ -48,9 +54,9 @@ plan, not to its shape and not even to its corridor. All five score
 
 ## RUNNING NOW / QUEUED
 
-**`50_broad_gain_generality.sh`** — started ~15:55 UTC 2026-08-15, ~1.5 h
-(720 rollouts at ~7 s). Log `~/jobq/logs/50_broad_gain_generality.log`, rows
-`~/soak_broad_gains.jsonl`, **every rollout traced** into `~/broad_gains_traces/`.
+**`50_broad_gain_generality.sh` — DONE (rc=0, 14:05 UTC), 720 rows, all traced,
+FETCHED but NOT YET SCORED.** Local copies: `soak_data/soak_broad_gains.jsonl`
+and `broad_gains_traces/` (720 files). Scoring it is the first job next session.
 
 This is the direct answer to the user's question — *are the gains overfitted to
 seven plans, and can we optimise for all of them?* 40 plans chosen mechanically
@@ -62,7 +68,8 @@ the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map th
     (0.276, 2.618) adopted   (0.276, 1.0)   (0.6, 2.618)
     (1.5, 2.618)             (4.0, 2.618)   (10, 0.25) old default
 
-**QUEUED behind it: `60_tune_on_J.sh`** — re-tunes `(q_cross, r_omega)` against
+**RUNNING NOW: `60_tune_on_J.sh`** (started 14:05 UTC, at eval 5 of 60 as of
+14:15, ~103 s per evaluation ⇒ ~1.7 h) — re-tunes `(q_cross, r_omega)` against
 `J` instead of metres (~2-3 h, bounded at 60 evals), then measures the adopted
 0.276/2.618 in `J` in the same code path for comparison. Results
 `~/tvlqr_tuned_J.json` + `~/tvlqr_validate_J_adopted.json`, caches
@@ -70,16 +77,13 @@ the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map th
 the fast search set (mean-of-3 must stay ~105 s/eval); the broad library is for
 validating a winner, not for searching.
 
-**SCHEDULING CONFLICT, know this before planning the demo:** job 60 holds the
-only Gazebo for 2-3 h, and `make fixture` starts its OWN sim — two instances is
-the robot-disintegration failure. `just queue-stop` stops the runner and leaves
-the in-flight job alone; or kill job 60 mid-run, since the tuner caches every
-evaluation and a resumed run re-measures nothing.
+**The scheduling conflict this section used to warn about is GONE.** Job 60 no
+longer monopolises Gazebo: run the demo in its own partition beside it —
 
-Fetch and score:
+    just remote-fixture tvlqr true truth 1
 
-    scp -F ssh_config agx:~/soak_broad_gains.jsonl soak_data/
-    rsync -a -e "ssh -F ssh_config" agx:~/broad_gains_traces/ broad_gains_traces/
+Score job 50 (data already local):
+
     .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_broad_gains.jsonl \
         --trace-root broad_gains_traces --plans traj_data_v2
 
@@ -92,6 +96,38 @@ subset it is; (c) the ranking is flat and dominated by which plans are hard ⇒ 
 gains matter less than the objective does, which points at item 2 below.
 Score in **both** currencies — they disagreed on 24 of 51 plans in the library
 sweep.
+
+## Parallel sims are done (2026-08-15)
+
+`WORKER=n` (1-9) → `GZ_PARTITION=agxn` + `ROS_DOMAIN_ID=40+n`. **No code
+changed** — both transport libraries read the environment at init, so
+`GazeboBridge`, the launch files and the tuner are untouched. Full detail and
+the verification table are in CLAUDE.md, "Parallel sims: `WORKER`".
+
+    make rl-sim WORKER=1 / make fixture WORKER=1 / make rl-train WORKER=1
+    just remote-sim rl_corrector.world 1     just gui 1
+    just remote-fixture tvlqr true truth 1
+    tools/with-worker 1 python3 -m agx_planning.tuning.soak …
+
+**Verified beside a live job**, which is the only test worth trusting: worker 1
+scored `floor_6_v2_00004` at **0.2901 twice** against the default partition's
+**0.2901 ± 0.0001 over 60 samples**, and job 60's evaluation time was 103 s
+before and 103 s during. A worker is the same plant, so parallel numbers are
+comparable with everything already measured.
+
+`just check-sim` is scoped by partition (defaults to `default`, so it is as
+strict as before for anyone not passing a worker) and now runs
+`tools/kill_stack.sh list` rather than its own `pgrep`, so the guard and the
+sweep cannot disagree. `just kill-sim` takes a partition, defaulting to `all`.
+
+**What is NOT done: the job queue is still single-lane.** `tools/jobq.sh` runs
+one job at a time in the default partition, so using workers today means driving
+them by hand. Per-worker queues are the follow-up, and they are what turns the
+re-planner's ~55 core-hours of PMP labelling into an overnight run. Two things
+to get right when building it: each lane needs its own lock and log directory,
+and `just queue-add` currently rsyncs the tree under whatever is running, which
+with N lanes means N in-flight jobs can pick up edited code at their next
+`python3 -m`.
 
 ## Do this next, in order
 
@@ -174,7 +210,9 @@ Roadmap in [docs/corrector-design.md](docs/corrector-design.md) ("Roadmap to a
 visible demo"). **"Robot drives, slips, gets back on track" is TWO demos and the
 first is already built**: TVLQR *is* a closed-loop corrector that returns to the
 trajectory. Checked in the tree 2026-08-15 — the rig
-(`just remote-fixture tvlqr true`, GUI over Moonlight), the plan-and-reference
+(`just remote-fixture tvlqr true truth 1` — the trailing worker id puts it in
+its own partition, so it no longer has to wait for the queue), the
+plan-and-reference
 markers (`runtime_corrector` `~/debug_markers`), the RViz display (`corrector
 status` in `main.rviz`), the plan remap, deliberate patch placement, and
 `run_recorder` all exist and are wired.
@@ -184,6 +222,10 @@ this repo came from `compare_correctors`/`soak`, which drive `GazeboBridge`
 directly and **bypass the whole ROS stack** — so `vector_field` → `pmp_planner`
 → `runtime_corrector` → playback → controllers has not been exercised during any
 of the corrector work. Expect bit-rot on the first run; that is the main cost.
+
+A second reason to run it side by side now that workers exist: two fixtures on
+one desktop (`worker 1` tvlqr, `worker 2` identity) stream to Moonlight as one
+picture, which is the cheapest possible before/after for a demo video.
 
 Do this **before** the re-planner build: it is the only end-to-end check that
 what we tuned for weeks works in the runtime pipeline and not just in the

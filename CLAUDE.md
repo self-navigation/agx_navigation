@@ -290,8 +290,11 @@ make p0 | p1 | p2 | p3 | curriculum   # phased curriculum, chained with --load
 make rl-kill                          # ALWAYS run this after a Ctrl-C'd/orphaned run
 ```
 
-Only **one** sim at a time — two instances share Gazebo's default transport
-partition and both advertise `set_pose`/`pose/info`, so resets silently break.
+Only **one sim per partition** (since 2026-08-15 — see "Parallel sims:
+`WORKER`"; before that it was one sim, full stop, and everything below describes
+what still happens when two land in the *same* partition). Two instances sharing
+one transport partition both advertise `set_pose`/`pose/info`, so resets silently
+break.
 
 Worse, if the second instance is a full `make run`/`make fixture` rather than
 `make rl-sim`, both spawn a `scout_mini` and both run their own controllers and
@@ -1234,6 +1237,77 @@ is the **second** automatic shape labeller to mislead here (the first:
 making any per-shape claim**; using a label to *stratify* a sample is fine, since
 that only needs correlation with geometry, not a correct name.
 
+### Parallel sims: `WORKER` (built and verified 2026-08-15)
+
+**Several Gazebos now run on one box, and the "only ever ONE sim" rule is
+retired** — replaced by "only ever one sim *per partition*". Everything above
+that says otherwise is describing the default partition, where it remains true.
+
+`WORKER=n` (1-9) is the single knob. It sets `GZ_PARTITION=agxn` and
+`ROS_DOMAIN_ID=40+n`, and that is the entire mechanism: **no code changed
+anywhere** — not in `GazeboBridge`, not in the launch files, not in the tuner.
+Both libraries read their isolation setting from the environment at init, so a
+`gz_transport.Node()` and an rclpy node constructed by unmodified code land in
+whichever world their process was started in.
+
+- `make rl-sim WORKER=1` / `make rl-train WORKER=1` / `make fixture WORKER=1`
+- `just remote-sim rl_corrector.world 1`, `just remote-fixture tvlqr true truth 1`,
+  `just gui 1`
+- `tools/with-worker 1 python3 -m agx_planning.tuning.soak …` for anything not
+  going through make. **`WORKER` unset execs with the environment untouched** —
+  not `GZ_PARTITION=""` — because every number in this file was measured in the
+  default partition and a change that silently moved it would invalidate the lot.
+
+**Both variables are required and they cover different failures.** Without
+`GZ_PARTITION` two `gz sim` servers both advertise `/world/rl_corrector/set_pose`
+and resets go to whichever answers first. Without `ROS_DOMAIN_ID` both stacks
+publish `/clock`, `/joint_states` and the wheel command topic, and each robot
+receives the other's commands — *that* is the documented "wheels detach, links
+fall through the floor" failure, and it is ROS-side, so **`GZ_PARTITION` alone
+does not prevent it**.
+
+**Verified live against a running job**, not in isolation — worker 1 was brought
+up beside the sim job 60 was driving:
+
+| check | result |
+| --- | --- |
+| gz topics visible per partition | 14 in default, 14 in `agx1`, no overlap |
+| ROS topics | 36 in domain 0 (full stack), 21 in domain 41 (minimal sim) |
+| entities in each world | 52 default (job 60's patches), 20 in `agx1` |
+| **worker rollout `floor_6_v2_00004`** | **0.2901, 0.2901** vs the default partition's **0.2901 ± 0.0001** over 60 |
+| job 60's per-eval time | 103 s before, 103 s during |
+
+**The four-decimal agreement is the real result**: a worker is the same plant,
+so numbers measured in parallel are comparable with everything already in this
+file. Load went 3.5 → 7.8 on 12 cores with two sims plus a soak.
+
+`just check-sim` is **scoped by partition** and defaults to `default`, so it is
+exactly as strict as before for anyone not passing a worker, while worker 2 can
+start beside worker 1. It now shells out to `tools/kill_stack.sh` in a new
+`list` mode instead of running its own `pgrep`, so **the guard and the sweep can
+no longer disagree** about what counts as a conflicting process. `just kill-sim`
+takes a partition too but defaults to `all` — someone typing it after a bad
+night wants everything gone, and having to enumerate partitions is the kind of
+step that gets skipped.
+
+Two traps found while building it, both of which produce a *convincing* wrong
+answer rather than an error:
+
+- **`ps -p "1,2,"` prints nothing, silently.** `tr '\n' ','` leaves a trailing
+  comma, so the guard printed "REFUSING TO LAUNCH … (see above)" with nothing
+  above it, and the pre-existing `STILL RUNNING:` diagnostic had the same bug —
+  meaning a failed sweep had been reporting an empty list all along. Use
+  `paste -sd,`.
+- **A process can be isolated on the ROS side alone.** `ROS_DOMAIN_ID=41 ros2
+  topic list` leaves a daemon with no `GZ_PARTITION`, which reads as "default"
+  and blocks `check-sim default` over a process sharing nothing with it. The
+  filter checks both variables; worker processes always carry both.
+
+Not done, and the next thing to want: **the job queue is still single-lane**.
+`tools/jobq.sh` runs one job at a time in the default partition, so parallelism
+today means driving workers by hand. Per-worker queues are the obvious follow-up
+and are what would turn ~55 core-hours of PMP labelling into an overnight run.
+
 ### The constructed plan library, and the first PMP solve cost (2026-08-15)
 
 `tools/jobs/20_generate_v2_library.sh` screened 1200 start/goal pairs per floor,
@@ -1797,22 +1871,11 @@ is cheap.
    controller cannot supply, instead of re-deriving feedback from scratch. This
    is also the version most defensible in a write-up — the advisor's requirement
    is that RL be part of the system, not that it beat everything alone.
-7. **Parallel sims via namespacing** (agreed 2026-08-02, after the corrector
-   work). Two env vars are all it takes: `GZ_PARTITION` isolates Gazebo
-   transport — a partition collision is exactly the "both spawn a scout_mini and
-   the robot disintegrates" failure above — and `ROS_DOMAIN_ID` isolates DDS. No
-   launch-file surgery, no topic remapping. **Unset must keep today's behaviour
-   exactly**, so make the parallel path opt-in via an explicit `WORKER` variable.
-   Payoff is twofold: RL training is ~linear in workers (SAC is off-policy and
-   sample-hungry), and repeated measurements — now known to be *mandatory*, see
-   the variance section — are embarrassingly parallel, so repeats become nearly
-   free instead of a 5x slowdown. The VM is CPU-bound here, not GPU-bound (a
-   ~30-D obs, 4-D action MLP barely touches the V100, and `TORCH_THREADS` is 1),
-   and cores/RAM on the VM are adjustable while the single GPU is not — so size
-   it as `cores ~= workers + 2`, watching RAM since each Gazebo loads the world
-   meshes independently. The one thing that must be got right first:
-   `just check-sim` currently refuses to launch if *any* Gazebo lives, and it has
-   to become per-partition without losing its teeth.
+7. ~~Parallel sims via namespacing.~~ **BUILT AND VERIFIED 2026-08-15**, see
+   "Parallel sims: `WORKER`" below. The 2026-08-02 prediction was right in every
+   particular — two env vars, no launch-file surgery, no topic remapping — and
+   the sizing guidance from it still stands: `cores ~= workers + 2`, watching RAM
+   since each Gazebo loads the world meshes independently.
 8. ~~Generate interesting trajectories by construction.~~ **BUILT 2026-08-14**,
    see "Generating evaluation trajectories by construction". The A*-as-proxy
    caveat below turned out to be the important part: the proxy predicts route
