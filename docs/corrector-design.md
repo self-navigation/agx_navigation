@@ -61,7 +61,7 @@ Four components. Two exist, two do not.
 | 1 | PMP planner — nominal plan on the nominal surface | once per goal, offline | **built** |
 | 2 | TVLQR — track the active reference | 50 Hz onboard | **built, tuned** |
 | 3 | Scenario recognition — measure the surface, pick the catalogue index | continuous onboard | **not built** |
-| 4 | Re-join template network — the compressed catalogue | on trigger | **not built** |
+| 4 | Re-join template network — the compressed catalogue | one forward pass per tick, when triggered | **not built** |
 
 ### The distinction that was blurred, and matters
 
@@ -187,6 +187,98 @@ something PMP cannot, rather than re-deriving what it already knows.
 solve fails often. A teacher that answers 64% of the time cannot label a dataset,
 and the fallback is to learn without one. That is the risk this ordering is
 designed to expose first and cheaply.
+
+### It is not a "planner", and what its output should be (revised 2026-08-15)
+
+**The word "re-planner" was wrong and is retired.** Planning implies search or
+optimization at runtime; this does **one forward pass, no search**. The
+dissertation's own word is **шаблон — template** — and applying a stored
+template is not planning. Call it the **re-join template network**.
+
+That leaves a real design question, raised by the user: does it emit a
+**trajectory** (which something else then tracks) or a **command applied
+directly to the wheels**? Both work, and the tradeoff is worth stating because
+the first draft of this document assumed the first without arguing for it.
+
+| | **A. reference generator** | **B. amortized controller** |
+| --- | --- | --- |
+| output | a short re-join trajectory | the wheel command, this tick |
+| target to regress | PMP's whole re-join solution | PMP's *first* command at that state |
+| TVLQR | still runs, tracks the new reference | replaced while active |
+| NN error | attenuated by TVLQR feedback | goes straight to the plant |
+| runtime plumbing | must splice a segment into playback | none |
+
+**The resolution is a hybrid, and it is better than either.** Have the network
+answer *"what should the REFERENCE be right now?"* rather than *"what should the
+wheels do right now?"*:
+
+- one forward pass per control tick, input = current deviation state + $\hat\chi$
+  + local plan geometry, output = a reference state (the 5-vector) plus its
+  feedforward command;
+- **TVLQR closes the loop on that reference**, exactly as it already does on the
+  frozen plan — so the network's errors are attenuated by feedback instead of
+  reaching the plant;
+- **no splicing plumbing at all.** The reference is simply whatever the network
+  says this tick, so `trajectory_buffer` needs no notion of substituting a
+  segment and resuming. This retracts the claim in the roadmap below that
+  splicing is required.
+
+So it keeps the user's instinct (a single pass, applied immediately, nothing that
+looks like planning) *and* keeps TVLQR as the stabilizer. Regression target is
+still PMP's re-join solution — sampled at the current tick rather than emitted
+whole.
+
+### The escalation ladder, and what actually distinguishes the tiers
+
+The user's three tiers are right. The refinement is that **magnitude is a proxy;
+what actually separates them is which assumption has become false.**
+
+| tier | what has become false | test |
+| --- | --- | --- |
+| **TVLQR** | nothing — deviation is within the corrector's authority | default |
+| **template network** | the *plan is still valid* but the corrector cannot close the error from here | TVLQR persistently saturating (`CorrectionDiagnostics.saturated_*`) |
+| **full PMP re-solve** | the *reference itself* is invalid — the path is no longer feasible or no longer leads to the goal | path validity, below |
+
+Cross-track distance is a reasonable first cut for tier 2 and is what to start
+with, but saturation is the honest test: a large deviation the corrector is
+comfortably closing does not need a template, and a small one it cannot close
+does.
+
+**Quantifying "the map changed enough" (the user's open question).** It does not
+need a planner to *detect*, only to fix. The remaining frozen path is a list of
+poses; the live occupancy grid is available. So the test is a **clearance check
+of the un-driven remainder of the path against the current map** — if any
+remaining pose loses its clearance radius, the reference is invalid and no local
+correction can rescue it. Cheap (a few hundred grid lookups), no optimization,
+and it is a statement about *feasibility* rather than about error magnitude,
+which is what tier 3 is supposed to key on. The surface-change analogue is the
+dissertation's own (p. 80): accumulated model-prediction error above a threshold
+over a fixed window triggers a "new coverage" event.
+
+### Isolating the corrector arms — the seam already exists
+
+Yes, and it is already built, because it is how the old RL residual was measured:
+
+- **measurement**: `compare_correctors --correctors identity tvlqr rl` — arms are
+  a list, each driving the same trajectories on the same seeded terrain.
+- **live demo**: `make fixture CORRECTOR=identity|tvlqr`, and
+  `just remote-fixture <corrector>`.
+
+So adding the template network is a **new arm, not new architecture**. The
+ablation set that isolates each contribution:
+
+| arm | reference | feedback | isolates |
+| --- | --- | --- | --- |
+| `identity` | frozen plan | none | how bad slip is unaided |
+| `tvlqr` | frozen plan | TVLQR | feedback alone — **today's system** |
+| `nn` | network | none (open loop) | whether the re-join REFERENCE is right, independent of tracking |
+| `tvlqr+nn` | network | TVLQR | the full system |
+
+The `nn` arm is the interesting one for a demo: run open-loop it answers "is the
+learned template a good maneuver?" separately from "can we track it?", which are
+the two ways the system can fail and are otherwise confounded. Note it is only
+meaningful under option A/hybrid above — if the network emitted raw wheel
+commands there would be no reference to run open-loop.
 
 ### The trigger — and it already exists
 
@@ -344,9 +436,11 @@ Everything in "The build plan for Level A", plus:
   never shows;
 - the **trigger** wired into `runtime_corrector._correct()`, reading
   `CorrectionDiagnostics.saturated_*`;
-- the re-join trajectory **spliced into the playback buffer**, which is the one
-  genuinely new piece of runtime plumbing — `trajectory_buffer.py` currently
-  plays a fixed rollout and has no notion of substituting a segment and resuming.
+- **no splicing plumbing** — under the hybrid output above the reference is
+  simply whatever the network says this tick, so `trajectory_buffer` is
+  untouched. (An earlier draft of this document called splicing the one
+  genuinely new piece of runtime plumbing; that is retracted.)
+- a fourth `CORRECTOR` arm, which the existing seam already accommodates.
 
 Demo B is gated on phase 0 (does the re-join solve reliably?), so the honest
 estimate is "unknown until phase 0 runs", and phase 0 is cheap.
