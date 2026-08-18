@@ -625,6 +625,39 @@ class WheelCorrectorNode(Node):
         # Let the tick handler drain whatever is buffered before going IDLE.
         if traj_id == self._buf.active_traj_id:
             self._buf.mark_result(bool(result.success))
+            return
+
+        # A result for a trajectory we never received a chunk of.
+        #
+        # `active_traj_id` is set in `_on_chunk`, so a plan that fails at chunk 0
+        # -- the BVP mesh-node exhaustion that fails ~36% of fresh start/goal
+        # pairs -- leaves it at -1. The equality above is then false, the result
+        # is dropped, and `_on_tick`'s idle guard (`active_traj_id < 0`) returns
+        # before `_finish()` can run. Net effect: no zero command, no sentinel,
+        # and every consumer waits forever on a goal nobody is pursuing.
+        #
+        # `_finish`'s docstring says the sentinel fires on ANY terminal outcome.
+        # That fix covered "failed after playback began" and left this case,
+        # which is the more common one: the planner rejects a goal in under a
+        # second, and the whole stack goes quiet with the robot stationary.
+        # Observed 2026-08-18 driving the fixture end to end (traj 2 and 5 of a
+        # five-goal session hung their clients for their full timeout).
+        #
+        # Nothing is buffered to drain, so go IDLE directly rather than routing
+        # through the tick. Publishing zero is not redundant: the controller
+        # latches its last command, and this path can be reached while a
+        # superseded trajectory's last non-zero command is still in force.
+        if self._buf.active_traj_id < 0:
+            self.get_logger().warn(
+                "Plan for traj_id=%d produced no trajectory (%r). "
+                "Stopping and clearing the goal." % (traj_id, result.message)
+            )
+            self._publish_zero()
+            self._buf.clear()
+            self._playing = False
+            if self._goal_xyth is not None:
+                self._goal_xyth = None
+                self._publish_cleared_goal_sentinel()
 
     # ----------------------- Offline playback tick ------------------------
 

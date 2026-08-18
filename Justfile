@@ -267,6 +267,57 @@ remote-kill:
     -{{_ssh}} 'cd {{remote}} && make rl-kill; tmux kill-session -t {{session}} 2>/dev/null'
     @just kill-sim
 
+# ------------------------------------------------------------- ROS 2 stack
+
+# Bring the fixture up and PROVE it is up, restarting it if it is not.
+#
+# This is the recipe to use instead of `remote-fixture` whenever something
+# automated depends on the stack actually working. main.launch.py has start-up
+# races we have not fixed -- the map, the map->odom transform and the
+# /goal_pose subscribers appear in a non-deterministic order, and a launch that
+# loses one does not fail, it just never drives. `remote-fixture` starts the
+# launch and returns; this one starts it, waits on tools/stack_ready.py, and
+# tears down and retries if a required check did not pass.
+#
+# Exit 0 means a caller may go straight to publishing a goal.
+#   just fixture-up                       # tvlqr, patches, truth, default partition
+#   just fixture-up 1                     # ... in worker 1's partition
+#   just fixture-up 1 identity false      # the no-slip baseline arm
+fixture-up worker='' corrector='tvlqr' patches='true' localization='truth' tries='3': sync
+    {{_ssh}} 'cd {{remote}} && tools/fixture_up.sh --worker {{quote(worker)}} \
+        --corrector {{corrector}} --patches {{patches}} \
+        --localization {{localization}} --tries {{tries}}'
+
+# What is the running stack missing? One snapshot, human-readable.
+#
+# Run it against a stack you did not start, or after something went wrong: it
+# names the failing check rather than making you read a launch log. `--json`
+# is what fixture-up branches on; this is the same probe for a person.
+stack-check worker='':
+    -{{_ssh}} 'cd {{remote}} && set +u && source /opt/ros/jazzy/setup.bash && \
+        source install/setup.bash && set -u && \
+        tools/with-worker {{quote(worker)}} python3 tools/stack_ready.py --settle 4'
+
+# Take the fixture down, leaving any other worker (and the queue) alone.
+fixture-down worker='':
+    @just kill-sim {{ if worker == "" { "default" } else { "agx" + worker } }}
+
+# Screenshot the server's desktop and pull it back here.
+#
+# This is the substitute for Moonlight, which needs the VPN and is therefore
+# unavailable whenever the lid has been closed -- the jump route carries ssh
+# but not a video stream. `import -window root` needs no GUI interaction and no
+# X client of ours, so it works over the jump host exactly as well as direct.
+#
+# Use it to SEE the sim: RViz, the Gazebo GUI, the plan and reference markers.
+# A screenshot is also the only check on "is the robot actually driving the
+# plan" that no metric covers.
+screenshot out='/tmp/agx-screen.png':
+    {{_ssh}} 'DISPLAY=:0 import -window root /tmp/agx-screen.png && \
+        echo "captured $(stat -c%s /tmp/agx-screen.png) bytes"'
+    scp {{ssh_opts}} {{host}}:/tmp/agx-screen.png {{out}}
+    @echo "saved to {{out}}"
+
 # ---------------------------------------------------------------- observability
 
 # TensorBoard on the server, tunnelled to http://localhost:6006 locally.
