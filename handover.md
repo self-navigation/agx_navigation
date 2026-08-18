@@ -139,6 +139,23 @@ and the driver advanced to the next goal **0.4 s later** off the sentinel —
 where before it would have burned its full dwell. `drive_goal` likewise
 terminates in 28.7 s (`finished`) rather than sitting out its 180 s timeout.
 
+**Side effect worth knowing: `random_goals` now says "reached" for plans that
+never ran.** Its log is driven by the sentinel, and the sentinel means "nobody
+is pursuing a goal" -- so in the verification session `goal 1 reached` appeared
+**1.0 s** after the goal went out, for the goal whose BVP solve had just failed.
+That ambiguity always existed; the fix makes it fire promptly instead of after a
+90 s dwell, which makes it far easier to misread. **Do not read `random_goals`'
+"reached" as arrival** -- it is "no longer being pursued". Anything that needs
+the distinction must read the action result, or use `tools/drive_goal.py`, which
+scores the final distance against ground truth. Worth fixing in `random_goals`
+itself: it could subscribe to the action result and log "failed" honestly.
+
+**A second observation from the same session, not yet explained:** of six goals,
+five completed and **goal 4 `(7.77, -5.02)` did not finish within its 90 s
+dwell** -- neither arriving nor failing. That is a third outcome (plan solved,
+playback did not terminate) and nobody has looked at it. It is the natural next
+thing to point `drive_goal` at.
+
 **The pipeline itself was healthy; the bug was in the failure path.** No amount
 of successful driving would have exposed it — a stack that works is not evidence
 about what it does when a component says no.
