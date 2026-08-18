@@ -1,4 +1,4 @@
-# Handover — 2026-08-15
+# Handover — 2026-08-18
 
 **Read this first, and keep it current.** It is the primary record of what we
 are doing; CLAUDE.md's "Current work" section is the cumulative record of what we
@@ -6,274 +6,276 @@ have *established*. This file describes **now**: what is running, what is
 half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending.
 
-**This session in one line:** the queue emptied cleanly overnight and both
-questions it was holding got answered — **`r_omega`'s move off 0.25 is real and
-general** (the previous ladder's "flat" was an artifact of its floor), and **the
-U-turn `q_cross` basin belongs to one plan, not to the shape** — so the open
-question from last session's "For the user" is settled by data rather than by
-judgement.
+**This session in one line:** the three overnight jobs had been **finished and
+unread for ~62 h** (nothing was stuck — the queue was idle), and reading them
+says **`q_cross ≈ 2.5` beats the adopted 0.276, `q` and `r` interact, and job
+60's `J`-tuned point is an artifact**; one confirming job (100) is running now,
+and separately **the ROS 2 runtime pipeline was driven end to end for the first
+time** and the tooling to do that unattended now exists.
 
-**Then, same session: parallel sims landed.** `WORKER=n` gives a sim its own
-Gazebo partition and DDS domain, verified live beside a running job — see
-"Parallel sims are done" below. **The demo is no longer blocked by the queue.**
+**FIRST THING NEXT SESSION:** `just queue-status`. If job 100 is done, fetch and
+score it (line under "RUNNING NOW"), pick the gain pair, and **edit
+`TVLQRConfig` — that is the one open decision and it should be closed.**
 
-**And job 50 answered the generality question: the MOVE off the old default
-holds on 40 plans we did not choose, the adopted VALUE 0.276 does not.** Jobs
-70/80/90 are queued to resolve where in the plateau to sit.
+## What the three unread jobs said
 
-**FIRST THING NEXT SESSION:** `just queue-status`, then fetch and score whichever
-of 70/80/90 finished — each one's fetch-and-score line is under "How to read
-them" below. `TVLQRConfig` is deliberately unchanged until job 70 is read.
+Full tables in CLAUDE.md, "The broad ladders". The short version:
 
-## What the two overnight jobs said
+- **Job 70 (`q` ladder, 1200 rollouts, mean-of-5).** `J` is FLAT across a 15x
+  range of `q` — it cannot decide this. Arrival can, and **`q=2.5` wins it**:
+  vs the adopted 0.276, `final_err` 34/40 (p<0.0001) and max|e_cross| 32/40
+  (p=0.0002); it beats `q=1.5` too (27/40, p=0.038). Miss rate 10.5% vs 20.5%.
+- **Job 80 (`r` ladder at `q=1.5`).** **`q` and `r` INTERACT.** At `q=1.5` the r
+  story inverts: `r=0.25` is best on metres and arrival, and the r=0.5→1.0
+  threshold that justified moving off 0.25 is **absent**. Every `r` claim in
+  CLAUDE.md is now scoped to `q=0.276`.
+- **Job 90 (validate job 60).** Job 60's seven-plan `J`-tuned point
+  (`q=0.880, r=25.6`) is the **worst of three arms on every axis** on the broad
+  40, and did not even beat the adopted point on its own search set. **Do not
+  adopt it.** Second time a seven-plan optimum evaporated on independent plans:
+  **a seven-plan search cannot resolve the gains, in either currency. Do not run
+  another one.**
 
-**Job 30, `r_omega` below the ladder floor (840 rollouts).** The previous ladder
-swept r ∈ [1.0, 5.0] and found `r` flat everywhere but the U-turn, which made the
-adopted 2.618 look like one plan's notch. **The low half reverses that reading.**
-The zigzag *halves* between r=0.5 and r=1.0 (0.812 → 0.387, sd ≤ 0.04 on both
-sides), the six-shape aggregate excluding the U-turn goes 0.635 → 0.495, and
-`final_err` is **monotone across the whole range** (0.661 → 0.343 m) with no
-shape getting worse. So `r` has a threshold in (0.5, 1.0) and is flat above it.
+## RUNNING NOW
 
-**The consequence is a two-part claim, and the halves differ in strength:** the
-move *off* r=0.25 is real and general; the specific value **2.618 vs anything in
-[1.0, 5.0] is not load-bearing** — it is kept because it is measured, not because
-it is special. Write it up that way. `TVLQRConfig` is unchanged.
+**`100_broad_r_at_q25.sh`** — started 08:29 UTC 2026-08-18. `r ∈ {0.25, 1.0,
+2.618, 5.0}` at **q=2.5**, plus `1.5/2.618` and `0.276/2.618` carried **in the
+same process** as controls, 40 broad plans, mean-of-5, 1200 rollouts, 4 workers.
+Nothing is known about `r` at the `q` we are about to adopt, and job 80 proved
+the two do not separate — so this is the run that settles the pair rather than
+one axis. It exists to be the LAST gain job.
 
-**Job 40, does the U-turn basin generalise (1200 rollouts)? No.** Four v2 U-turn
-plans plus `floor_6_00031` as an in-run control, q ∈ {0.2, 0.276, 0.4, 0.5}. Only
-the control has the basin (97 / 18 / 0 / 100 % bad). Two of the others are flat
-and easy at every rung, one is 100% bad at every rung, one is weakly bimodal with
-**no `q` dependence at all**.
+**Expect ~1.5–2 h, not the 40 min the job comment claims** — 6 arms over 4
+workers deals 2/2/1/1, so the long pole is 400 rollouts. Fix the estimate in
+the script if it matters; the fan-out itself is fine.
 
-**The decisive evidence was the picture, not the table** — and this is the part
-worth carrying forward. Rendered, the five plans are one true hairpin, one
-rectangular U, one **bent line that is not a U-turn**, and one **near-duplicate
-of the control** (same corridor, same three-sided route, ~1 m different start).
-That near-duplicate shows *no basin at all*, which is what turns "you picked the
-wrong plans" from an objection into the finding: the basin belongs to that exact
-plan, not to its shape and not even to its corridor. All five score
-`total_abs_turn` 7–9 rad, so the label cannot tell a hairpin from two same-sign
-90° corners. **Render plans before any per-shape claim.**
+Fetch and score (no traces: `j_total` is inline in every row now, from the
+online `EpsilonAccumulator`, so trace scoring is obsolete for gain work):
 
-## RUNNING NOW / QUEUED
+    scp -F ssh_config agx:~/soak_broad_r_at_q25.jsonl soak_data/
 
-**`50_broad_gain_generality.sh` — DONE, FETCHED, SCORED.** Full result in
-CLAUDE.md, "The broad gain check". The short version, because it changes what to
-do next:
+Then aggregate **geometrically on `J`**, arithmetically on the rest, and compare
+arms with a **paired sign test over the 40 plans** — means alone did not
+separate signal from noise in jobs 50/70/80. Read it on **`final_err` and `J`**;
+max|e_cross| ranks the old default best while it spends ~3x the control.
 
-- **the move off the old default is confirmed** on 40 plans we did not choose —
-  1.49x worse in `J`, 5/40 wins, p<0.001;
-- **the adopted VALUE 0.276 does not survive**: worst of six arms in metres
-  (beaten by every other at p<=0.038, *including the old default*), worst miss
-  rate (20.0%), and in `J` indistinguishable from everything up to q=4;
-- **`q≈1.5, r=2.618` dominates it** — `J` tied, max|e_cross| 0.917x, `final_err`
-  0.680x, miss rate 11.8% vs 20.0%;
-- **a seven-plan search cannot resolve `q`** — `J` is flat across a 15x range of
-  it on independent plans.
+**How to read it.** If `q=2.5` holds up against the two controls, adopt the best
+`(q, r)` in `TVLQRConfig` and stop tuning. If `r=0.25` wins at `q=2.5` as it did
+at `q=1.5`, that is a coherent result and not a surprise — say plainly in the
+write-up that the original "move off r=0.25" was a `q=0.276` phenomenon.
 
-This is the direct answer to the user's question — *are the gains overfitted to
-seven plans, and can we optimise for all of them?* 40 plans chosen mechanically
-by `tools/select_broad_eval.py` from the 320-plan constructed library (none of
-the seven appear; four labels, 8.7–36.0 m), against six gain pairs that map the
-`q` plateau and its cliff and test r=1.0 against 2.618 on ground that is not
-`floor_6_00031`:
+## The ROS 2 stack is now drivable unattended (built 2026-08-18)
 
-    (0.276, 2.618) adopted   (0.276, 1.0)   (0.6, 2.618)
-    (1.5, 2.618)             (4.0, 2.618)   (10, 0.25) old default
+**The runtime pipeline ran end to end for the first time.** Every corrector
+number in this repo came from `GazeboBridge`, which bypasses the ROS graph
+entirely, so `vector_field` → `pmp_planner` → `runtime_corrector` → playback →
+controllers had never been exercised during the corrector work. It was expected
+to have bit-rotted. **It had not** — it came up ready on the first attempt and
+drove a sampled goal to completion:
 
-**RUNNING NOW: `60_tune_on_J.sh`** (started 14:05 UTC, eval 13 of 60 at 14:40,
-~160 s per evaluation ⇒ finishes ~16:50 UTC) — re-tunes `(q_cross, r_omega)` against
-`J` instead of metres (~2-3 h, bounded at 60 evals), then measures the adopted
-0.276/2.618 in `J` in the same code path for comparison. Results
-`~/tvlqr_tuned_J.json` + `~/tvlqr_validate_J_adopted.json`, caches
-`~/tvlqr_tune_J.jsonl`. It searches the SEVEN-plan set on purpose — that stays
-the fast search set (mean-of-3 must stay ~105 s/eval); the broad library is for
-validating a winner, not for searching.
+    [random_goals] 3 subscribers matched; settling 3.0s before publishing
+    [random_goals] goal 1/1: (-9.77, -2.22)
+    [random_goals] goal 1 reached
 
-**QUEUED, in order — all three fan out over workers, all three traced.** They
-were queued 2026-08-15 ~14:45 UTC to fill a ~6 h unattended window; expect all
-of them done by ~19:00 UTC.
+That closes the standing worry that weeks of tuning had been validated only
+inside the measurement harness.
 
-| job | what | cost |
-| --- | --- | --- |
-| `70_broad_q_ladder.sh` | **q ∈ {0.276, 0.6, 1.0, 1.5, 2.5, 4.0} at r=2.618**, 40 broad plans, mean-of-**5**, 1200 rollouts | ~40 min on 4 workers |
-| `80_broad_r_ladder.sh` | **r ∈ {0.25, 0.5, 1.0, 2.618, 5.0} at q=1.5**, same 40 plans, mean-of-3, 600 rollouts | ~20 min on 4 workers |
-| `90_validate_tuned_J_broad.sh` | job 60's winner **+ 0.276/2.618 + 1.5/2.618 as in-process controls**, 40 plans, mean-of-5 | ~25 min on 3 workers |
+**Four things exist now that did not.** All are worker-scoped, so they run
+beside the queue rather than waiting for it.
 
-Fetch and score each (same shape for all three):
+| tool | what it is for |
+| --- | --- |
+| `tools/stack_ready.py` | readiness/health probe: is the stack up, and if not, WHICH check failed |
+| `tools/fixture_up.sh` / `just fixture-up [worker]` | bring the fixture up, wait on the probe, **tear down and retry** if it did not come up |
+| `just screenshot [out]` | capture the VM desktop and pull the PNG back — **the Moonlight substitute** |
+| `tools/drive_goal.py` | publish one goal safely, wait for the terminal outcome, score arrival against ground truth |
 
-    scp -F ssh_config agx:~/soak_broad_q.jsonl soak_data/
-    rsync -a -e "ssh -F ssh_config" agx:~/broad_q_traces/ broad_q_traces/
-    .venv/bin/python tools/score_sweep.py --from-jsonl soak_data/soak_broad_q.jsonl \
-        --trace-root broad_q_traces --plans traj_data_v2 --out epsilon_data/broad_q_J.jsonl
+**`just screenshot` is the important one for working without you.** Moonlight
+needs the VPN, which has been down ~5 days; the jump route carries ssh but not
+a video stream. `DISPLAY=:0 import -window root` needs no GUI interaction and
+no X client of ours, so it works identically over either route. Verified: the
+captured desktop shows RViz (corrector status, ground truth + goal, vector
+field) and the Gazebo GUI with `scout_mini` and the spawned surface patches.
 
-…and likewise `soak_broad_r.jsonl` / `broad_r_traces/` and
-`soak_validate_J_broad.jsonl` / `validate_J_broad_traces/`. **`score_sweep.py`'s
-own MEAN row is ARITHMETIC**, which is the wrong reducer for `J` — aggregate the
-scored JSONL yourself with the geometric mean per `objective.DEFAULT_HOW`, and
-compare arms with a paired sign test over plans rather than by eyeballing means
-(that is what separated signal from noise in job 50).
+**On the launch races.** `just fixture-up` does not fix them — it *detects*
+them and restarts, which is the honest thing until the ordering is fixed
+properly. The probe is what makes that possible, and it is deliberately split
+into GRAPH checks (does a publisher/subscriber exist) and LIVENESS checks (is
+data flowing): a node that crashed after advertising passes the first forever,
+and only the second catches it. `/clock` is checked by VALUE — a paused or dead
+Gazebo keeps a `/clock` publisher, so requiring the stamp to ADVANCE is the only
+test that separates "world stepping" from "world stopped".
 
-**How to read them.**
+**No race actually fired in this session** (ready in 24 s, first attempt), so
+the failure ordering is still uncharacterised. `fixture_up.sh` prints which
+check failed on every retry — the next few restarts will accumulate that for
+free, and *that* is the evidence needed to fix the launch file rather than
+paper over it. Do not attempt the fix before there is a failing case to read.
 
-- **70 decides `q_cross`.** Read `final_err` and `J`, *not* max|e_cross| — job 50
-  showed that metric ranks the old default best while it spends ~3x the control.
-  If a rung inside [0.6, 2.5] beats 0.276 on both, adopt it in `TVLQRConfig`;
-  the plateau is flat in `J` so the tie-break is arrival.
-- **80 tests whether `q` and `r` INTERACT.** Every r ladder so far held q=0.276.
-  If the r=0.5→1.0 threshold is still there at q=1.5, the two separate and all
-  earlier r conclusions carry over; if it moved or vanished, they do not, and
-  every r claim in CLAUDE.md needs scoping to q=0.276.
-- **90 is the only way job 60's answer can be believed.** It reads
-  `~/tvlqr_tuned_J.json` at run time and measures whatever is in it beside two
-  known points **in the same process**, which also finally removes the
-  standing "do not compare a tuned number against a `compare` number" caveat.
-  If job 60's winner lands inside the plateau and does not beat 1.5/2.618 on
-  arrival, **do not adopt it** — that is the artifact job 50 predicted.
+**Two traps found while building this, both worth keeping:**
 
-Fan-out is `tools/parallel_soak.sh` (smoke-tested 2026-08-15 beside a running
-job: 2 workers, both arms merged, teardown clean, and q=0.276 reproduced
-`floor_6_v2_00003/4` to three decimals). It splits by **gain arm**, so a worker
-that dies costs one arm rather than a slice of every arm. It never builds —
-`just remote-build` owns that, because N concurrent colcon builds would rewrite
-`install/` under whatever else is running.
+- **A wrong QoS looks like a broken stack, not like a QoS problem.**
+  `drive_goal.py` was first written with `TRANSIENT_LOCAL` on `/goal_pose`,
+  which is INCOMPATIBLE with the stack's `VOLATILE` publishers: the goal went
+  out, the robot drove, and the tool sat waiting for a sentinel it could not
+  physically receive. `stack_ready.py` now checks durability consistency across
+  all `/goal_pose` endpoints. The stack's profile is RELIABLE + VOLATILE,
+  depth 1 — match it.
+- **Interrupting a local ssh does NOT kill the remote process.** A locally
+  timed-out `drive_goal` kept running on the VM, kept a mismatched subscriber in
+  the graph, and had already driven the robot to the goal the *next* run then
+  measured — which is why that run "arrived" in 4.6 s. This is the documented
+  trap and it bit anyway. `pgrep -af` before trusting a fast result.
 
-**The scheduling conflict this section used to warn about is GONE.** Nothing in
-the queue monopolises Gazebo any more: run the demo in its own partition beside
-whatever is running —
+**A REAL BUG was found in `runtime_corrector` and fixed** — a plan that fails
+at chunk 0 (the ~36% BVP mesh-node failure) never set `active_traj_id`, so the
+action result was dropped, `_finish()` never ran, and no zero command and no
+completion sentinel were ever published. Every client hung for its own timeout
+with the robot stationary. Full account in CLAUDE.md, "A failed plan hung every
+client". **Verified in the wild**, in a six-goal `random_goals` session after
+the fix: goal 2 hit the BVP failure, logged the new
+`Plan for traj_id=2 produced no trajectory ... Stopping and clearing the goal`,
+and the driver advanced to the next goal **0.4 s later** off the sentinel —
+where before it would have burned its full dwell. `drive_goal` likewise
+terminates in 28.7 s (`finished`) rather than sitting out its 180 s timeout.
 
-    just remote-fixture tvlqr true truth 5
+**The pipeline itself was healthy; the bug was in the failure path.** No amount
+of successful driving would have exposed it — a stack that works is not evidence
+about what it does when a component says no.
 
-(worker 5 deliberately, so it cannot collide with the queue's workers 1-4).
-
-**Job 50 landed as outcome (b)+(c) together**, of the three named in advance:
-the ranking IS flat in `J` across the plateau (c), *and* a different rung wins
-on the axes that separate (b). That is why jobs 70-90 exist rather than an
-adoption commit. Note for the write-up: the three-outcome framing was written
-before the run and the result did not fit any single branch cleanly — worth
-remembering next time a pre-registered reading looks exhaustive.
-
-## Parallel sims are done (2026-08-15)
-
-`WORKER=n` (1-9) → `GZ_PARTITION=agxn` + `ROS_DOMAIN_ID=40+n`. **No code
-changed** — both transport libraries read the environment at init, so
-`GazeboBridge`, the launch files and the tuner are untouched. Full detail and
-the verification table are in CLAUDE.md, "Parallel sims: `WORKER`".
-
-    make rl-sim WORKER=1 / make fixture WORKER=1 / make rl-train WORKER=1
-    just remote-sim rl_corrector.world 1     just gui 1
-    just remote-fixture tvlqr true truth 1
-    tools/with-worker 1 python3 -m agx_planning.tuning.soak …
-
-**Verified beside a live job**, which is the only test worth trusting: worker 1
-scored `floor_6_v2_00004` at **0.2901 twice** against the default partition's
-**0.2901 ± 0.0001 over 60 samples**, and job 60's evaluation time was 103 s
-before and 103 s during. A worker is the same plant, so parallel numbers are
-comparable with everything already measured.
-
-`just check-sim` is scoped by partition (defaults to `default`, so it is as
-strict as before for anyone not passing a worker) and now runs
-`tools/kill_stack.sh list` rather than its own `pgrep`, so the guard and the
-sweep cannot disagree. `just kill-sim` takes a partition, defaulting to `all`.
-
-**The queue stays single-lane on purpose (user's call, 2026-08-15).** Parallelism
-belongs INSIDE a job — one job at a time, each free to fan out over several
-workers — not in a multi-lane runner. That keeps the queue's one real guarantee
-(a job never shares a world with another job) while still using the box, and it
-avoids per-lane locks, per-lane logs, and the fact that `just queue-add` rsyncs
-the tree under everything currently running. So: when a job is big enough to
-want parallelism, give *that script* a worker loop; do not touch `jobq.sh`.
+**One bug fixed in `drive_goal.py` that would have produced plausible numbers:**
+it composed `map->odom` with `odom->base` by ADDING translations. Under
+`localization:=truth` the first carries the rotation that corrects odometry
+drift, so the second must be rotated into the map frame first. The symptom was a
+reported 15 m path over 4.6 sim-seconds (3.3 m/s, above what the chassis can
+do). Now composed properly with yaw.
 
 ## Do this next, in order
 
-1. **Decide `q_cross` on the broad set, then stop tuning.** Job 50 says the
-   adopted 0.276 is on the bad edge of a wide plateau and `q≈1.5` dominates it.
-   **`TVLQRConfig` is deliberately UNCHANGED pending the user's call** — the
-   evidence is a paired sign test at n=3 per cell, which is enough to act on but
-   not enough to skip a confirmation. The confirming run is cheap and specified:
-   the 40 broad plans, mean-of-5, at **q ∈ {0.276, 0.6, 1.5} with r=2.618**,
-   traced, ~600 rollouts ≈ 1.2 h — and it is the first job that should FAN OUT
-   OVER WORKERS (3 arms, one per worker, ~25 min).
+1. **Close the gain decision and STOP TUNING.** Read job 100, pick the pair,
+   edit `TVLQRConfig`. The evidence is already overwhelming that (a) the move
+   off the old default is right, (b) `q=0.276` is on the bad edge of a wide
+   plateau, and (c) a seven-plan search cannot resolve the rest. Job 100 exists
+   to choose `r` at the new `q`, not to reopen anything. **Do not queue another
+   gain job after it** — three independent broad-set runs now agree that `J` is
+   flat inside the plateau, so further search resolves noise.
 
-   Read it on `final_err` and `J` primarily; max|e_cross| is the metric that
-   ranks the old default best while it spends 3x the control, so it should not
-   decide this.
+   Note for the write-up: the honest claim is a **robustness trade**, not
+   "tuning halves deviation". It pays on hard trajectories, is ~free on easy
+   ones, and where the old default loses is **control effort** (~3x), which is
+   the SVCM prescription of p. 78 turning up as a measurement.
 
-   **Job 60's answer must be checked against the broad set before adoption**,
-   for the reason job 50 established: `J` is flat across a 15x range of `q` on
-   independent plans, so a seven-plan optimum inside that range is an artifact.
-2. ~~Put `J` inside `objective.py`.~~ **DONE 2026-08-15.** `J` is accumulated
-   online by `epsilon.EpsilonAccumulator`, so `variance_probe.drive` returns
-   `j_total` directly and no trace file is involved. `objective.metric_values`
-   selects the metric; `aggregate(..., how="geometric")` reduces it. **The tuner
-   is wired too**: `tune_tvlqr --metric j_total`, with `--aggregate` defaulting
-   to the right reducer per metric, every metric recorded on every rollout
-   (`per_traj_metrics`) so a finished run is re-readable in the other currency,
-   and metric+aggregator in the cache key so a `max_cross` cache cannot be
-   replayed into a `J` search. Job 60 is the first run of it. Read
-   `objective.py`'s docstring first: `J` needs the geometric mean because one
-   plan is 48% of the arithmetic one.
-3. **Read `25_uturn_notch_edge.sh`'s traces** — 10 rollouts either side of the
-   U-turn's `q` wall (0.4 vs 0.5), all traced, on the VM as `~/uturn_edge.jsonl`
-   + `~/uturn_edge_traces/` and fetched to `soak_data/uturn_edge.jsonl`. Run
-   `tuning/trace_diff.py` on a good/bad pair: `cmd*` moving first means our
-   controller, state moving first under an equal command means the plant. ~5 min
-   of reading, data already paid for. **Lower value than it was** — now that the
-   basin is known to be one plan's, this explains a curiosity rather than a
-   mechanism. Do it for completeness, not before item 1 or 2.
-4. **Stratify a second eval set** into `config/eval_trajectories.yaml`, *added*
-   alongside the seven rather than replacing them. The seven stay the fast search
-   set (mean-of-3 tuning must stay ~105 s/eval); the broad set is for **claims**.
-   Swapping would silently re-baseline every number in CLAUDE.md. Job 50's 40
-   plans are a ready-made candidate — see `~/broad_eval_plans.txt` on the VM.
-4.5. **Read [docs/corrector-design.md](docs/corrector-design.md)** before
-   starting any RL work. Written 2026-08-15 from a proper transcription of the
-   source ([docs/svcm-source.md](docs/svcm-source.md) — the formulas are WMF
-   images and every earlier extraction dropped them silently). It separates the
-   two things RL could compress, which the previous RL effort conflated: the
-   **template library** (~9 continuous dims, needs a network) and the **cost
-   matrices per surface class** (one categorical index, needs a table — and is
-   our existing tuner, run once per surface). It also recommends **retiring the
-   SAC residual** rather than repairing it, and identifies the escalation
-   trigger as `CorrectionDiagnostics.saturated_*`, which is already implemented
-   and unused.
+2. **Watch a fixture run properly, now that watching is possible.** `just
+   fixture-up 5` + `just screenshot` works, but the Gazebo GUI camera is not
+   pointed at the robot, so the screenshot shows the building rather than the
+   demo. Two small things to fix, both named in the roadmap already: point the
+   camera, and move the demo patch layout out of the hardcoded JSON literal in
+   `gz_sim.launch.py` into a `PATCH_LAYOUT` config file — the current layout
+   puts `icy` under the spawn point, which is right for testing and useless for
+   a demo (you want clean → one patch → excursion → recovery). Keep demo patches
+   just ABOVE the wheel's `mu2=0.45` knee; below it there is no steering at all,
+   which reads as a broken robot rather than a slipping one.
 
-5. **Build the re-join re-planner — THIS IS THE NEXT REAL GOAL**, agreed with the
-   user 2026-08-15. Full plan in [docs/corrector-design.md](docs/corrector-design.md)
-   ("The build plan for Level A"). Four phases, and **phase 0 is the one to do
-   first because it can invalidate the other three**:
+   With workers, the before/after is cheap: `just fixture-up 1 tvlqr true` and
+   `just fixture-up 2 identity true` side by side on one desktop.
 
-   - **Phase 0:** add the re-join boundary condition (`x(t0)` = actual off-plan
-     state, `x(t0+T_w)` = the plan's state at index `k + T_w/dt`, all five
-     components including wheel speeds) and solve ~200 sampled re-join problems.
-     **The number that decides everything is the solve failure rate** — the
-     library build failed 36% (timeouts + BVP mesh exhaustion). Inherit that and
-     there is no reliable teacher and the supervised plan is wrong. Offline, no
-     Gazebo, cheap. Do it before any training code.
-   - **Phase 1:** ~100k **randomly sampled** re-join solves. Never a grid — a
-     grid at 5 points/axis over ~10 dims is 1e7 solves (~5000 core-hours);
-     random sampling is ~55 core-hours at the measured 1.84 s/solve. The curse
-     of dimensionality applies to TABULATING the catalogue, not to regressing it.
-   - **Phase 2:** DAgger, not RL — roll out the student, query PMP at the states
-     it actually reaches, retrain. (The user proposed an RL version of this; the
-     instinct is right, the mechanism is not — with the expert's answer in hand
-     the difference IS the exact gradient, so a reward estimator is strictly
-     worse. Written up in the design doc.)
-   - **Phase 3, optional:** RL fine-tuning from the supervised policy, which is
-     the one place RL exceeds the teacher — PMP is optimal for a model that
-     assumes nominal chi, and the plant does not. Reward is
-     `-epsilon.step_cost(...)`, free and principled.
+3. **Characterise the launch races, then fix them.** `fixture_up.sh` retries and
+   prints the failing check each time, so the evidence accumulates for free.
+   Nothing fired this session (ready in 24 s, first attempt), so there is **no
+   failing case to fix yet** — collect a few before touching `main.launch.py`.
+   The probe already knows the shape of the answer: map, `map->odom`,
+   `/goal_pose` subscriber count, `/clock` advancing.
 
-   Why the wheel speeds must be in the terminal BC: playback resumes by feeding
-   the plan's commands from index `k+m`, which assume the wheels already turn at
-   the plan's rate — matching position but not phase reproduces the documented
-   stall-path bug deliberately. And because playback is time-indexed, landing at
-   `k + T_w/dt` keeps the robot on SCHEDULE, not merely on the path; `m` is
-   therefore determined by `T_w`, and `T_w` is the one free scalar (a
-   free-terminal-time problem whose missing equation is a transversality
-   condition — which is exactly where the advisor said learning acts).
-6. **Do not lower the ground plane to model a slippery floor.** Standing rule.
+4. **Read `25_uturn_notch_edge.sh`'s traces** — 10 rollouts either side of the
+   U-turn's `q` wall, already paid for, in `soak_data/uturn_edge.jsonl` +
+   `~/uturn_edge_traces/`. `tuning/trace_diff.py` on a good/bad pair: `cmd*`
+   moving first means our controller, state moving first under an equal command
+   means the plant. ~5 min. Low value now that the basin is known to be one
+   plan's — a curiosity, not a mechanism.
+
+5. **Stratify a second eval set** into `config/eval_trajectories.yaml`, *added*
+   alongside the seven rather than replacing them. The seven stay the fast
+   search set; the broad 40 are for **claims**. Swapping would silently
+   re-baseline every number in CLAUDE.md. Job 50's 40 plans are ready-made —
+   `~/broad_eval_plans.txt` on the VM, and `tools/jobs/broad40.txt` in the tree.
+
+6. **Read [docs/corrector-design.md](docs/corrector-design.md)** before starting
+   any RL work. It separates the two things RL could compress, which the
+   previous RL effort conflated: the **template library** (~9 continuous dims,
+   needs a network) and the **cost matrices per surface class** (one categorical
+   index, needs a table — and is our existing tuner, run once per surface). It
+   recommends **retiring the SAC residual** rather than repairing it, and
+   identifies the escalation trigger as `CorrectionDiagnostics.saturated_*`,
+   already implemented and unused.
+
+7. **Build the re-join re-planner — THE NEXT REAL GOAL.** Full plan in the
+   design doc ("The build plan for Level A"). **Phase 0 first, because it can
+   invalidate the other three:** add the re-join boundary condition (`x(t0)` =
+   actual off-plan state, `x(t0+T_w)` = the plan's state at index `k + T_w/dt`,
+   **all five components including wheel speeds**) and solve ~200 sampled
+   re-join problems. **The number that decides everything is the solve failure
+   rate** — the library build failed 36%. Inherit that and there is no reliable
+   teacher and the supervised plan is wrong. Offline, no Gazebo, cheap. Do it
+   before any training code.
+
+   Then phase 1 (~100k **randomly sampled** solves, never a grid — ~55 core-hours
+   at the measured 1.84 s/solve, against ~5000 for a 5-points/axis grid), phase 2
+   (**DAgger, not RL** — with the expert's answer in hand the difference IS the
+   exact gradient, so a reward estimator is strictly worse), and optionally
+   phase 3 (RL fine-tuning above the teacher, reward `-epsilon.step_cost(...)`).
+
+   Why wheel speeds must be in the terminal BC: playback resumes by feeding the
+   plan's commands from index `k+m`, which assume the wheels already turn at the
+   plan's rate — matching position but not phase reproduces the documented stall
+   bug deliberately. And because playback is time-indexed, landing at
+   `k + T_w/dt` keeps the robot on SCHEDULE; `m` is therefore determined by
+   `T_w`, and `T_w` is the one free scalar.
+
+8. **Do not lower the ground plane to model a slippery floor.** Standing rule.
+
+## State
+
+- **VM:** the long-lived headless `gz sim` (default partition, `rl_corrector.world`,
+  ground mu=1.0) is still up. Job 100 owns **workers 1-4**; a **fixture runs in
+  worker 5**. The jobq runner is up and has now run six jobs without dying.
+- **Queue:** `100_broad_r_at_q25.sh` running, nothing pending.
+- **`TVLQRConfig` is UNCHANGED** (`q_cross=0.276`, `r_omega=2.618`) pending job
+  100. This is the one decision waiting on a person.
+- **Fetched and analysed this session:** `soak_data/soak_broad_q.jsonl` (1200),
+  `soak_data/soak_broad_r.jsonl` (600), `soak_data/soak_validate_J_broad.jsonl`
+  (600). No traces were needed — `j_total` is inline in every row.
+- **Traces NOT fetched and not needed:** `~/broad_q_traces/` (1200),
+  `~/broad_r_traces/` (600), `~/validate_J_broad_traces/` (600) are still on the
+  VM. They are only useful for re-scoring in a currency other than the ones
+  already recorded; job 100 was deliberately run **without** traces.
+- **A build ran while job 100 was in flight** (`just remote-build`, to pick up
+  the corrector fix). It did not disturb it — the soak workers are long-lived
+  Python processes that imported their modules at start, and the change was to
+  `runtime_corrector`, which the soak path does not use. Still: **prefer not to
+  build under a running job**, and check `wc -l` on the per-worker files after
+  one, as was done here.
+- **Caches on the VM, current plant, safe to resume onto:**
+  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
+  `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
+  `~/local2d_20260812.jsonl`, `~/tvlqr_tune_J.jsonl` (job 60's `J` search — safe,
+  but see job 90: **its answer is an artifact, do not resume onto it expecting
+  a better one**).
+- **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
+  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
+  `PLANT_VERSION` will refuse them.
+- **Unusable, keep only as evidence of the bug:** `r_ladder_traces/` (210 files)
+  — written before the `--trace-every` fixes.
+- Both worlds stay at **mu=1.0**.
+- **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
+  made xacro fail to parse and the sim never came up.
+- **More than one Claude session can be live on this checkout at once.** On
+  2026-08-13 another session's `git add -A` committed this session's work under
+  an unrelated message. Habit: `git status` before committing, explicit paths on
+  `git add`. Do not wake other sessions to coordinate — ask the user.
+- **`notify_and_wait` takes a REPLY** (`tools/attention_mcp/server.py`), via
+  `zenity --entry`. The desktop notification truncates at ~60 characters, so
+  **the question must come first** in the message. Its best use is the one no
+  metric covers — though `just screenshot` now covers part of it.
 
 ## The demo is closer than the re-planner — and should come first
 
@@ -321,42 +323,36 @@ the actual physics:** the RL re-planner (item 5), the online `chi` estimate
 (below), and the trigger that decides a reference has become infeasible. Those
 are the remaining work, and none of them is a gain.
 
-## State
+## Parallel sims are done (2026-08-15)
 
-- **VM:** one headless `gz sim` on `rl_corrector.world` (ground mu=1.0), started
-  fresh 2026-08-12, still up. The jobq runner is up, with the subshell fix, and
-  has now run five jobs to completion without dying.
-- **Queue:** `50_broad_gain_generality.sh` running, nothing pending.
-- **Fetched and analysed this session:** `soak_data/soak_r_ladder_low.jsonl`
-  (840), `soak_data/soak_uturn_generality.jsonl` (1200),
-  `soak_data/uturn_edge.jsonl` (20), and the whole `traj_data_v2/` library (320
-  plans, 7.7 MB).
-- **`traj_data_v2/` is now local** and committed-adjacent (gitignored). Note the
-  two similarly-named remote directories: `~/pmp_trajectories_v2` is the OLD
-  100-plan random-goal library that `config/eval_trajectories.yaml` still points
-  at; `~/traj_data_v2` is the new constructed one.
-- **Unusable, keep only as evidence of the bug:** `r_ladder_traces/` (210 files)
-  — written before the `--trace-every` fixes, each file holds ~5 rollouts from
-  ~5 different cells.
-- **Caches on the VM, current plant, safe to resume onto:**
-  `~/tvlqr_tune_v4_newplant.jsonl` (+ `~/tvlqr_tuned.json`),
-  `~/validate_20260812_{tuned,default}.jsonl`, `~/qwall_20260812.jsonl`,
-  `~/local2d_20260812.jsonl`. All fetched into local `tune_data/`.
-- **Poisoned caches, do not resume onto them:** `~/tvlqr_tune_v2.jsonl`,
-  `~/tvlqr_tune_v3.jsonl`, `~/tvlqr_tune.jsonl` — abandoned plants.
-  `PLANT_VERSION` will refuse them.
-- Both worlds stay at **mu=1.0**.
-- **Watch for `--` in XML comments** — a dash written that way in `wheel.xacro`
-  made xacro fail to parse and the sim never came up.
-- **More than one Claude session can be live on this checkout at once.** On
-  2026-08-13 another session's `git add -A` committed this session's work under
-  an unrelated message. Habit: `git status` before committing, explicit paths on
-  `git add`. Do not wake other sessions to coordinate — ask the user.
-- **`notify_and_wait` takes a REPLY** (`tools/attention_mcp/server.py`), via
-  `zenity --entry`. The desktop notification truncates at ~60 characters, so
-  **the question must come first** in the message. Its best use is the one no
-  metric covers: asking the user to look at the sim on Moonlight and say whether
-  the robot is actually driving the plan.
+`WORKER=n` (1-9) → `GZ_PARTITION=agxn` + `ROS_DOMAIN_ID=40+n`. **No code
+changed** — both transport libraries read the environment at init, so
+`GazeboBridge`, the launch files and the tuner are untouched. Full detail and
+the verification table are in CLAUDE.md, "Parallel sims: `WORKER`".
+
+    make rl-sim WORKER=1 / make fixture WORKER=1 / make rl-train WORKER=1
+    just remote-sim rl_corrector.world 1     just gui 1
+    just remote-fixture tvlqr true truth 1
+    tools/with-worker 1 python3 -m agx_planning.tuning.soak …
+
+**Verified beside a live job**, which is the only test worth trusting: worker 1
+scored `floor_6_v2_00004` at **0.2901 twice** against the default partition's
+**0.2901 ± 0.0001 over 60 samples**, and job 60's evaluation time was 103 s
+before and 103 s during. A worker is the same plant, so parallel numbers are
+comparable with everything already measured.
+
+`just check-sim` is scoped by partition (defaults to `default`, so it is as
+strict as before for anyone not passing a worker) and now runs
+`tools/kill_stack.sh list` rather than its own `pgrep`, so the guard and the
+sweep cannot disagree. `just kill-sim` takes a partition, defaulting to `all`.
+
+**The queue stays single-lane on purpose (user's call, 2026-08-15).** Parallelism
+belongs INSIDE a job — one job at a time, each free to fan out over several
+workers — not in a multi-lane runner. That keeps the queue's one real guarantee
+(a job never shares a world with another job) while still using the box, and it
+avoids per-lane locks, per-lane logs, and the fact that `just queue-add` rsyncs
+the tree under everything currently running. So: when a job is big enough to
+want parallelism, give *that script* a worker loop; do not touch `jobq.sh`.
 
 ## The queue is the way to run long things
 

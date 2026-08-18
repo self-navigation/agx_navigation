@@ -1304,6 +1304,130 @@ all.** `J` is flat across a 15x range of `q` on independent plans, so any
 seven-plan optimum inside that range is an artifact of those seven. Validate a
 tuned point on the broad set before adopting it.
 
+### A failed plan hung every client, and the ROS pipeline had never been run (2026-08-18)
+
+Driving the fixture end to end for the first time — see handover, "The ROS 2
+stack is now drivable unattended" — turned up a **real bug in
+`runtime_corrector`, in the path that handles a planner failure.**
+
+**Symptom:** publish a goal, the planner fails to solve it in under a second,
+and the whole stack goes quiet with the robot stationary. No zero command, no
+completion sentinel, no log line beyond the action result. Every consumer waits
+for its own timeout; `random_goals` burns its full dwell, and anything without a
+timeout waits forever.
+
+**Cause:** `TrajectoryBuffer.active_traj_id` is set in `_on_chunk`, so a plan
+that fails at **chunk 0** never sets it. `_on_action_result` then compares
+`traj_id == self._buf.active_traj_id` against `-1`, drops the result, and
+`_on_tick`'s idle guard (`active_traj_id < 0`) returns before `_finish()` — the
+function that publishes the zero and the sentinel — can run.
+
+`_finish`'s docstring already claims the sentinel fires on **any** terminal
+outcome, and that was true of the case it was written for: a failure *after*
+playback began. This is the other one, and it is the more common: **BVP mesh-node
+exhaustion fails ~36% of fresh start/goal pairs**, the same failure rate measured
+building the v2 library. Fixed in `_on_action_result`, which now stops, clears
+the goal and publishes the sentinel directly when no trajectory ever arrived.
+
+**Verified in the wild**, in a six-goal `random_goals` session on the repaired
+build: goal 2 failed BVP, logged the new `Plan for traj_id=2 produced no
+trajectory ... Stopping and clearing the goal`, and the driver advanced to the
+next goal **0.4 s later** off the sentinel.
+
+**Evidence, from one five-goal fixture session** (`/tmp/fixture5.log`): goals 1,
+3 and 4 logged `Trajectory N finished (success=True). IDLE.`; goals 2 and 5 both
+logged `BVP solve failed ... maximum number of mesh nodes is exceeded`, and
+**neither produced a `finished` line at all.** Both hung their client for its
+full timeout. The corrector's own status line sat frozen at the previous run's
+counters (`ticks=605 rms_cross=1.2069 max_cross=7.8170 sat=38.2%`), which is
+what "idle but not IDLE" looks like from outside.
+
+**Two things this changes beyond the fix:**
+
+- **The 36% BVP failure rate is not only a data-generation problem.** It was
+  logged as a concern for the re-join re-planner's teacher; it is *also* a
+  runtime failure mode on ordinary goals, today, on the real pipeline. A goal
+  the planner cannot solve must degrade visibly, not silently.
+- **The same goal failed once and succeeded later** from a different start pose
+  (`(6.00, 3.00)`: traj 2 failed, traj 3 and 4 arrived). So the failure is a
+  property of the start/goal *pair*, not of the goal — consistent with the
+  library build, and worth remembering before calling a goal "unreachable".
+
+**Method note.** This is exactly what the handover predicted would happen on the
+first real run ("expect bit-rot; that is the main cost") — except the pipeline
+itself was healthy and the bug was in the failure path, which no amount of
+successful driving would have exposed. **A stack that works is not evidence
+about what it does when a component says no.**
+
+### The broad ladders: `q` and `r` INTERACT, and job 60's tuned point is an artifact (2026-08-18)
+
+Jobs 70/80/90 all finished cleanly on 2026-08-15 and sat unread for ~62 h (the
+queue was idle, nothing was stuck). All three ran on the 40 broad v2 plans, none
+of which is among the seven. **`j_total` is now inline in every soak row** — the
+online `EpsilonAccumulator` — so none of this needed trace scoring; aggregation
+is geometric on `J` per `objective.DEFAULT_HOW`, arithmetic on the rest, and
+arms are compared by paired sign test over the 40 plans.
+
+**Job 70 — the `q` ladder decides on ARRIVAL, because `J` cannot decide at all.**
+1200 rollouts, mean-of-5, `r=2.618` throughout. `soak_data/soak_broad_q.jsonl`:
+
+| q (r=2.618) | geo `J` | mean max\|e_cross\| | mean `final_err` | miss rate |
+| --- | --- | --- | --- | --- |
+| 0.276 (adopted) | 13.19 | 0.671 | 0.379 | 20.5% |
+| 0.600 | 13.08 | 0.672 | 0.327 | 21.0% |
+| 1.000 | 13.90 | 0.677 | 0.346 | 13.5% |
+| 1.500 | 14.57 | 0.678 | 0.287 | 14.0% |
+| **2.500** | 13.52 | **0.619** | **0.236** | **10.5%** |
+| 4.000 | 15.90 | 0.664 | 0.308 | 14.0% |
+
+`J` is flat across the whole 15x range (13.1–15.9, no rung beats 0.276 at
+p<0.08) — exactly what job 50 predicted. **The separation is entirely on
+arrival, and `q=2.5` wins it**: vs the adopted 0.276 it is better on `final_err`
+34/40 (p<0.0001) and max|e_cross| 32/40 (p=0.0002), and it beats `q=1.5` too
+(`final_err` 27/40, p=0.038; max|e_cross| 31/40, p=0.0007). So job 50's
+provisional pick of 1.5 was one rung short of the real optimum.
+
+**Job 80 — `q` and `r` INTERACT, so every `r` claim in this file is scoped to
+`q=0.276`.** 600 rollouts, `r ∈ {0.25, 0.5, 1.0, 2.618, 5.0}` at `q=1.5`:
+
+| r (q=1.5) | geo `J` | max\|e_cross\| | `final_err` | miss |
+| --- | --- | --- | --- | --- |
+| 0.250 | 15.03 | **0.538** | **0.264** | **12.5%** |
+| 0.500 | 15.52 | 0.593 | 0.285 | 13.3% |
+| 1.000 | 16.03 | 0.642 | 0.339 | 15.0% |
+| 2.618 | 14.77 | 0.653 | 0.312 | 15.8% |
+| 5.000 | **13.74** | 0.695 | 0.304 | 17.5% |
+
+**At `q=1.5` the r story inverts.** `r=0.25` — the value we moved off — is now
+best on max|e_cross| and `final_err`, losing only on `J` (11/40, p=0.006), and
+**the r=0.5→1.0 threshold that justified the move is absent**. The 2026-08-15
+zigzag halving was measured at `q=0.276` and does not survive a change of `q`.
+`J` and metres rank this ladder in opposite directions monotonically, which is
+the control-effort trade of job 50 showing up again along `r`.
+
+**Job 90 — job 60's `J`-tuned point is the artifact job 50 predicted; do not
+adopt it.** The seven-plan `J` search returned `q=0.880, r=25.6` (posterior mean
+6.94). On the broad 40, with two known points measured **in the same process**:
+
+| gains | geo `J` | max\|e_cross\| | `final_err` | miss |
+| --- | --- | --- | --- | --- |
+| 0.276 / 2.618 | 12.91 | 0.702 | 0.394 | 24.0% |
+| 0.880 / 25.61 (job 60) | 13.40 | 0.804 | 0.447 | 26.5% |
+| 1.500 / 2.618 | 12.93 | **0.624** | **0.235** | **10.0%** |
+
+It is the worst of the three on every axis, losing to 1.5/2.618 on `final_err`
+33/40 (p<0.0001). It also **failed to beat the adopted point on its own search
+set** (6.94 vs 5.98). This is the second time a seven-plan optimum evaporated on
+independent plans, and it closes the question: **a seven-plan search cannot
+resolve the gains, in either currency.** Do not run another one.
+
+**`J` is the right objective and a poor discriminator.** It ranked the move off
+the old default correctly and decisively (job 50, 1.49x, 5/40), and it cannot
+separate anything inside the plateau — every within-plateau p is 0.08 to 0.88.
+Arrival (`final_err`, miss rate) is what separates them, and it is also what the
+robot is for. Read a gain decision on `final_err` and `J` together; max|e_cross|
+ranks the old default best while it spends ~3x the control.
+
 ### Parallel sims: `WORKER` (built and verified 2026-08-15)
 
 **Several Gazebos now run on one box, and the "only ever ONE sim" rule is
