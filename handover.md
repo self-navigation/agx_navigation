@@ -1,4 +1,4 @@
-# Handover — 2026-08-18
+# Handover — 2026-08-19
 
 **Read this first, and keep it current.** It is the primary record of what we
 are doing; CLAUDE.md's "Current work" section is the cumulative record of what we
@@ -6,18 +6,24 @@ have *established*. This file describes **now**: what is running, what is
 half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending.
 
-**This session in one line:** the three overnight jobs had been **finished and
-unread for ~62 h** (nothing was stuck — the queue was idle), and reading them
-says **`q_cross ≈ 2.5` beats the adopted 0.276, `q` and `r` interact, and job
-60's `J`-tuned point is an artifact**; one confirming job (100) is running now,
-and separately **the ROS 2 runtime pipeline was driven end to end for the first
-time** and the tooling to do that unattended now exists.
+**This session in one line:** job 100 was read and the gain decision is
+**CLOSED** — `TVLQRConfig` now reads `q_cross=2.5, r_omega=2.618` (full table in
+CLAUDE.md, "Job 100 closes the gain decision"). **Do not queue another gain
+job.** The queue is idle and nothing is running.
 
-**FIRST THING NEXT SESSION:** `just queue-status`. If job 100 is done, fetch and
-score it (line under "RUNNING NOW"), pick the gain pair, and **edit
-`TVLQRConfig` — that is the one open decision and it should be closed.**
+**FIRST THING NEXT SESSION:** nothing is pending on the VM. Pick up the roadmap
+below — the two live items are the **demo watch** (item 2) and **re-planner
+Phase 0** (item 7). Note the remote build has NOT been refreshed with the new
+gains — run `just remote-build` before any fixture/stack run; soak jobs pass
+gains explicitly, so they do not care.
 
-## What the three unread jobs said
+**The gain decision in short:** `q=2.5` beat the old adopted 0.276 on arrival
+34/40 (p<0.0001), miss rate 22% → 11.5%; `r` is flat on arrival at `q=2.5`
+(p≥0.27 across [0.25, 5.0]), so 2.618 is kept as the measured rung, not a
+special value. Change is in `runtime_corrector/tvlqr.py` with updated comments;
+`test_tvlqr.py` passes (24/24).
+
+## What the three jobs of 2026-08-15 said (read 2026-08-18)
 
 Full tables in CLAUDE.md, "The broad ladders". The short version:
 
@@ -35,34 +41,6 @@ Full tables in CLAUDE.md, "The broad ladders". The short version:
   adopt it.** Second time a seven-plan optimum evaporated on independent plans:
   **a seven-plan search cannot resolve the gains, in either currency. Do not run
   another one.**
-
-## RUNNING NOW
-
-**`100_broad_r_at_q25.sh`** — started 08:29 UTC 2026-08-18. `r ∈ {0.25, 1.0,
-2.618, 5.0}` at **q=2.5**, plus `1.5/2.618` and `0.276/2.618` carried **in the
-same process** as controls, 40 broad plans, mean-of-5, 1200 rollouts, 4 workers.
-Nothing is known about `r` at the `q` we are about to adopt, and job 80 proved
-the two do not separate — so this is the run that settles the pair rather than
-one axis. It exists to be the LAST gain job.
-
-**Expect ~1.5–2 h, not the 40 min the job comment claims** — 6 arms over 4
-workers deals 2/2/1/1, so the long pole is 400 rollouts. Fix the estimate in
-the script if it matters; the fan-out itself is fine.
-
-Fetch and score (no traces: `j_total` is inline in every row now, from the
-online `EpsilonAccumulator`, so trace scoring is obsolete for gain work):
-
-    scp -F ssh_config agx:~/soak_broad_r_at_q25.jsonl soak_data/
-
-Then aggregate **geometrically on `J`**, arithmetically on the rest, and compare
-arms with a **paired sign test over the 40 plans** — means alone did not
-separate signal from noise in jobs 50/70/80. Read it on **`final_err` and `J`**;
-max|e_cross| ranks the old default best while it spends ~3x the control.
-
-**How to read it.** If `q=2.5` holds up against the two controls, adopt the best
-`(q, r)` in `TVLQRConfig` and stop tuning. If `r=0.25` wins at `q=2.5` as it did
-at `q=1.5`, that is a coherent result and not a surprise — say plainly in the
-write-up that the original "move off r=0.25" was a `q=0.276` phenomenon.
 
 ## The ROS 2 stack is now drivable unattended (built 2026-08-18)
 
@@ -169,18 +147,7 @@ do). Now composed properly with yaw.
 
 ## Do this next, in order
 
-1. **Close the gain decision and STOP TUNING.** Read job 100, pick the pair,
-   edit `TVLQRConfig`. The evidence is already overwhelming that (a) the move
-   off the old default is right, (b) `q=0.276` is on the bad edge of a wide
-   plateau, and (c) a seven-plan search cannot resolve the rest. Job 100 exists
-   to choose `r` at the new `q`, not to reopen anything. **Do not queue another
-   gain job after it** — three independent broad-set runs now agree that `J` is
-   flat inside the plateau, so further search resolves noise.
-
-   Note for the write-up: the honest claim is a **robustness trade**, not
-   "tuning halves deviation". It pays on hard trajectories, is ~free on easy
-   ones, and where the old default loses is **control effort** (~3x), which is
-   the SVCM prescription of p. 78 turning up as a measurement.
+1. ~~Close the gain decision and STOP TUNING.~~ **DONE 2026-08-19:** adopted `q_cross=2.5, r_omega=2.618`. Keep the write-up framing: a **robustness trade** (pays on hard trajectories, ~free on easy ones; the old default loses on ~3x control effort — the SVCM p. 78 prescription as a measurement).
 
 2. **Watch a fixture run properly, now that watching is possible.** `just
    fixture-up 5` + `just screenshot` works, but the Gazebo GUI camera is not
@@ -255,9 +222,10 @@ do). Now composed properly with yaw.
 - **VM:** the long-lived headless `gz sim` (default partition, `rl_corrector.world`,
   ground mu=1.0) is still up. Job 100 owns **workers 1-4**; a **fixture runs in
   worker 5**. The jobq runner is up and has now run six jobs without dying.
-- **Queue:** `100_broad_r_at_q25.sh` running, nothing pending.
-- **`TVLQRConfig` is UNCHANGED** (`q_cross=0.276`, `r_omega=2.618`) pending job
-  100. This is the one decision waiting on a person.
+- **Queue:** idle; runner UP; last job 100 finished rc=0 (1200 rows, fetched to `soak_data/soak_broad_r_at_q25.jsonl`).
+- **`TVLQRConfig` = `q_cross=2.5`, `r_omega=2.618`** (adopted 2026-08-19 after job
+  100). The remote build predates this edit — `just remote-build` before any
+  remote run that should pick it up.
 - **Fetched and analysed this session:** `soak_data/soak_broad_q.jsonl` (1200),
   `soak_data/soak_broad_r.jsonl` (600), `soak_data/soak_validate_J_broad.jsonl`
   (600). No traces were needed — `j_total` is inline in every row.

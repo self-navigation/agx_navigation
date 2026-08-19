@@ -1428,6 +1428,38 @@ Arrival (`final_err`, miss rate) is what separates them, and it is also what the
 robot is for. Read a gain decision on `final_err` and `J` together; max|e_cross|
 ranks the old default best while it spends ~3x the control.
 
+### Job 100 closes the gain decision: ADOPTED `q_cross=2.5, r_omega=2.618` (2026-08-18)
+
+The last gain job. `r ∈ {0.25, 1.0, 2.618, 5.0}` at **q=2.5**, plus `1.5/2.618`
+and `0.276/2.618` carried in-process as controls, 40 broad plans, mean-of-5,
+1200 rollouts (`soak_data/soak_broad_r_at_q25.jsonl`; aggregation and paired
+sign tests as in jobs 50/70/80):
+
+| gains | geo `J` | max\|e_cross\| | `final_err` | miss rate |
+| --- | --- | --- | --- | --- |
+| 0.276 / 2.618 (was adopted) | 12.98 | 0.686 | 0.388 | 22.0% |
+| 1.5 / 2.618 | 12.81 | 0.620 | 0.267 | 13.5% |
+| 2.5 / 0.25 | 16.94 | **0.520** | 0.272 | **10.0%** |
+| 2.5 / 1.0 | 15.66 | 0.571 | 0.264 | 12.0% |
+| **2.5 / 2.618** | 13.84 | 0.609 | **0.244** | 11.5% |
+| 2.5 / 5.0 | **13.79** | 0.655 | 0.277 | 13.0% |
+
+- **`q=2.5` confirms against the old adopted point**: 34/40 on `final_err`
+  (p<0.0001), miss rate 22% → 11.5%. This is the fifth independent broad-set
+  measurement of the move off 0.276; it is not a draw.
+- **`r` is FLAT on arrival at q=2.5** — the four rungs are statistically
+  indistinguishable on `final_err` (p≥0.27). The old r=0.5→1.0 threshold was a
+  `q=0.276` phenomenon, exactly as job 80 suggested. `r=0.25` wins metres
+  (30/40, p=0.002) and pays ~25% in `J` — the control-effort trade again.
+- **Adopted the best all-rounder (2.5, 2.618)** in `TVLQRConfig`:
+  best `final_err`, near-best `J` and miss rate, and the point carried as a
+  control in three separate runs. The value inside the plateau is not
+  load-bearing; 2.5 is the rung that won arrival.
+
+**TUNING IS CLOSED.** Three independent broad runs agree `J` cannot separate
+anything inside the plateau and arrival chooses the rung; further gain jobs
+resolve noise. The honest write-up claim remains the robustness trade (job 50).
+
 ### Parallel sims: `WORKER` (built and verified 2026-08-15)
 
 **Several Gazebos now run on one box, and the "only ever ONE sim" rule is

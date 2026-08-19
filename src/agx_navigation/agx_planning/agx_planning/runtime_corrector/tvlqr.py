@@ -123,13 +123,14 @@ class TVLQRConfig:
     # Cross-track is weighted hardest: leaving the corridor is the failure mode,
     # while an along-track lag is benign (the robot is on the path, just behind).
     q_along: float = 1.0
-    # TUNED 2026-08-13, was 10.0. ~36x weaker than the hand-picked value, which
-    # is the same direction the "TVLQR oscillates on the S-curve" complaint
-    # always pointed: an over-aggressive cross-track gain oscillates. Adopted on
-    # a 4065-rollout soak (~290 samples per shape per arm), not on a search
-    # optimum -- see CLAUDE.md, "What 4065 rollouts say". Only q_cross and
-    # r_omega have been tuned; q_along/q_heading/r_v are still hand-picked.
-    q_cross: float = 0.2762521839107533
+    # TUNED 2026-08-13 to 0.276, then 2026-08-18 to 2.5 on the broad 40-plan
+    # set (job 100): 0.276 sat on the bad edge of a wide plateau -- every q>=1
+    # rung beat it on arrival (34/40 plans, p<0.0001) and on miss rate (22% ->
+    # ~12%). J is flat across the whole plateau, so the value inside it is not
+    # load-bearing; 2.5 is the rung that won final_err. See CLAUDE.md, "The
+    # broad ladders" and "The broad gain check". Only q_cross and r_omega have
+    # been tuned; q_along/q_heading/r_v are still hand-picked.
+    q_cross: float = 2.5
     q_heading: float = 5.0
     # Terminal weights (Riccati seed). Heavier than the running Q so the
     # trajectory is driven onto the goal rather than merely near it.
@@ -145,6 +146,9 @@ class TVLQRConfig:
     # weight, not the cheap one. Consistent with q_cross going down: both moves
     # ask the corrector to steer less hard. The comment is left as written
     # because the argument was reasonable and the measurement disagreed.
+    # Re-checked 2026-08-18 at q_cross=2.5 (job 100): r is FLAT on arrival
+    # across [0.25, 5.0] once q leaves 0.276, so 2.618 is kept because it is
+    # measured, not because it is special -- anything in the range would serve.
     r_omega: float = 2.6183452282612643
 
     # --- Authority limits --------------------------------------------------
