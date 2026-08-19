@@ -6,16 +6,18 @@ have *established*. This file describes **now**: what is running, what is
 half-finished, what to do next, and the reasoning behind decisions that have not
 yet become findings. Rewrite it rather than appending.
 
-**This session in one line:** job 100 was read and the gain decision is
-**CLOSED** — `TVLQRConfig` now reads `q_cross=2.5, r_omega=2.618` (full table in
-CLAUDE.md, "Job 100 closes the gain decision"). **Do not queue another gain
-job.** The queue is idle and nothing is running.
+**This session in one line:** the demo DROVE, twice, end to end on the ROS
+stack — goal (6.0, 3.0), ~59 s, 36.9 m path, **final_err 0.0472 / 0.0478 m**
+(arrived both times), TVLQR active with a visible slip excursion + recovery
+(max_cross ~1.10 m, sat 47.7%). Launch races never fired (ready on attempt 1
+both bring-ups). The one thing left open is the **GUI camera follow — see
+roadmap item 2; it needs Moonlight (user's VPN for it is down ~5 days)**.
 
-**FIRST THING NEXT SESSION:** nothing is pending on the VM. Pick up the roadmap
-below — the two live items are the **demo watch** (item 2) and **re-planner
-Phase 0** (item 7). Note the remote build has NOT been refreshed with the new
-gains — run `just remote-build` before any fixture/stack run; soak jobs pass
-gains explicitly, so they do not care.
+**FIRST THING NEXT SESSION:** the VM still has a worker-1 headless fixture up
+(tmux `rl:fixture1`, log `/tmp/fixture1.log`) with a separate GUI client
+(tmux `rl:gui1`, log `/tmp/gz-gui1.log`). Tear them down or reuse them. The
+live item is **camera follow for the demo (item 2)**, which is blocked on
+Moonlight access; otherwise re-planner Phase 0 (item 7).
 
 **The gain decision in short:** `q=2.5` beat the old adopted 0.276 on arrival
 34/40 (p<0.0001), miss rate 22% → 11.5%; `r` is flat on arrival at `q=2.5`
@@ -149,24 +151,35 @@ do). Now composed properly with yaw.
 
 1. ~~Close the gain decision and STOP TUNING.~~ **DONE 2026-08-19:** adopted `q_cross=2.5, r_omega=2.618`. Keep the write-up framing: a **robustness trade** (pays on hard trajectories, ~free on easy ones; the old default loses on ~3x control effort — the SVCM p. 78 prescription as a measurement).
 
-2. **Watch a fixture run properly, now that watching is possible.** `just
-   fixture-up 5` + `just screenshot` works, but the Gazebo GUI camera is not
-   pointed at the robot, so the screenshot shows the building rather than the
-   demo. Two small things to fix, both named in the roadmap already: point the
-   camera, and move the demo patch layout out of the hardcoded JSON literal in
-   `gz_sim.launch.py` into a `PATCH_LAYOUT` config file — the current layout
-   puts `icy` under the spawn point, which is right for testing and useless for
-   a demo (you want clean → one patch → excursion → recovery). Keep demo patches
-   just ABOVE the wheel's `mu2=0.45` knee; below it there is no steering at all,
-   which reads as a broken robot rather than a slipping one.
-
-   With workers, the before/after is cheap: `just fixture-up 1 tvlqr true` and
-   `just fixture-up 2 identity true` side by side on one desktop.
+2. **GUI camera follow — BLOCKED on Moonlight (next step, user's call
+   2026-08-19).** The demo itself is done: worker-1 fixture + `drive_goal`
+   drove goal (6.0, 3.0) to arrival **twice** (final_err 0.0472 / 0.0478 m,
+   ~59 s, 36.9 m, TVLQR active, slip excursion ~1.10 m visible in the
+   corrector status). What does not work is making the Gazebo camera track the
+   robot through the API alone — tried and failed so far:
+   - `--gui-config` SDF with a `CameraTracking` plugin (`follow_target
+     scout_mini`, `follow_offset`, `follow_pgain`; the keys exist — confirmed
+     via `strings` on `libCameraTracking.so`): plugin loads with no error and
+     **does not follow**. Follow appears to need the UI gesture.
+   - `xdotool` right-click on the Entity Tree's `scout_mini` row (coordinates
+     found with `analyze_image` on `import -window <id>` screenshots): the
+     first right-click did not produce a visible context menu. Not retried —
+     user deferred to a session with Moonlight.
+   **With Moonlight:** right-click `scout_mini` in the Entity Tree → Follow,
+   then run `tools/with-worker 1 python3 tools/drive_goal.py --x 6.0 --y 3.0`
+   for the tracked shot. Two remaining polish items: move the patch layout from
+   the hardcoded JSON in `gz_sim.launch.py` into a `PATCH_LAYOUT` config (demo
+   wants clean → one patch → excursion → recovery, patches just ABOVE the
+   `mu2=0.45` knee), and optionally `just fixture-up 2 identity true` side by
+   side for a before/after.
 
 3. **Characterise the launch races, then fix them.** `fixture_up.sh` retries and
    prints the failing check each time, so the evidence accumulates for free.
    Nothing fired this session (ready in 24 s, first attempt), so there is **no
    failing case to fix yet** — collect a few before touching `main.launch.py`.
+   (Still true after 2026-08-19: two more bring-ups, both ready on attempt 1 in
+   ~15 s. The races may be rarer than feared, or already fixed by the readiness
+   probe's own startup ordering.)
    The probe already knows the shape of the answer: map, `map->odom`,
    `/goal_pose` subscriber count, `/clock` advancing.
 
@@ -220,8 +233,15 @@ do). Now composed properly with yaw.
 ## State
 
 - **VM:** the long-lived headless `gz sim` (default partition, `rl_corrector.world`,
-  ground mu=1.0) is still up. Job 100 owns **workers 1-4**; a **fixture runs in
-  worker 5**. The jobq runner is up and has now run six jobs without dying.
+  ground mu=1.0) is still up. **This session left a worker-1 fixture stack up**:
+  headless (`HEADLESS=true`) in tmux `rl:fixture1` (log `/tmp/fixture1.log`) plus
+  a GUI client in `rl:gui1` (`--gui-config /tmp/demo_gui.sdf`, log
+  `/tmp/gz-gui1.log`) — split that way so GUI restarts cannot kill the sim. Both
+  demo goals (6.0, 3.0) already ran to arrival on this stack; a fresh goal needs
+  no restart (odometry drift after ~2 runs is ~0.1 m of final_err — fine for a
+  demo, not for a measurement). `xdotool` is installed on the VM for GUI
+  automation; `import -window <id>` + `analyze_image` (via the Read CDN URL) is
+  the working screenshot-reading loop. The jobq runner is idle and up.
 - **Queue:** idle; runner UP; last job 100 finished rc=0 (1200 rows, fetched to `soak_data/soak_broad_r_at_q25.jsonl`).
 - **`TVLQRConfig` = `q_cross=2.5`, `r_omega=2.618`** (adopted 2026-08-19 after job
   100). The remote build predates this edit — `just remote-build` before any
