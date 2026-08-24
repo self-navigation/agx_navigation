@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## What this is
 
 A ROS 2 **Jazzy** / Gazebo **Harmonic** workspace for autonomous navigation of an
@@ -429,16 +433,16 @@ Non-obvious facts about that box, all of which cost time to work out:
 **This section is a living log — append to it, or rewrite the parts it
 contradicts, whenever a run or an experiment establishes something new.**
 
-**Split rule (2026-08-13):** superseded tables and resolved-bug narratives live in
+**Split rule (2026-08-13, enforced again 2026-08-24):** superseded tables and
+resolved-bug narratives live in
 [docs/corrector-history.md](docs/corrector-history.md), not here. The axis is
 **"does this still constrain a decision?"**, not chronology — a retraction that
 stops someone re-proposing a dead idea is *live* however old it is, and gets a
 one-line stub under "Settled" below. What moves out is the investigation behind
 it and any measurement taken on a plant or rig that no longer exists. When you
-retire something, leave the stub: an unstubbed removal means the idea comes back. It is
-the standing context for what is being worked on right now; the rest of this
-file describes the system, which changes far more slowly. Date each claim, and
-delete a claim outright when it is superseded rather than leaving both versions.
+retire something, leave the stub: an unstubbed removal means the idea comes
+back. Date each claim, and delete a claim outright when it is superseded rather
+than leaving both versions.
 
 The single active goal is getting the runtime corrector to hold a frozen PMP
 trajectory under slip. Nothing else is in progress.
@@ -468,116 +472,170 @@ text in this file and the narrative behind it is not. Full reasoning in
 [docs/corrector-history.md](docs/corrector-history.md); these stubs exist so a
 bad idea gets stopped before anyone reads it.
 
-- **The 20260730 SAC run (1.5M steps) learned nothing usable** — 2 successes in 8864 episodes, `ent_coef` ran away to 3.31, `critic_loss` 1.2e4. Fix the entropy target and bound the return before any retrain (queue 1-2). Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **Nothing measured before 2026-08-02 evening is valid.** `WorldControl.pause` is a proto3 bool, so every `multi_step` silently un-paused the world and it free-ran between control steps. Fixed; `_ensure_paused` verifies the clock stopped. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **`final_err` is NOT reproducible and must never be a tuning objective** (sd 0.26 vs max|e_cross|'s 0.0002 on the trajectory it was measured on). The seed is ~1e-13 in residual wheel speed, amplified at turn reversals where lateral friction switches direction — genuine chaos, not a bug. Do not re-propose the ROS-publish-vs-gz-step race or terrain differences; both were ruled out. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **The 0.0002 m noise floor was ONE trajectory's and does not generalise.** The 7-shape set is ~400x noisier because turn reversals are chaotic amplifiers. Nelder-Mead cannot converge on a noisy objective — it re-sampled one point 71 times. Superseded operationally by mean-of-3 repeats. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- The 2026-08-07 BO run (100 evals, mean-of-3) found `q_cross=0.276 / r_omega=2.618` at 0.614 m vs the default's 1.042 m. Its binned per-variable tables are **smoothing artifacts** — treat any one-variable summary of this landscape as suspect. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- The `q_cross` search-box floor was **not** the limit (nothing below 0.1 is better, so the optimum is interior). `--q-bounds` exists because `x0` is CLIPPED into the box, so a probe outside it silently measures the boundary. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- The neighbourhood is a shallow bowl with a notch: 13 of 15 grid points beat the default across ±60% in `q` and 6x in `r`. `r_omega` matters locally even though the binned table denied it. **A per-shape claim must name its baseline** — computing one against sweep neighbours rather than the default produced a retracted attribution. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **The 2026-08-03 three-way table was measured on the broken plant** (`mu2=0.7`, robot could not steer on its own patches) and is superseded by the 2026-08-07 baseline above. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **No RL checkpoint shows a learning trend on the real task** (r=0.111 over 20 checkpoints; 0 of 20 beat TVLQR). The TB metric that looked like progress was logged by the mis-stepped env. Quote 800k as *best* checkpoint, never as typical. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- The wheel-velocity residual was **not** the determinism seed (wheels already agree to 1e-16); the un-gated IMU read was, and is now gated. Detail: [docs/corrector-history.md](docs/corrector-history.md).
-- **The old run-to-run variance was patches silently not spawning**, not an 8 mm reset slide (that theory is retracted). With the world paused, `create` returns False while creating the entity anyway, so ~half of rollouts ran on bare ground. `_wait_entities` now confirms via pose/info; **never re-issue a create for a 'missing' patch** — it is in flight, and re-creating genuinely fails. Detail: [docs/corrector-history.md](docs/corrector-history.md).
+**Plant and measurement validity**
 
-### Terrain patches are inherited across processes (found 2026-08-01)
+- **Nothing measured before 2026-08-02 evening is valid.** `WorldControl.pause` is a proto3 bool, so every `multi_step` silently un-paused the world and it free-ran between control steps. Fixed; `_ensure_paused` verifies the clock stopped.
+- **Nothing measured before 2026-08-04 is comparable with anything after**, and again before **2026-08-07**: the patch friction distribution was re-weighted, then the wheel's `mu2` moved 0.7 → 0.45. Both were deliberate plant changes.
+- **The old run-to-run variance was patches silently not spawning**, not an 8 mm reset slide (that theory is retracted). With the world paused, `create` returns False while creating the entity anyway. `_wait_entities` now confirms via pose/info; **never re-issue a create for a 'missing' patch** — it is in flight, and re-creating genuinely fails.
+- **Terrain patches are inherited across processes**: the bridge now sweeps `rl_ground` and `rl_patch_0..7` by name at construction, because the sim outlives any one trainer. Tables measured before 2026-08-01 ran on someone else's leftover terrain.
+- **`reset_world=True` DESTROYS THE ROBOT — never use it.** A gz `WorldControl.reset.all` deletes runtime-spawned entities, including the `scout_mini`. Recovery is `just kill-sim` + `just remote-sim`, not debugging.
+- **The wheel-velocity residual was NOT the determinism seed** (wheels agree to 1e-16); the un-gated IMU read was, and is now gated.
+- **Do not chase the last decades of initial-state agreement.** A ~1e-6 m settle residual is amplified to metres in ~30 steps on reversal-heavy shapes; a tighter tolerance is the wrong instrument against an exponential.
 
-`GazeboBridge._remove_terrain` only removed patches that *its own process*
-spawned, and the sim deliberately outlives any one process. So a trainer that
-exited mid-episode left its patches in the world, and the next
-`compare_correctors` inherited them. Two distinct failures, not one:
+**Metrics and estimators**
 
-- a leftover `rl_ground` from a `--ground-friction` run is a low-friction slab
-  under the entire trajectory — a different plant than the run intends;
-- `create` on an existing name *fails*, so an inherited `rl_patch_0` also
-  displaces the patch this run meant to spawn.
+- **`final_err` is NOT reproducible and must never be a tuning objective** (sd 0.26 on the trajectory it was measured on). Genuine chaos at turn reversals, not a bug — the ROS-publish-vs-gz-step race and terrain differences were both ruled out. (It *is* fine as an aggregate over 40 plans — see "Reading a gain result".)
+- **The 0.0002 m noise floor was ONE trajectory's and does not generalise.** Nelder-Mead cannot converge on a noisy objective — it re-sampled one point 71 times. Superseded by mean-of-3 repeats.
+- **The median-of-3 estimator LOSES to the mean-of-3** — the 7-trajectory aggregate already dilutes an outlier 7-fold, so the median pays its variance penalty for nothing. Mean-of-3 to search, mean-of-5 to validate.
+- **Every "run-to-run variance" number written before 2026-08-13 is a mixture width, not a measurement error.** Several shapes are bimodal; the right estimator for them is a mode frequency over ~100 samples, not a mean over 3.
+- **`J` needs the GEOMETRIC mean across trajectories.** `J` spans 0.2 to 1043 across a library sweep and one plan can carry 48% of the arithmetic mean, so an arithmetic search on `J` tunes to whichever plan is worst. `objective.DEFAULT_HOW` encodes it: arithmetic for `max_cross`, geometric for `j_total`.
+- **A per-shape claim must name its baseline** — computing one against sweep neighbours rather than the default produced a retracted attribution.
+- **An automatic shape label is a ranking aid, never a claim.** Two labellers have now misled here (`classify_plans.py` called 58 of 100 plans CORNER; `total_abs_turn` cannot separate a hairpin from two same-sign corners). **Render the plans before making any per-shape claim.**
+- **Screening candidate start/goal pairs on PREDICTED turning does not work** — the cheap A*/lattice route predicts *where* a plan goes (r=+0.99 on length, +0.96 on straightness) and not *how it turns* (+0.30). Shape is labelled from the solved plan instead.
 
-Fixed: the bridge now sweeps `rl_ground` and `rl_patch_0..7` by name at
-construction. At most 4 patches ever exist (`n_range=(1,3)` at every call site,
-plus `rl_ground`); the rest is headroom.
+**Gains and tuning (closed — see "The gains are settled" below)**
 
-**The 2026-07-30 three-way comparison table is not trustworthy** — it was
-measured with a trainer's patches almost certainly still in the world. Same
-correctors, same trajectories, clean world, 2026-08-01 (max|e_cross| / final_err):
+- **A seven-plan gain search cannot resolve the gains, in either currency.** Two of them (`max|e_cross|` in 2026-08-12, `J` in job 60) produced optima that evaporated on 40 independent plans. Do not run another one. Validate on the broad set.
+- **`J` is the right objective and a poor discriminator**: it ranks the move off the old default decisively (1.49x, 5/40) and cannot separate anything *inside* the plateau (every within-plateau p is 0.08–0.88).
+- **`q` and `r` INTERACT**, so every `r_omega` claim is scoped to the `q_cross` it was measured at. The `r=0.5→1.0` threshold that once justified moving off `r=0.25` is a `q=0.276` phenomenon and is absent at `q=1.5` and `q=2.5`.
+- **The U-turn "basin" with near-vertical walls is a property of `floor_6_00031`'s exact plan, not of U-turns** — four other U-turn plans (one a near-duplicate of its route) show no `q` dependence at all. Never restate it as a shape claim.
+- **RL checkpoints show no learning trend on the real task** (r=0.111 over 20 checkpoints; 0 of 20 beat TVLQR). The TB metric that looked like progress was logged by the mis-stepped env. Quote 800k as *best* checkpoint, never as typical.
+- **The 20260730 SAC run (1.5M steps) learned nothing usable** — 2 successes in 8864 episodes, `ent_coef` ran away to 3.31, `critic_loss` 1.2e4. Fix the entropy target and bound the return before any retrain (queue 1-2).
 
-| trajectory | shape | identity | tvlqr | 2026-07-30 identity |
+### The gains are settled: `q_cross=2.5, r_omega=2.618` (job 100, 2026-08-18)
+
+**TUNING IS CLOSED.** Adopted in `TVLQRConfig`. The decision rests on five
+independent runs over the **40 broad v2 plans** (`tools/select_broad_eval.py`,
+mechanically chosen, none of them among the seven), mean-of-5, paired sign tests
+over the 40 (`soak_data/soak_broad_*.jsonl`):
+
+| gains | geo `J` | mean max\|e_cross\| | mean `final_err` | miss rate (>0.5 m) |
 | --- | --- | --- | --- | --- |
-| floor_1_00049 | STRAIGHT | 0.28 / 0.48 | 0.01 / 0.02 | 0.62 / 4.88 |
-| floor_6_00042 | S-CURVE | 0.22 / 0.19 | 1.55 / 1.08 | 6.83 / 6.86 |
-| floor_6_00023 | CORNER | 1.21 / 3.45 | 0.23 / 0.05 | 19.45 / 17.18 |
+| 0.276 / 2.618 (previously adopted) | 12.98 | 0.686 | 0.388 | 22.0% |
+| 1.5 / 2.618 | 12.81 | 0.620 | 0.267 | 13.5% |
+| 2.5 / 0.25 | 16.94 | **0.520** | 0.272 | **10.0%** |
+| **2.5 / 2.618 (ADOPTED)** | 13.84 | 0.609 | **0.244** | 11.5% |
+| 2.5 / 5.0 | **13.79** | 0.655 | 0.277 | 13.0% |
+| 10 / 0.25 (the original default) | 17.59 | 0.575 | 0.314 | 15.3% |
 
-On a clean world **TVLQR loses to identity on the S-curve**, which the
-contaminated table hid. "TVLQR beats identity on every shape" is retracted.
+Four facts to keep, because they are what a reader will ask about:
 
-### TVLQR gain tuning (built 2026-08-01)
+- **The move off the original default `10 / 0.25` is the durable result**, and it
+  is 1.49x in `J` winning 45 of 51 plans on a library sweep and 35 of 40 on the
+  broad set. **Where the default loses is CONTROL EFFORT, not tracking**: it
+  achieves slightly *tighter* peak deviation while spending ~3x the control
+  (mean `J` control term 6.37 vs 2.22). That is exactly the trade the source
+  prescribes for low traction (p. 78, larger `R`), reproduced empirically before
+  anyone read the prescription — it belongs in the write-up.
+- **The value inside the plateau is not load-bearing.** `J` is flat across a 15x
+  range of `q`; `q=2.5` is the rung that won **arrival** (`final_err` 34/40 vs
+  the old point, p<0.0001; miss rate 22% → 11.5%), and at `q=2.5` all four `r`
+  rungs are indistinguishable on arrival (p>=0.27).
+- **Read a gain decision on `final_err` and `J` together.** `max|e_cross|` ranks
+  the old default best while it burns 3x the control, and it has disagreed with
+  arrival on every ladder run here.
+- **The honest write-up claim is a robustness trade, not "tuning halves
+  deviation".** Over the 51-plan library sweep the tuned gains gained 9.99 m on
+  hard plans (10/11 wins where the default exceeds 1 m) and lost 2.03 m on easy
+  ones (~3 cm each), worst single regression 0.282 m. The seven-shape set is
+  **enriched for hard plans** and must be described as a corrector test set, not
+  as a representative sample of the robot's work.
 
-`agx_planning/tuning/` searches `(q_cross, r_omega)` by Nelder-Mead against real
-Gazebo rollouts. `just tune-tvlqr` (detached, ~75 s per evaluation, ~70 min for
-60), then `just fetch-tune && just plot-tune`.
+### Reading a gain result: the method that survived
 
-- `simplex.py`, `objective.py`, `cache.py` are **pure and unit-tested** — no ROS,
-  no Gazebo, no torch, same rule as the RL pure modules. 25 tests, and they are
-  aimed at one thing: proving the search *minimizes*. A tuner that maximizes
-  produces an identical-looking log and hands back the worst gains it found.
-- **`--max-evals` bounds candidate GAIN PAIRS, never rollout length.** Every
-  evaluation drives every selected trajectory start-to-goal.
-- **The trajectory set is fixed, never sampled**, so candidates are always
-  compared on identical work. A rollout that *fails* makes the whole evaluation
-  invalid (`inf`), never a mean over the survivors: the trajectories differ
-  hugely in difficulty, so averaging whatever finished rewards gains that crash
-  the hard rollouts.
-- **Resumable at zero cost.** Nelder-Mead is deterministic given its objective,
-  so a resumed run replays the JSONL cache to reconstruct the search and
-  re-measures nothing. The cache is keyed on the trajectory list + seed and
-  refuses to resume onto a different problem.
-- **`--max-evals 0` (the default) runs to convergence**, since the search has
-  nights available and a converged answer beats a predictable finish time.
-  Three guards make unbounded mode safe: a 15-minute per-evaluation timeout (a
-  healthy one is ~75 s), an abort after 5 consecutive failures, and —
-- **failures are never cached.** This one was learned the hard way: killing the
-  tuner mid-evaluation invalidated the bridge's rclpy context, after which every
-  rollout failed in 2 ms. 56 bogus `inf` evaluations were written in three
-  seconds, and had they been memoized, every future resume would have replayed
-  them as real measurements. `inf` means "the sim broke", almost never "these
-  gains are bad". Failed records are still written (with `_failed: true`) for
-  diagnosis, but never returned from the cache.
-- Search runs in **log10** of both gains: a step is a ratio, and no move can
-  propose a negative gain.
-- Every evaluation records its **per-trajectory** errors, not just the aggregate,
-  so the landscape can be re-analysed per shape without re-driving anything.
+Distilled from ~12000 rollouts. Any future controller comparison should follow it.
 
-Baseline at the current `q_cross=10 / r_omega=0.25`: **0.487 m** mean
-max|e_cross| over the three-trajectory set (0.243 straight / 0.224 S-curve /
-0.993 corner), measured 2026-08-01 by the tuner itself.
+- **Evaluate on the 40 broad v2 plans**, not on the seven. A result on the seven
+  is a result about the seven.
+- **`J` (`tuning/epsilon.py`) is the objective**, geometric mean across plans,
+  and it is an **upper bound on `epsilon`, never `epsilon` itself** (`J*` under
+  slip is unknown and positive — say so in the write-up). `J` is computed
+  **online** by `EpsilonAccumulator` and is inline in every soak row as
+  `j_total`, so scoring from trace files is no longer the route to a number.
+  `tools/score_epsilon.py` remains for already-recorded runs; the two paths
+  differ where a wheel saturates (online takes the correction before clipping).
+  **`R` charges the CORRECTION, not the total command** — the nominal command is
+  what the planner already paid for.
+- **Report arrival beside it**: mean `final_err` and the miss rate (>0.5 m).
+  Arrival is what separates arms inside the `J` plateau, and it is what the
+  robot is for.
+- **Compare arms by paired sign test over the plans**, mean-of-5, with any
+  reference point **carried in the same process** — cross-run comparability is an
+  assumption, and carrying a control costs one arm.
+- Rollouts that fail (the patch-spawn guard fires on ~1% of them) invalidate
+  their sample and are never averaged over survivors.
 
-**First converged run (2026-08-02, 132 evaluations, ~2.3 h):**
-`q_cross=7.22`, `r_omega=0.369` → **0.183 m**, from 0.487 m.
-`figures/tvlqr_tune_landscape.png`, history in `tune_data/tvlqr_tune.jsonl`.
+### What the source framework requires (SVCM)
 
-**Do not adopt those gains on this evidence alone.** The per-trajectory panel
-shows `floor_6_00042` swinging between ~0.2 m and 7 m *throughout* the run at
-near-identical gains — the run-to-run variance is much larger than the claimed
-improvement. Taking the minimum over 132 noisy draws selects partly for a lucky
-draw (winner's curse), so 0.183 m is biased low and the true value at those
-gains is likely worse. What the run does support is that the *region* around
-q≈7, r≈0.37 is better than the default, since the simplex clustered there.
+Full transcription with LaTeX, page numbers and a glossary in
+[docs/svcm-source.md](docs/svcm-source.md); the design it implies is
+[docs/corrector-design.md](docs/corrector-design.md). Read those before
+arguing about architecture. The parts that constrain what we build:
 
-Before adopting: re-measure the tuned gains and the defaults ~5x each and
-compare distributions, not single numbers (~12 min). More generally, until the
-variance in the "ideas queued" list is understood, **any tuning result needs
-repeat measurements**, and a search that ranks candidates on one sample each is
-resolving noise as often as signal.
+- **The method is SVCM** and its object is the cost-functional gap: `u` is
+  **ε-optimal** on trajectory `z` when `J[u] <= J*[z] + epsilon`. So `J`, not
+  `max|e_cross|`, is the currency the write-up must report — that is why
+  `tuning/epsilon.py` exists.
+- **`u_adm = u_J + u_bar`** (p. 52): the control the agent already has plus a
+  correction. Our frozen PMP plan *is* `u_J` and the corrector *is* `u_bar`, so
+  the corrector structure is the theory's own form rather than a shortcut.
+- **The catalogue is stored as small networks in the source's own words**
+  (p. 77), indexed by environment type and deviation magnitude, holding the
+  trajectory, **its costates and the Hamiltonian parameters**. So "RL as the
+  library compressor" is the source's proposal, not our extrapolation.
+- **RL acts at the PLANNING layer** — server-side, actor-critic with MPC in the
+  actor, tuning costates / transversality conditions / cost weights. A 4-wheel
+  multiplicative residual on the commands was never this, which is an
+  independent reason it was the wrong object.
+- **LQR is on-plan**: the paper seed names a lightweight scenario-recognising
+  LQR arm as part of the contribution, alongside the PMP catalogue.
+- **The remote server is the central claim, not a design smell.** The comms
+  delay `τ` is an explicit hypothesis of the dichotomy theorem (the source's
+  **Theorem 2**), so the latency objection is retracted as stated. The narrower
+  concern that survives: the named protocols (DShot, PWM) describe a flight
+  controller, not a Jetson, so the *premise* wants re-checking on our platform.
+- **Our `mu2` steering cliff is a demonstration of the theorem's SECOND
+  branch** — below the knee no admissible control tracks the plan, so the
+  failure is physics, not corrector deficiency. That makes the friction sweep a
+  contribution to the advisor's own theory, and it argues for keeping ice in the
+  evaluation deliberately as the uncontrollable case.
+- Two unresolved mismatches: the theory is written for a 3-wheel `(x,y,θ)` robot
+  with `(v,ω)` controls and has **no counterpart to the skid-steer `chi`**; and
+  the catalogue is indexed by surface type, which is our patch profiles turned
+  into an architecture — but the mapping from a measured `chi` to a catalogue
+  index is the "scenario recognition" step both documents assume and neither
+  specifies.
+- `epsilon.py` cites the functional **(1.7), §1.3.1**, and deliberately differs
+  from it twice: (1.7) penalizes deviation from the **terminal target** and
+  charges the **total** control; we penalize deviation from the **moving
+  reference** and charge only the **correction**. Argued in its docstring.
 
-**Unexplained, flagged not fixed:** that same run scores TVLQR at 0.224 m on
-floor_6_00042 where `just compare` scored 1.549 m an hour earlier — same gains,
-same seed, same code path. It is the offline-mode variance again but far larger
-than the identity-leg spread. The tuner is *internally* consistent (one process,
-one code path, fixed seed), which is what the search needs, but **do not compare
-a tuned number against a `compare` number** until this is understood.
+### A failed plan hung every client (fixed 2026-08-18)
+
+`TrajectoryBuffer.active_traj_id` is set in `_on_chunk`, so a plan that failed at
+**chunk 0** never set it, `_on_action_result` dropped the result as a mismatch,
+and `_on_tick`'s idle guard returned before `_finish()` could publish the zero
+and the completion sentinel. The stack went silent with the robot stationary and
+every client waited out its own timeout. Fixed in `_on_action_result`; verified
+live (a failed goal now advances the driver 0.4 s later).
+
+Two things that outlive the fix:
+
+- **BVP mesh-node exhaustion fails ~36% of fresh start/goal pairs** — the same
+  rate measured building the v2 library. That is not only a data-generation
+  problem; it is a runtime failure mode on ordinary goals, and a goal the
+  planner cannot solve must degrade **visibly**.
+- **The failure is a property of the start/goal PAIR, not of the goal.** The
+  same goal failed from one start pose and was reached from another.
+- Method note: the pipeline itself was healthy and the bug was in the failure
+  path. **A stack that works is not evidence about what it does when a component
+  says no.**
 
 ### Choosing evaluation trajectories
 
-`config/eval_trajectories.yaml` holds the working set and a candidate list.
+`config/eval_trajectories.yaml` holds the seven-shape working set and a
+candidate list — kept for per-shape diagnosis, but **the 40 broad v2 plans are
+what a gain or controller decision is read from** (see "Reading a gain result").
 `just gallery` renders all 100 plans (`figures/trajectory_gallery.png`), each
 rotated onto its principal axis so shape is comparable at a glance.
 
@@ -588,877 +646,6 @@ plan — a large heading change over no distance. Trust the picture. Likewise
 `floor_6_00042`, used as "the S-curve" in every comparison so far, is really an
 L with one rounded bend. Genuine S-curves: `floor_6_00028` (cleanest),
 `00024`, `00047` (zigzag), `00056` (tight V). A true U-turn: `floor_6_00031`.
-
-### Baseline on the repaired plant (2026-08-07) — the current reference
-
-**This supersedes the 2026-08-03 table below for every purpose except history.**
-That one was measured with the wheel's `mu2` at 0.7, i.e. on a robot that lost
-steering on its own test terrain (see "The wheel fix"). Five repeats of the full
-seven-shape set, identity and TVLQR, terrain on, `just compare` (~82 s per
-repeat). max|e_cross| in metres, mean ± sd over 5:
-
-| trajectory | shape | identity | tvlqr | verdict |
-| --- | --- | --- | --- | --- |
-| floor_1_00049 | STRAIGHT | 0.132 ± 0.000 | **0.086 ± 0.028** | tvlqr, marginal |
-| floor_6_00023 | CORNER | 0.721 ± 0.196 | **0.226 ± 0.000** | tvlqr |
-| floor_6_00018 | S | **0.839 ± 0.031** | 2.128 ± 0.003 | **identity** |
-| floor_6_00047 | ZIGZAG | 7.063 ± 0.712 | **2.186 ± 0.276** | tvlqr |
-| floor_6_00056 | TIGHT V | 0.418 ± 0.014 | **0.253 ± 0.026** | tvlqr |
-| floor_6_00031 | U-TURN | 1.666 ± 0.771 | 1.411 ± 0.534 | **tie**, overlapping |
-| floor_6_00025 | LOOP | 4.053 ± 0.010 | **1.600 ± 0.035** | tvlqr |
-| **mean** | | **2.127** | **1.127** | |
-
-**TVLQR halves worst-case deviation** (2.13 → 1.13 m), winning 5 shapes, tying 1,
-losing 1. Open loop is what moved most in the re-baseline (3.53 → 2.13): a plant
-that can steer makes the nominal plan far more followable unaided, so the easy
-shapes stopped needing rescue (tight V 3.01 → 0.42, U-turn 5.53 → 1.67). TVLQR
-itself barely moved (1.20 → 1.13), which is the expected signature.
-
-**The noise REDISTRIBUTED, it did not shrink.** The old plant's worst trajectories
-were the straight (sd 0.501) and the tight V (0.582); both are now effectively
-deterministic (0.000 / 0.014), while the zigzag (0.712) and U-turn (0.771) became
-the noisy ones. Coherent: when everything slides, everything is noisy; now the
-chaos is confined to the reversal-heavy shapes, where contact modes switch.
-**Consequence: 5 of 7 trajectories now support single-sample ranking, but the
-zigzag and U-turn do not.** Keep mean-of-3 as the tuning default.
-
-**"TVLQR oscillates on S-curves" is REINSTATED**, and the 2026-08-03 retraction of
-it is itself retracted. TVLQR loses the genuine S by 2.5x with sd **0.003** — as
-reproducible as anything measured here. The retraction came from the old plant,
-where TVLQR scored 1.06 against identity's 4.22; that was open loop failing
-everywhere, masking a real TVLQR weakness. The original claim had the phenomenon
-right and the evidence wrong.
-
-**The U-turn is a TIE, not a TVLQR win.** The distributions overlap completely.
-Any earlier U-turn claim from single samples was reading noise.
-
-RL was deliberately not re-measured: the existing policy is a 4-wheel *residual*
-trained on the old plant with an IMU-bearing observation layout, so its number
-here would describe neither this plant nor the re-planner architecture that
-replaced it (see handover).
-
-### The tuned point validates (2026-08-12)
-
-Independent mean-of-5 at each gain pair, tuner code path, fresh caches, clean
-sim. `tune_data/validate_20260812_{tuned,default}.jsonl`. The validation is run
-as `tune_tvlqr --max-evals 1 --repeats 5 --q-cross Q --r-omega R`: BO seeds its
-design with `x0`, so a 1-evaluation run is exactly a clean measurement at a
-chosen point, in the same code path that produced the number being checked.
-
-| | tuning run (mean-of-3) | validation (mean-of-5) |
-| --- | --- | --- |
-| default `q=10 / r=0.25` | 1.0417 | **1.0037** |
-| tuned `q=0.276 / r=2.618` | 0.6144 | **0.6212** |
-
-**This is the first tuning result on this project that survives an independent
-re-measurement.** Both earlier ones (0.183 m, 0.9412 m) were minima of noisy
-draws and evaporated on inspection.
-
-### The source's formulas, read properly at last (2026-08-15)
-
-**Every text extraction of the dissertation we had was silently missing the
-math.** The formulas are legacy **WMF equation images**, so `pdftotext`, python
-docx readers and pandoc alike return the prose with holes in it — "with
-functional  and dynamics ,". The 2026-08-13 reading below was done on such an
-extraction, which is why it describes the architecture correctly and never
-quotes a formula. [docs/svcm-source.md](docs/svcm-source.md) now transcribes
-pp. 48–62 and 74–84 from the **rendered pages**, with LaTeX, page numbers and a
-symbol glossary. Route for any future docx with equations: `soffice
---convert-to pdf`, then read the pages as images.
-
-Three things it establishes that change the design
-([docs/corrector-design.md](docs/corrector-design.md)):
-
-- **The catalogue is stored as small networks, in the source's own words**
-  (p. 77: «компактных аппроксиматоров, например, небольших сетей»). So
-  "RL as the library compressor" is the source's proposal, not our
-  extrapolation of it.
-- **`u_adm = u_J + u_bar`** (p. 52) — the control the agent already has, plus a
-  correction. Our frozen PMP plan *is* `u_J` and the corrector *is* `u_bar`.
-  The corrector structure is the theory's own form, not a shortcut around it.
-- **Crisis-scenario cost matrices are prescribed** (p. 78) as larger yaw and
-  wheel-speed-difference penalties plus an **increased control-effort penalty
-  `R`** to limit aggressive action in low traction. **We reproduced that
-  empirically without noticing**: tuning against slip terrain moved `r_omega`
-  *up* 0.25 → 2.618 and `q_cross` *down*. BO against Gazebo found the
-  prescription the text gives. That belongs in the write-up.
-
-**Two corrections to our own code and notes.** `epsilon.py` cited a section that
-does not contain the functional; the real one is **(1.7), §1.3.1**, and it
-differs from ours in two deliberate ways now argued in its docstring — (1.7)
-penalizes deviation from the **terminal target** and charges the **total**
-control, we penalize deviation from the **moving reference** and charge only the
-**correction**. Also, the dichotomy theorem is the source's **Theorem 2**, not
-Theorem 1 as the section below calls it.
-
-### `J` is computed online now (2026-08-15)
-
-`epsilon.EpsilonAccumulator` sums the functional as the rollout runs, so
-`variance_probe.drive` returns `j_total` (and its tracking/control/terminal
-split) beside `max_cross`. **Scoring from trace files is no longer the route to
-a number** — that was a pairing problem that produced large, plausible,
-meaningless results twice. `tools/score_epsilon.py` remains for already-recorded
-runs. One known difference between the two paths, documented at the seam: the
-online correction is taken before wheel clipping, the offline one after, so they
-disagree on a rollout that saturates a wheel.
-
-**`J` needs the GEOMETRIC mean across trajectories, and this is not a
-preference.** Across the 51-plan library sweep `J` spans 0.2 to 1043, and
-`floor_6_00031` alone contributes **48% of the arithmetic mean**:
-
-| aggregator | default | tuned | ratio | matches per-plan win rate (45/51)? |
-| --- | --- | --- | --- | --- |
-| arithmetic | 42.26 | 10.40 | 4.06 | **no** |
-| median | 8.14 | 6.64 | 1.23 | understates |
-| **geometric** | 9.72 | 5.14 | **1.89** | **yes** |
-
-So an arithmetic search on `J` would tune to whichever plan is worst.
-`objective.DEFAULT_HOW` encodes the split: arithmetic for `max_cross` (bounded,
-already validated), geometric for `j_total`. `-epsilon.step_cost(...)` is the
-per-step integrand and is the reward any future RL should use.
-
-### What the source documents actually say (read 2026-08-13)
-
-Read directly from the advisor's own dissertation draft (`Киселёв_докторская_v1.docx`,
-§1.2.2-1.3.3 and ch. 2) and the paper seed (`Затравка статьи.docx`), both in
-`~/Downloads/Telegram Desktop/`. **This section supersedes several inferences
-made from second-hand descriptions of the concept, including some made earlier in
-this file and in conversation.** The paper seed's §"Синтез управления в зонах
-изменения физических значений среды" is largely lifted from dissertation §1.3.2,
-so the two agree.
-
-**The method has a name and a formal definition.** It is **SVCM** —
-*STRL-Variative Control Method*. A control `u` is **ε-optimal** on a trajectory
-`z` when
-
-    J[u] <= J*[z] + epsilon
-
-where `J*[z]` is the best achievable value of the cost functional on `z`. The set
-of such controls is `U_eps`. Applied reading, in the advisor's words: a bounded
-set of admissible agent states within which the robot can keep moving **without
-critical effect on the final distance to the goal**.
-
-**The architecture, exactly as specified:**
-
-1. **Offline, on a remote server:** build a finite family of environment
-   scenarios per external factor `w` — *dry asphalt, wet surface, ice, mud*. For
-   each, solve with PMP for a control that is ε-optimal. Store the trajectory,
-   **its conjugate (costate) trajectory, and the Hamiltonian parameters** as a
-   *catalogue of suboptimal crisis templates*, indexed by environment type and by
-   the magnitude of deviation from expected system characteristics.
-2. **Onboard, in real time:** the agent tracks state `x_k` plus diagnostic
-   features `d_k` (explicitly: *wheel-slip indicators*). **It first tries to
-   compensate with the control it already has**, and only escalates if that
-   fails.
-3. **On a traction-loss event:** send `(x_k, d_k)` to the server; the server
-   replies with an index `i` and "apply template `u_i` over horizon `T_w`"
-   (`T_w` = a fixed local control window, e.g. *the time to drive out of the
-   puddle*). Onboard stores either the parameterised trajectory or a compact rule
-   for reproducing it.
-
-**Theorem 1 ("On realizational ε-admissibility and controllability accounting for
-real time")** assumes scenario coverage (the catalogue δ-approximates the real
-dynamics on `T_w`), a communication delay `τ` small relative to `T_w` with a
-Lipschitz bound on the resulting drift, and templates that respect the actuator
-and state constraints. It then gives a **dichotomy**:
-
-- **Controllable** — if *some* admissible control achieves acceptable `J`, the
-  real-time "event → server → template" scheme achieves `J <= J* + eps'`.
-- **Uncontrollable** — if *no* admissible control does, then no finite-catalogue,
-  real-time-bounded strategy can either, **and the cause is the physics, not the
-  algorithm or the network**.
-
-**Consequences for this project, in order of how much they change what we do:**
-
-**1. We have been measuring the wrong quantity.** Every table above scores
-`max|e_cross|` — a tracking error. The theory is stated entirely in terms of the
-**cost-functional gap `J[u] - J*`**, which is what `epsilon` *is*. These are
-different quantities and we have never computed the one the framework uses. We
-can: `PlannerConfig` fully specifies the running cost (`w_h`, `w_v`, `w_brake`,
-`w_omega_run`, the barriers) and the terminal cost, and `run_recorder` already
-stores the executed track. **CORRECTED same day:** `J` needs the per-step track, and
-`variance_probe.drive` reduces each rollout to scalars, so the ~4000 soak
-rollouts **cannot** be rescored — only fixture runs, where `run_recorder`
-writes `<run>_track.csv`, can. Capturing the track for future rollouts is a
-small change; the existing soak data is not recoverable for this. Doing so
-would let every result be reported in the thesis's own currency, and would give
-`epsilon` an empirical value instead of a symbol.
-
-**2. Our `mu2` / steering-cliff result is a demonstration of Theorem 1's SECOND
-branch.** Below the knee the robot achieves ~5% of commanded yaw rate — no
-admissible control tracks the plan, so the failure is fundamental rather than a
-corrector deficiency. That is exactly the "uncontrollable" case, which the
-dissertation asserts but does not demonstrate experimentally. **This makes the
-friction sweep a contribution to the advisor's own theory rather than a
-side-quest**, and it argues for keeping ice in the evaluation deliberately, as
-the branch-2 case, rather than treating "ice is uncontrollable" as a limitation.
-
-**3. The remote server is not a design smell, it is the central claim.** It was
-argued against earlier today on latency/connectivity grounds; **that objection is
-retracted as stated** — the delay `τ` is an explicit hypothesis of Theorem 1, and
-§1.2.2 justifies offloading from the platform's side: the named comms protocols
-are **DShot and PWM** (drone ESC protocols, 16-bit frames), and the doc proposes
-*extending DShot* to carry the model updates. The concern that survives is
-narrower and worth stating as such: those constraints describe a flight
-controller, not a Jetson, so on our platform the *premise* wants re-checking even
-though the *architecture* is sound where it holds.
-
-**4. LQR is on-plan, not a detour.** The paper seed says outright that a
-"lightweight algorithm" which recognises the scenario and **applies LQR** is part
-of the contribution, alongside the PMP catalogue. §1.2.2-1.2.3 develop an
-LQG-based sibling method (SFCC) to SVCM's PMP-based one. So the TVLQR work is one
-of the two intended arms.
-
-**5. RL's role is at the PMP problem's parameters, not on the wheels.** Ch. 2
-puts RL on the **server side**, in actor-critic form with MPC embedded in the
-actor, and the defended claim is that *"the weights of the conjugate system can
-be tuned by the author's experience-transfer algorithm"* and that
-**transversality conditions** are set from experimental checking of situations.
-So RL adjusts the **costates / transversality conditions / cost weights of the
-optimal control problem** — i.e. it acts at the planning layer. Our 4-wheel
-multiplicative residual on the commands was never this, which is an additional,
-independent reason it was the wrong object — separate from why it failed to
-train.
-
-**6. The dissertation pre-empts the obvious alternatives** (§1.3.3), which is
-useful for our related-work section: abstract ε-optimality existence theory
-(Uryson integral equations, admissible set a closed ball in `L_p`) proves
-existence non-constructively with no real-time or agent-server story;
-ε-optimal-policy results for MDPs (and hence RL) are for discrete states and
-actions, average-cost criteria and stationary policies, with no comms delay or
-event-triggered switching; and invariant/admissible-set methods target constraint
-satisfaction at mode switches rather than ε-optimality of a cost functional.
-
-**Two mismatches between the theory and our implementation, both unresolved:**
-
-- The theory is written for a **three-wheeled robot with a driving wheel**, state
-  `(x, y, theta)` with `(v, omega)` controls. Our PMP is a **5D skid-steer
-  wheel-space** model with per-wheel accelerations. The skid-steer `chi` has no
-  counterpart in the source formulation.
-- The catalogue is indexed by **surface type** (asphalt/wet/ice/mud), which is
-  precisely the `slip_chi`-is-a-property-of-the-surface finding of 2026-08-05
-  turned into an architecture. Our patch profiles are the same idea; they have
-  never been indexed or catalogued, and the mapping from a measured `chi` to a
-  catalogue index is exactly the "scenario recognition" step both documents
-  assume and neither specifies.
-
-### The U-turn's bad mode is seeded by ~1e-6 m of settle height (2026-08-13)
-
-30 traced rollouts of `floor_6_00031` at fixed gains, 14 tuned / 16 default
-(`uturn_traces/`, `uturn_{tuned,default}.jsonl`). The reset is **not** the
-variable, which is what the probe was built to check:
-
-| | tuned | default |
-| --- | --- | --- |
-| n | 14 | 16 |
-| mean / sd | 1.423 / 0.346 | 1.270 / 0.389 |
-| bad-mode rollouts | 1 (2.572) | 1 (2.591) |
-| **start-pose spread (x, y, θ)** | **3e-11, 5e-11, 9e-15** | **1e-11, 1e-11, 6e-14** |
-| `reset_ticks` / `lost_steps` | 20 / 0 | 20 / 0 |
-
-**Start poses agree to ~1e-11 m and outcomes still span 1.5 m.** So the
-bimodality is not initial-position spread, and the reset work of 2026-08-02 is
-not implicated. `reset_ticks` is a constant 20 and no steps were lost.
-
-`trace_diff` on a good (1.255) vs the bad (2.572) rollout puts the seed exactly:
-
-- **at reset, before any command: `z` differs by 4e-6 m**, plus IMU by ~0.017;
-- `y` moves at **step 1**, the commands only at **step 2**.
-
-State first, commands second — so by `trace_diff`'s own reading this is physics,
-not our controller. And the 4e-6 m is the **residual of the reset settle loop**,
-which converges to ~1e-6 (`reset_settle_z_tol`). The IMU difference is a red
-herring here: TVLQR does not consume the IMU, so it cannot be what moved the
-commands.
-
-**Reading:** the U-turn's bad mode is chaotic amplification of a ~1e-6 m
-*vertical* settle residual, through the reversal mechanism already documented.
-Supporting evidence that it is a property of the plant and not the corrector: the
-bad-mode value is **2.572 vs 2.591** in the two arms — the same attractor at gains
-differing by 36x — and the frequency is ~7% here against the soak's 10.3%/12.4%.
-
-**Do not chase this with a tighter `z` tolerance.** The 2026-08-04 world-reset
-experiment bought three decades of initial-state agreement and chaotic
-amplification spent them in ~30 steps. A tolerance is the wrong instrument
-against an exponential. The actionable consequence is unchanged and already in
-force: on reversal-heavy shapes, report mode frequencies over many samples rather
-than means over few.
-
-### What 4065 rollouts say: the mechanism is MODE FREQUENCY (2026-08-13)
-
-The overnight soak (`tuning/soak.py`, `just soak`) accumulated **4108 rollouts,
-43 failed (1.0%), 4065 usable** across 21 processes and 14 complete cycles of the
-7-shape set at both gain points — roughly **290 samples per shape per arm**,
-against the n=3-5 every earlier claim rested on. Raw rows in `soak_data/`.
-
-**The headline is now settled beyond argument.** Mean over the 7 shapes, per
-complete cycle, n=14 cycles per arm:
-
-| gains | mean | sd | min | max |
-| --- | --- | --- | --- | --- |
-| tuned `q=0.276 / r=2.618` | **0.6686** | 0.0882 | 0.618 | 0.982 |
-| default `q=10 / r=0.25` | **1.1273** | 0.1108 | 0.897 | 1.334 |
-
-The distributions do not overlap at all (worst tuned cycle 0.982 < best default
-cycle 0.897 is *nearly* true; the single exception is one tuned cycle). This is
-the fourth independent measurement of the tuned point (0.6144 / 0.6212 / 0.6429 /
-**0.6686**) and the third of the default (1.0417 / 1.0037 / **1.1273**).
-**The gains are now ADOPTED in `TVLQRConfig`** — `q_cross` 10.0 → 0.276,
-`r_omega` 0.25 → 2.618. Note `r_omega` moving *up* reverses the reasoning in its
-own docstring comment ("angular correction is cheaper"); the comment is left in
-place with the correction beside it, because the argument was sound and the
-measurement disagreed anyway.
-
-**The important finding is not the mean, it is HOW the win happens.** Per shape,
-pooled (mean ± sd over ~290):
-
-| shape | tuned | default | character |
-| --- | --- | --- | --- |
-| straight | 0.054 ± 0.001 | 0.078 ± 0.054 | level |
-| corner | 0.311 ± 0.009 | **0.226 ± 0.000** | level, default wins |
-| S | 1.617 ± 0.088 | 2.131 ± 0.016 | level |
-| **zigzag** | **0.503 ± 0.352** | **2.009 ± 0.533** | **mode frequency** |
-| tight V | 0.286 ± 0.001 | 0.357 ± 0.219 | mode frequency |
-| **U-turn** | 1.502 ± 0.520 | **1.316 ± 0.470** | **modes, unchanged** |
-| loop | 0.459 ± 0.055 | 1.678 ± 0.090 | level |
-
-Four shapes are **unimodal and near-deterministic in both arms** (sd ≤ 0.09,
-straight/corner/S/loop): those are plain level shifts, three won by the tuned
-gains and one — the corner — genuinely won by the default, by 0.085 m at sd
-0.000. Nothing there is noise.
-
-The other three are **bimodal, and the gains move the FREQUENCY of the bad mode,
-not its depth**:
-
-| shape | bad mode at | tuned %bad | default %bad |
-| --- | --- | --- | --- |
-| zigzag | ~2.2-2.5 m | **2.6%** | **88.8%** |
-| tight V | ~0.78 m | 0.0% | 20.4% |
-| U-turn | ~2.5-2.9 m | 10.3% | 12.4% |
-
-**The zigzag flip is 88.8% → 2.6%, and that single number is most of the
-result.** It also explains why the zigzag looked "noisy" (sd 0.215-0.533) in every
-earlier table: it was never noise, it was a ~90/10 mixture of two reproducible
-outcomes being sampled 3 times.
-
-**RETRACT: "the U-turn is bistable and the tuned gains land it in the good
-mode."** It is bistable — but the bad-mode rate is **10.3% vs 12.4%**, i.e.
-statistically indistinguishable, so *the gains do not control it at all*
-(**itself corrected the same evening — see "The `q_cross` ladder" below; the
-gains control it sharply, but non-monotonically, so two points could not see
-it**). This
-also corrects the 2026-08-12 grid figure of "33% good / 67% bad": that pooled 45
-rollouts across many gain pairs, and at neither validated point is the bad mode
-anywhere near a majority. The U-turn's mode is driven by something else, and it
-is the one open mechanism left. (Consistent with the U-turn contributing -3% to
-the improvement: the tuned arm is slightly *worse* there, 1.502 vs 1.316.)
-
-**Methodological point worth keeping.** Every "run-to-run variance" number in
-this file above is a mixture width, not a measurement error, on exactly the
-shapes that turn out to be bimodal. The right estimator for a bimodal metric is
-not the mean of 3 — it is the mode frequency, which needs ~100 samples and was
-unaffordable until a rollout cost 5 s. Mean-of-3 remains fine for *searching*
-(it is what found these gains) but a per-shape *claim* now wants soak-scale n.
-
-**The 1.0% failure rate is all `terrain patches failed to spawn`** (43/4108,
-spread evenly over all 7 shapes), correctly invalidating the rollout rather than
-being recorded as a sample. That is the 2026-08-01 guard working; at soak scale
-it is now measurable, and it is small enough not to bias anything.
-
-- **`reset_world=True` DESTROYS THE ROBOT — never use it.** A gz `WorldControl.reset.all` deletes runtime-spawned entities, including the `scout_mini`. Recovery is `just kill-sim` + `just remote-sim`, not debugging.
-
-### The `q_cross` ladder: a zigzag threshold and a U-turn notch (2026-08-13)
-
-1047 rollouts, the three mode-bearing shapes × six gain points, `r_omega` held at
-2.618 across the ladder so `q`'s effect is separable (`soak_data/soak_20260813_ladder.jsonl`,
-figure `figures/2026-08-13/03_ladder_modes.png`). n≈58 per cell. **They are two
-different phenomena, and only one of them is a mode frequency.**
-
-| shape | q=0.1 | q=0.276 | q=0.6 | q=1.5 | q=10 | q=10, r=0.25 |
-| --- | --- | --- | --- | --- | --- | --- |
-| zigzag %bad (>1.5 m) | 1.7 | 1.7 | 0.0 | 0.0 | **89.7** | 86.0 |
-| U-turn %bad (>2.0 m) | **100** | **15** | **100** | 82.8 | 96.6 | 14.0 |
-| tight V %bad (>0.6 m) | 0 | 0 | 0 | 0 | 0 | 10.5 |
-
-**The zigzag is a THRESHOLD in `q_cross`, and it is where most of the tuned
-gains' win comes from.** Flat at 0-2% across a 15× range of `q`, then a cliff
-between 1.5 and 10. `r_omega` is irrelevant to it (86.0 vs 89.7 at `q=10`). So
-the adopted point sits inside a *wide plateau*, not on an edge — the robust half
-of the result.
-
-**The U-turn is a NARROW NOTCH, and calling it bimodal was wrong.** At `q=0.1`
-all 59 rollouts fall in 2.634–2.665; at `q=0.6`, all 56 in 2.701–2.709. Those are
-tight, deterministic, **unimodal** distributions that happen to be bad — not a
-mixture whose frequency shifted. Only `q=0.276` and the old default drop to ~1.4,
-and they are isolated: their immediate neighbours in `q` are uniformly bad.
-**This retracts the same morning's "the gains do not control the U-turn at
-all"** — they control it sharply; two sample points could not see a notch.
-Whether 0.276 has a usable basin or is a spike was the open question; it is
-answered below.
-
-**The tight V's mode was an `r_omega` effect, not a `q` one** — 0% bad at every
-rung with `r=2.618`, 10.5% at the old `r=0.25`. Small either way.
-
-**`max|e_cross|` and `final_err` rank the ladder DIFFERENTLY, and that is not
-noise.** On the U-turn, `q=1.5` is the *worst* rung by max|e_cross| (2.150) and
-the *best* at arriving (mean `final_err` 0.255, **0%** of 58 rollouts ending more
-than 0.5 m out), while the adopted `q=0.276` scores 1.605 and leaves 55% of
-rollouts short. A metric that disagrees with "did it get there" needs justifying,
-which is what the `J` work below is for.
-
-### Scoring in `J`: the objective change does not reverse the conclusion (2026-08-13)
-
-`tuning/epsilon.py` (pure, 23 tests) holds the tracking functional; `tools/score_epsilon.py`
-is the offline driver that scores recorded per-step traces with it. First real
-measurement: 7 shapes × {tuned, default} × 5 repeats **with traces**, so every
-rollout is scored both ways (`jtraces/`, `epsilon_data/jsweep.jsonl`, figure
-`figures/2026-08-13/04_epsilon_vs_cross.png`). Mean of 5:
-
-| shape | max\|e_cross\| tuned / default | J tuned / default | metrics agree? |
-| --- | --- | --- | --- |
-| straight | 0.054 / 0.074 | 0.22 / 1.84 | yes |
-| corner | 0.309 / **0.226** | **1.50** / 1.92 | **no** |
-| S | 1.582 / 2.129 | 21.8 / 84.8 | yes |
-| zigzag | 0.410 / 1.587 | 13.2 / 62.3 | yes |
-| tight V | 0.286 / **0.256** | **5.23** / 12.2 | **no** |
-| U-turn | 1.316 / **1.180** | **29.9** / 35.7 | **no** |
-| loop | 0.423 / 1.714 | 21.5 / 66.6 | yes |
-
-**In `max|e_cross|` the tuned gains win 4 and lose 3; in `J` they win all seven**,
-by 1.3× to 8.3×. Every one of the three losses is a shape where the tuned arm
-concedes a little peak deviation and buys back much more in accumulated error,
-correction effort and terminal miss. So `J` is not a different answer — it is a
-**cleaner version of the same answer**, and it is the quantity SVCM is stated in.
-
-Two things to hold onto:
-
-- **`J` is an upper bound on `epsilon`, never `epsilon` itself** (`J* > 0` under
-  slip and is unknown). The module docstring says so; say it in the write-up too.
-- **The correction, not the total command, is what `R` charges.** The nominal
-  command is what the planner already paid for; charging it again would score
-  every corrector for the plan's cost. `score_epsilon.py` recovers it as
-  applied-minus-nominal in wheel space.
-
-**Scoring needs the TRACK, so it must be captured at rollout time.** The ~4000
-soak rollouts cannot be rescored — `variance_probe.drive` reduces each to
-scalars. Any future soak whose numbers should be readable in `J` must be run with
-`--trace-dir`. **`soak.py` now HAS `--trace-dir` (plus `--trace-every N` to keep
-an unbounded soak from filling the disk at ~130 kB a rollout), so this is wired
-rather than merely known.** Untraced rows carry no `trace` field and are skipped
-by the scorer rather than silently scored against someone else's file.
-
-### The U-turn basin has walls, and `q=0.276` stays adopted (2026-08-13 evening)
-
-Two runs closed the ladder question. **The adopted gains survive**, and the
-reason is more interesting than "they were right".
-
-**1. The sub-ladder: the basin is real, and 0.276 sits on its LEFT EDGE.**
-5906 usable rollouts, `floor_6_00031` only, n≈985 per rung, `r_omega=2.618`
-throughout (`soak_data/soak_20260813_uturn_subladder.jsonl`):
-
-| `q_cross` | mean | sd | %bad (>2.0 m) | mean `final_err` | %miss (>0.5 m) |
-| --- | --- | --- | --- | --- | --- |
-| 0.200 | 2.647 | 0.120 | 99.2 | 1.153 | 99.4 |
-| **0.276 (adopted)** | 1.637 | **0.594** | **17.9** | 0.643 | 46.6 |
-| 0.320 | **1.494** | 0.154 | 1.8 | **0.347** | **9.8** |
-| 0.400 | 1.546 | 0.090 | **0.7** | 0.363 | 25.0 |
-| 0.500 | 2.685 | 0.029 | 99.9 | 0.619 | 100.0 |
-| 0.600 | 2.707 | 0.002 | 100.0 | 0.530 | 96.0 |
-
-So the notch is a **basin roughly `[0.276, 0.4]` with near-vertical walls** —
-0.2 and 0.5 are ~100% bad and nearly deterministic (sd 0.12 / 0.03), not
-mixtures. **The adopted point is the noisiest rung in the entire ladder** (sd
-0.594, 17.9% bad) precisely because it straddles a wall: the interior is
-near-deterministic (0.7-1.8% bad). That is a better explanation of the U-turn's
-"bimodality" than the shape itself — it was never intrinsic, it was an artifact
-of measuring at a gain sitting on the edge.
-
-**Scope correction (2026-08-15): this basin is `floor_6_00031`'s, not the
-U-turn's.** See "The U-turn basin does not generalise" below. Everything in this
-section is still true *of that plan* — 5906 rollouts do not stop being 5906
-rollouts — but it must never again be written as a statement about U-turns, and
-it is not a reason to prefer any `q` on a plan we have not driven.
-
-**2. The seven-shape check: `q=0.32` is NOT free, so do not re-adopt it.**
-7 shapes × `q` ∈ {0.276, 0.32, 0.40} at `r=2.618`, 5 repeats, **traced**, so it
-is scored in both currencies (`gaincheck/`, `epsilon_data/gaincheck_J.jsonl`):
-
-| shape | `J` 0.276 / 0.32 / 0.40 | max\|e_cross\| 0.276 / 0.32 / 0.40 |
-| --- | --- | --- |
-| straight | 0.22 / **0.21** / 0.84 | 0.055 / **0.046** / 0.127 |
-| S | **22.3** / 30.0 / 41.8 | **1.605** / 1.885 / 2.522 |
-| corner | 1.49 / 1.45 / **1.44** | 0.310 / 0.306 / **0.303** |
-| loop | 21.5 / **20.8** / 23.1 | 0.422 / **0.383** / 0.558 |
-| U-turn | 41.8 / 35.6 / **33.6** | 1.623 / **1.417** / 1.540 |
-| zigzag | 13.5 / 16.6 / **12.1** | **0.445** / 0.711 / 0.464 |
-| tight V | **5.23** / 5.30 / 5.94 | 0.286 / **0.285** / 0.297 |
-| **MEAN** | **15.15** / 15.71 / 16.98 | **0.678** / 0.719 / 0.830 |
-
-**`q=0.32` buys the U-turn and pays for it on the S and the zigzag**, and the
-aggregate says the trade is not worth making. The U-turn gain is real (`J` 41.8
-→ 35.6, `final_err` 0.641 → 0.252) — it is simply smaller than what it costs
-elsewhere. **`TVLQRConfig` is unchanged: `q_cross=0.276`, `r_omega=2.618`.**
-
-**`J` and `max|e_cross|` AGREE here, for the first time.** Both rank
-0.276 < 0.32 < 0.40 on the aggregate. That is worth noting because the same-day
-`J` section above found them disagreeing on 3 of 7 shapes: the metrics diverge
-on *per-shape* verdicts, not necessarily on aggregate ranking. Do not
-generalise either way from one case.
-
-**The methodological point, which is the durable part:** a per-shape optimum
-(`q=0.32` on the U-turn, at n≈985 and beyond argument) **did not survive the
-seven-shape aggregate**. A gain chosen on one trajectory is a gain overfitted to
-one trajectory, however many samples back it. The sub-ladder was still worth the
-night — it explains *why* 0.276 looks noisy on the U-turn — but the decision was
-always the aggregate's to make.
-
-### The `r_omega` ladder: `r` is flat ABOVE 1.0, and matters below it (2026-08-14, corrected 2026-08-15)
-
-1035 usable rollouts (1050 run, 15 lost to the patch-spawn guard), 7 shapes ×
-`r_omega` ∈ {1.0, 1.8, 2.618, 3.5, 5.0}, `q_cross` held at the adopted 0.276 so
-`r` is separable — the mirror of the `q` ladder. `soak_data/soak_r_ladder.jsonl`,
-figures `figures/2026-08-14/`. n≈30 per cell. mean ± sd of max|e_cross|:
-
-| shape | r=1.0 | r=1.8 | r=2.618 | r=3.5 | r=5.0 |
-| --- | --- | --- | --- | --- | --- |
-| straight | 0.053±.003 | 0.048±.000 | 0.054±.001 | 0.054±.002 | 0.066±.008 |
-| corner | 0.304±.002 | 0.327±.000 | 0.310±.001 | 0.313±.005 | 0.312±.001 |
-| S | 1.704±.583 | 1.576±.095 | 1.589±.084 | **2.550±.001** | 1.696±.041 |
-| zigzag | 0.409±.088 | 0.471±.207 | 0.460±.129 | 0.446±.107 | 0.409±.020 |
-| tight V | 0.283±.020 | 0.303±.070 | 0.286±.000 | 0.287±.000 | 0.289±.000 |
-| U-turn | 2.646±.006 | 2.684±.005 | **1.663±.628** | 2.591±.006 | 2.644±.024 |
-| loop | 0.363±.021 | 0.448±.092 | 0.436±.051 | 0.465±.020 | 0.439±.104 |
-| **mean** | 0.823 | 0.837 | **0.685** | 0.958 | 0.837 |
-| **mean, no U-turn** | **0.519** | 0.529 | 0.522 | 0.686 | 0.535 |
-
-**`r_omega` does nothing on five of seven shapes across this 5× range.** Straight
-spans 0.048–0.066, corner 0.304–0.327, tight V 0.283–0.303, zigzag 0.409–0.471,
-loop 0.363–0.465 — every one of those is inside its own cell-to-cell spread.
-Drop the U-turn and the aggregate is **flat from r=1.0 to r=2.618** (0.519 vs
-0.522), i.e. the adopted value earns nothing *within this range*.
-
-Within this range `r=2.618` is an isolated notch and it is one plan's: the U-turn
-is 100% bad (>2.0 m, near-deterministic: sd 0.005–0.024) at 1.0, 1.8, 3.5 and 5.0,
-and 20% bad only at 2.618. The S's spike at 3.5 is the only other place a
-non-U-turn shape reacts to `r` at all.
-
-**But this ladder's floor was r=1.0, and the value it replaced is r=0.25 — below
-it. The low half (2026-08-15, next section) shows `r` DOES matter down there, so
-the conclusion drawn here that "the tuning result is essentially a `q_cross`
-result" is RETRACTED.** What survives is narrower and still useful: `r` is a free
-parameter **above ~1.0**, so the specific value 2.618 is not load-bearing outside
-`floor_6_00031` — but the move *off* 0.25 is.
-
-**Second isolated feature: the S has a deterministic bad spike at r=3.5** —
-2.548–2.552 over 30 rollouts, sd 0.001, 100% of them, against ~1.6 at every other
-rung. Not a mixture, not noise; unexplained, and the only place in this ladder
-where a non-U-turn shape cares about `r` at all.
-
-**Not scoreable in `J`** — this run's traces are unusable, see below.
-
-### The low half of the `r_omega` ladder: the move off 0.25 DID pay (2026-08-15)
-
-840 rollouts, 7 shapes × `r_omega` ∈ {0.25, 0.5, 1.0, 2.618}, `q_cross` held at
-0.276, `r=2.618` carried in the same process as the overlap arm so the two
-ladders join without assuming cross-run comparability.
-`soak_data/soak_r_ladder_low.jsonl`, figure `figures/2026-08-15/01_r_ladder_low.png`.
-n≈29 per cell. mean ± sd of max|e_cross|:
-
-| shape | r=0.25 | r=0.5 | r=1.0 | r=2.618 |
-| --- | --- | --- | --- | --- |
-| straight | 0.067±.014 | 0.048±.026 | 0.053±.003 | 0.054±.001 |
-| corner | 0.304±.003 | 0.306±.001 | 0.306±.004 | 0.311±.007 |
-| S | 1.982±1.110 | **2.566±.014** | 1.577±.249 | 1.584±.091 |
-| **zigzag** | **0.803±.010** | **0.812±.039** | **0.387±.029** | 0.486±.145 |
-| tight V | 0.271±.000 | 0.275±.000 | 0.279±.000 | 0.289±.021 |
-| U-turn | 2.381±1.363 | 2.619±.006 | 2.604±.199 | **1.714±.740** |
-| loop | 0.385±.024 | 0.436±.005 | 0.369±.032 | 0.438±.042 |
-| **mean** | 0.885 | 1.009 | 0.796 | **0.697** |
-| **mean, no U-turn** | 0.635 | 0.740 | **0.495** | 0.527 |
-
-**The zigzag HALVES between r=0.5 and r=1.0** (0.812 → 0.387), at sd 0.010–0.039
-on both sides — as reproducible as anything measured here, and nothing to do with
-the U-turn. That alone moves the six-shape aggregate from 0.635 to 0.495. So the
-previous ladder's "flat" verdict was **an artifact of where its floor was**: `r`
-has a threshold somewhere in (0.5, 1.0) and is genuinely flat above it.
-
-**`final_err` is monotone in `r` across the whole range** — 0.661 / 0.440 / 0.379
-/ **0.343** m averaged over the seven shapes, improving at every rung including
-the ones where `max|e_cross|` is flat. The U-turn (2.102 → 0.655) and the S
-(1.291 → 0.556) carry most of it, but no shape gets worse. A metric that
-improves monotonically where the other is flat is the second time these two have
-ranked a ladder differently (see the `q` ladder), and it is again `final_err`
-that agrees with "did it arrive".
-
-**Consequence: the joint move stands as a joint move**, and `r_omega=2.618`
-remains adopted. The honest description is two-part, and the halves have
-different strengths: **the move off `r=0.25` is real and general** (zigzag,
-`final_err`, six-shape aggregate), while **the specific value 2.618 versus
-anything in [1.0, 5.0] is defensible only through `floor_6_00031`** — and after
-2026-08-15's generality run, not even as a shape claim. Anything ≥ 1.0 would
-serve; 2.618 is kept because it is measured, not because it is special.
-
-### The U-turn basin does not generalise, and the labels do not survive looking (2026-08-15)
-
-1200 rollouts, `q_cross` ∈ {0.2, 0.276, 0.4, 0.5} at `r=2.618`, on four U-turn
-plans from the constructed v2 library **plus `floor_6_00031` as an in-run
-control**, n≈59 per cell. `soak_data/soak_uturn_generality.jsonl`, figures
-`figures/2026-08-15/02_*.png` and `03_*.png`. mean ± sd, %bad = >2.0 m:
-
-| plan | q=0.2 | q=0.276 | q=0.4 | q=0.5 |
-| --- | --- | --- | --- | --- |
-| **floor_6_00031** (control) | 2.612 / 97% | 1.613 / 18% | **1.540 / 0%** | 2.686 / 100% |
-| floor_6_v2_00003 | 0.325 / 0% | 0.290 / 0% | 0.441 / 0% | 0.355 / 0% |
-| floor_6_v2_00004 | 0.289 / 0% | 0.290 / 0% | 0.287 / 0% | 0.286 / 0% |
-| floor_6_v2_00008 | 2.497 / 100% | 2.616 / 100% | 2.305 / 100% | 2.333 / 100% |
-| floor_6_v2_00010 | 1.709 / 30% | 1.673 / 20% | 1.844 / 34% | 1.466 / 18% |
-
-**Only the control has a basin.** The others are flat-and-easy (two of them, ~0.29 m
-at every rung, sd 0.000–0.198), flat-and-hopeless (00008, 100% bad everywhere,
-sd 0.001–0.018), or weakly bimodal with **no `q` dependence at all** (00010,
-18–34% bad in no order). So `q_cross`'s near-vertical walls are a property of one
-plan, and the U-turn sections above are hereby scoped to it.
-
-**The stronger form of the refutation came from LOOKING at the plans, not from
-the numbers.** Rendered (`03_uturn_plans.png`), the five are: one true hairpin
-(00010), one rectangular U of two same-sign 90° corners (00004), one **bent line
-that is not a U-turn at all** (00003) — and 00008, which is a **near-duplicate of
-the control**: same corridor, same three-sided route, ~1 m of difference at the
-start. That is what closes the obvious objection ("you picked plans that were not
-really U-turns"): the plan most geometrically similar to `floor_6_00031` is the
-one *most* clearly lacking the basin. It is the route's exact plan, not its shape
-and not even its corridor.
-
-**The `shape` label is a ranking aid and nothing more.** All five score
-`total_abs_turn` 7.0–9.3 rad — the descriptor cannot separate a 180° hairpin from
-two same-sign 90° corners, and it still counts the leading in-place pivot. This
-is the **second** automatic shape labeller to mislead here (the first:
-`classify_plans.py` calling 58 of 100 plans CORNER). **Render the plans before
-making any per-shape claim**; using a label to *stratify* a sample is fine, since
-that only needs correlation with geometry, not a correct name.
-
-### The broad gain check: the move off the default holds, the adopted VALUE does not (2026-08-15)
-
-**The generality question is now answered on plans we did not choose.** 40 plans
-from the constructed v2 library (`tools/select_broad_eval.py`, stratified on
-label and length, 8.7–36.0 m, **none of them among the seven**), six gain pairs,
-3 repeats, every rollout traced so both currencies are available. 720 rollouts,
-9 invalidated by the patch-spawn guard (1.2%), **711 usable**.
-`soak_data/soak_broad_gains.jsonl` → `epsilon_data/broad_gains_J.jsonl`.
-
-Per-plan mean-of-3, then aggregated over the 40 (`J` geometric, per
-`objective.DEFAULT_HOW`):
-
-| gains | geo `J` | mean max\|e_cross\| | mean `final_err` | miss rate (>0.5 m) |
-| --- | --- | --- | --- | --- |
-| **q=0.276 r=2.618 (adopted)** | 11.82 | 0.656 | 0.378 | 20.0% |
-| q=0.276 r=1.0 | 12.52 | 0.627 | 0.366 | 22.0% |
-| q=0.6 r=2.618 | **11.39** | 0.646 | 0.292 | 18.1% |
-| q=1.5 r=2.618 | 12.27 | 0.599 | **0.265** | **11.8%** |
-| q=4 r=2.618 | 14.08 | 0.688 | 0.328 | 14.2% |
-| q=10 r=0.25 (old default) | 17.59 | **0.575** | 0.314 | 15.3% |
-
-**1. The move off the old default is CONFIRMED, and this is the strongest
-version of that claim we have.** In `J` the old default is **1.49x worse** than
-the adopted point and wins only **5 of 40** plans (paired sign test p<0.001), on
-a plan set chosen mechanically and disjoint from the one the gains were tuned
-on. Everything the seven-plan work concluded about *moving* survives.
-
-**2. The adopted VALUE does not survive.** Paired against every other arm, `q=0.276`
-is the **worst of the six in metres** — every other arm beats it at p<=0.038,
-*including the old default* (0.79x, 29/40) — and it has the **worst miss rate**
-of all six. In `J` it is statistically indistinguishable from everything between
-q=0.276 and q=4 (p = 0.27 to 0.88). So the plateau is real and broad, and 0.276
-sits on its bad edge: it buys nothing in `J` and pays in both peak deviation and
-arrival.
-
-**3. `q≈1.5, r=2.618` dominates the adopted point** — `J` tied (+3.8%, p=0.88),
-max|e_cross| 0.917x (p=0.038), `final_err` 0.680x (p=0.006), miss rate 11.8% vs
-20.0%. Not adopted yet: it wants one confirmatory mean-of-5 at the three
-candidate points before `TVLQRConfig` moves again (see handover).
-
-**4. Where the default actually loses is CONTROL EFFORT, and that is the SVCM
-prescription showing up as a measurement.** Mean `J` split over the 40 plans:
-
-| gains | tracking | control | terminal |
-| --- | --- | --- | --- |
-| q=0.276 r=2.618 | 13.18 | 2.22 | 3.11 |
-| q=0.6 r=2.618 | 12.16 | **2.07** | 1.57 |
-| q=1.5 r=2.618 | 13.52 | 2.43 | **1.47** |
-| q=10 r=0.25 | 15.81 | **6.37** | 3.38 |
-
-The default achieves slightly *tighter peak tracking* while spending **~3x the
-control** to do it. That is exactly the trade p. 78 prescribes (a larger `R` in
-low traction), and it is why the two metrics rank the arms oppositely rather
-than noisily.
-
-**5. The metres-vs-`J` disagreement REVERSED direction from the library sweep,
-and the plan population is why.** The 51-plan sweep had the tuned gains gaining
-9.99 m and losing 2.03 m; here they gain 3.75 m and lose **7.02 m**, including
-**15 of 15 easy plans**. The v2 library is 100% turning shapes by construction,
-so this set has far fewer easy plans to lose cheaply on. **Neither sweep is
-"the" answer in metres** — which is itself the argument for scoring in `J`.
-
-**Consequence for tuning: a search on the seven plans cannot resolve `q` at
-all.** `J` is flat across a 15x range of `q` on independent plans, so any
-seven-plan optimum inside that range is an artifact of those seven. Validate a
-tuned point on the broad set before adopting it.
-
-### A failed plan hung every client, and the ROS pipeline had never been run (2026-08-18)
-
-Driving the fixture end to end for the first time — see handover, "The ROS 2
-stack is now drivable unattended" — turned up a **real bug in
-`runtime_corrector`, in the path that handles a planner failure.**
-
-**Symptom:** publish a goal, the planner fails to solve it in under a second,
-and the whole stack goes quiet with the robot stationary. No zero command, no
-completion sentinel, no log line beyond the action result. Every consumer waits
-for its own timeout; `random_goals` burns its full dwell, and anything without a
-timeout waits forever.
-
-**Cause:** `TrajectoryBuffer.active_traj_id` is set in `_on_chunk`, so a plan
-that fails at **chunk 0** never sets it. `_on_action_result` then compares
-`traj_id == self._buf.active_traj_id` against `-1`, drops the result, and
-`_on_tick`'s idle guard (`active_traj_id < 0`) returns before `_finish()` — the
-function that publishes the zero and the sentinel — can run.
-
-`_finish`'s docstring already claims the sentinel fires on **any** terminal
-outcome, and that was true of the case it was written for: a failure *after*
-playback began. This is the other one, and it is the more common: **BVP mesh-node
-exhaustion fails ~36% of fresh start/goal pairs**, the same failure rate measured
-building the v2 library. Fixed in `_on_action_result`, which now stops, clears
-the goal and publishes the sentinel directly when no trajectory ever arrived.
-
-**Verified in the wild**, in a six-goal `random_goals` session on the repaired
-build: goal 2 failed BVP, logged the new `Plan for traj_id=2 produced no
-trajectory ... Stopping and clearing the goal`, and the driver advanced to the
-next goal **0.4 s later** off the sentinel.
-
-**Evidence, from one five-goal fixture session** (`/tmp/fixture5.log`): goals 1,
-3 and 4 logged `Trajectory N finished (success=True). IDLE.`; goals 2 and 5 both
-logged `BVP solve failed ... maximum number of mesh nodes is exceeded`, and
-**neither produced a `finished` line at all.** Both hung their client for its
-full timeout. The corrector's own status line sat frozen at the previous run's
-counters (`ticks=605 rms_cross=1.2069 max_cross=7.8170 sat=38.2%`), which is
-what "idle but not IDLE" looks like from outside.
-
-**Two things this changes beyond the fix:**
-
-- **The 36% BVP failure rate is not only a data-generation problem.** It was
-  logged as a concern for the re-join re-planner's teacher; it is *also* a
-  runtime failure mode on ordinary goals, today, on the real pipeline. A goal
-  the planner cannot solve must degrade visibly, not silently.
-- **The same goal failed once and succeeded later** from a different start pose
-  (`(6.00, 3.00)`: traj 2 failed, traj 3 and 4 arrived). So the failure is a
-  property of the start/goal *pair*, not of the goal — consistent with the
-  library build, and worth remembering before calling a goal "unreachable".
-
-**Method note.** This is exactly what the handover predicted would happen on the
-first real run ("expect bit-rot; that is the main cost") — except the pipeline
-itself was healthy and the bug was in the failure path, which no amount of
-successful driving would have exposed. **A stack that works is not evidence
-about what it does when a component says no.**
-
-### The broad ladders: `q` and `r` INTERACT, and job 60's tuned point is an artifact (2026-08-18)
-
-Jobs 70/80/90 all finished cleanly on 2026-08-15 and sat unread for ~62 h (the
-queue was idle, nothing was stuck). All three ran on the 40 broad v2 plans, none
-of which is among the seven. **`j_total` is now inline in every soak row** — the
-online `EpsilonAccumulator` — so none of this needed trace scoring; aggregation
-is geometric on `J` per `objective.DEFAULT_HOW`, arithmetic on the rest, and
-arms are compared by paired sign test over the 40 plans.
-
-**Job 70 — the `q` ladder decides on ARRIVAL, because `J` cannot decide at all.**
-1200 rollouts, mean-of-5, `r=2.618` throughout. `soak_data/soak_broad_q.jsonl`:
-
-| q (r=2.618) | geo `J` | mean max\|e_cross\| | mean `final_err` | miss rate |
-| --- | --- | --- | --- | --- |
-| 0.276 (adopted) | 13.19 | 0.671 | 0.379 | 20.5% |
-| 0.600 | 13.08 | 0.672 | 0.327 | 21.0% |
-| 1.000 | 13.90 | 0.677 | 0.346 | 13.5% |
-| 1.500 | 14.57 | 0.678 | 0.287 | 14.0% |
-| **2.500** | 13.52 | **0.619** | **0.236** | **10.5%** |
-| 4.000 | 15.90 | 0.664 | 0.308 | 14.0% |
-
-`J` is flat across the whole 15x range (13.1–15.9, no rung beats 0.276 at
-p<0.08) — exactly what job 50 predicted. **The separation is entirely on
-arrival, and `q=2.5` wins it**: vs the adopted 0.276 it is better on `final_err`
-34/40 (p<0.0001) and max|e_cross| 32/40 (p=0.0002), and it beats `q=1.5` too
-(`final_err` 27/40, p=0.038; max|e_cross| 31/40, p=0.0007). So job 50's
-provisional pick of 1.5 was one rung short of the real optimum.
-
-**Job 80 — `q` and `r` INTERACT, so every `r` claim in this file is scoped to
-`q=0.276`.** 600 rollouts, `r ∈ {0.25, 0.5, 1.0, 2.618, 5.0}` at `q=1.5`:
-
-| r (q=1.5) | geo `J` | max\|e_cross\| | `final_err` | miss |
-| --- | --- | --- | --- | --- |
-| 0.250 | 15.03 | **0.538** | **0.264** | **12.5%** |
-| 0.500 | 15.52 | 0.593 | 0.285 | 13.3% |
-| 1.000 | 16.03 | 0.642 | 0.339 | 15.0% |
-| 2.618 | 14.77 | 0.653 | 0.312 | 15.8% |
-| 5.000 | **13.74** | 0.695 | 0.304 | 17.5% |
-
-**At `q=1.5` the r story inverts.** `r=0.25` — the value we moved off — is now
-best on max|e_cross| and `final_err`, losing only on `J` (11/40, p=0.006), and
-**the r=0.5→1.0 threshold that justified the move is absent**. The 2026-08-15
-zigzag halving was measured at `q=0.276` and does not survive a change of `q`.
-`J` and metres rank this ladder in opposite directions monotonically, which is
-the control-effort trade of job 50 showing up again along `r`.
-
-**Job 90 — job 60's `J`-tuned point is the artifact job 50 predicted; do not
-adopt it.** The seven-plan `J` search returned `q=0.880, r=25.6` (posterior mean
-6.94). On the broad 40, with two known points measured **in the same process**:
-
-| gains | geo `J` | max\|e_cross\| | `final_err` | miss |
-| --- | --- | --- | --- | --- |
-| 0.276 / 2.618 | 12.91 | 0.702 | 0.394 | 24.0% |
-| 0.880 / 25.61 (job 60) | 13.40 | 0.804 | 0.447 | 26.5% |
-| 1.500 / 2.618 | 12.93 | **0.624** | **0.235** | **10.0%** |
-
-It is the worst of the three on every axis, losing to 1.5/2.618 on `final_err`
-33/40 (p<0.0001). It also **failed to beat the adopted point on its own search
-set** (6.94 vs 5.98). This is the second time a seven-plan optimum evaporated on
-independent plans, and it closes the question: **a seven-plan search cannot
-resolve the gains, in either currency.** Do not run another one.
-
-**`J` is the right objective and a poor discriminator.** It ranked the move off
-the old default correctly and decisively (job 50, 1.49x, 5/40), and it cannot
-separate anything inside the plateau — every within-plateau p is 0.08 to 0.88.
-Arrival (`final_err`, miss rate) is what separates them, and it is also what the
-robot is for. Read a gain decision on `final_err` and `J` together; max|e_cross|
-ranks the old default best while it spends ~3x the control.
-
-### Job 100 closes the gain decision: ADOPTED `q_cross=2.5, r_omega=2.618` (2026-08-18)
-
-The last gain job. `r ∈ {0.25, 1.0, 2.618, 5.0}` at **q=2.5**, plus `1.5/2.618`
-and `0.276/2.618` carried in-process as controls, 40 broad plans, mean-of-5,
-1200 rollouts (`soak_data/soak_broad_r_at_q25.jsonl`; aggregation and paired
-sign tests as in jobs 50/70/80):
-
-| gains | geo `J` | max\|e_cross\| | `final_err` | miss rate |
-| --- | --- | --- | --- | --- |
-| 0.276 / 2.618 (was adopted) | 12.98 | 0.686 | 0.388 | 22.0% |
-| 1.5 / 2.618 | 12.81 | 0.620 | 0.267 | 13.5% |
-| 2.5 / 0.25 | 16.94 | **0.520** | 0.272 | **10.0%** |
-| 2.5 / 1.0 | 15.66 | 0.571 | 0.264 | 12.0% |
-| **2.5 / 2.618** | 13.84 | 0.609 | **0.244** | 11.5% |
-| 2.5 / 5.0 | **13.79** | 0.655 | 0.277 | 13.0% |
-
-- **`q=2.5` confirms against the old adopted point**: 34/40 on `final_err`
-  (p<0.0001), miss rate 22% → 11.5%. This is the fifth independent broad-set
-  measurement of the move off 0.276; it is not a draw.
-- **`r` is FLAT on arrival at q=2.5** — the four rungs are statistically
-  indistinguishable on `final_err` (p≥0.27). The old r=0.5→1.0 threshold was a
-  `q=0.276` phenomenon, exactly as job 80 suggested. `r=0.25` wins metres
-  (30/40, p=0.002) and pays ~25% in `J` — the control-effort trade again.
-- **Adopted the best all-rounder (2.5, 2.618)** in `TVLQRConfig`:
-  best `final_err`, near-best `J` and miss rate, and the point carried as a
-  control in three separate runs. The value inside the plateau is not
-  load-bearing; 2.5 is the rung that won arrival.
-
-**TUNING IS CLOSED.** Three independent broad runs agree `J` cannot separate
-anything inside the plateau and arrival chooses the rung; further gain jobs
-resolve noise. The honest write-up claim remains the robustness trade (job 50).
 
 ### Parallel sims: `WORKER` (built and verified 2026-08-15)
 
@@ -1553,80 +740,6 @@ scipy's `solve_bvp`, not about the problem.
 `tools/select_broad_eval.py` picks a geometry-diverse subset from a library,
 stratifying on the (untrusted) label and on path length.
 
-### The traced-soak path had two bugs, and neither could fail loudly (2026-08-14)
-
-The `r_omega` ladder was the first soak run with `--trace-every`, and none of its
-210 traces can be scored. Both bugs are fixed; both are worth knowing because
-their failure mode is a *plausible number*, never an error.
-
-1. **The stride aliased against the cycle length.** `soak.py` cycles gains ×
-   trajectories — 5 × 7 = 35 rollouts per cycle — and `--trace-every 5` sampled
-   every 5th *rollout index*. `gcd(5, 35) = 5`, so the same 7 cells were traced
-   every cycle and the other 28 **never once**. Subsampling is now by **cycle**,
-   which keeps coverage balanced by construction.
-2. **Tracing is armed by FILE, not by rollout.** `enable_trace(path)` opened a
-   new file and kept writing; nothing turned it off, so the four untraced
-   rollouts after each traced one were appended to the traced one's CSV. Every
-   file held ~5 rollouts from ~5 different cells. Scored, that is one 1084-row
-   "track" for a 186-step plan: `max|e_cross|` came out at 29 m against the
-   soak's own 0.05 m for the same rollout. `GazeboBridge.disable_trace()` now
-   exists and `soak.py` calls it on every untraced rollout.
-
-**Every `J` number already in this file is safe.** They all came from
-`variance_probe`, which traces *every* rollout when `--trace-dir` is set, so it
-never armed a file it did not fill. Only `soak.py --trace-every` was affected,
-and only the `r_omega` ladder ever used it.
-
-**The general lesson, which is the reusable part:** a subsample stride and a
-cycle length are not independent, and a trace file is a *resource with a
-lifetime*, not a flag. Both failures produce data that parses, scores, and looks
-like a measurement.
-
-### The library sweep: it generalises, but as a ROBUSTNESS TRADE (2026-08-14)
-
-Every corrector claim to date rested on 7 hand-picked plans, so the obvious
-reviewer question was whether they generalise. **They do.** 51 plans (every plan
->= 10 m, chosen by a mechanical rule rather than by us), tuned `0.276/2.618` vs
-default `10/0.25`, 3 repeats, traced. 306 rollouts, 4 invalidated by the
-patch-spawn guard, 302 usable. Rows in `soak_data/libsweep.jsonl`, scored into
-`epsilon_data/libsweep_J.jsonl`.
-
-| | tuned | default | tuned wins |
-| --- | --- | --- | --- |
-| mean `max\|e_cross\|` | **0.449** | 0.605 | 21/51 |
-| median `max\|e_cross\|` | 0.255 | **0.214** | |
-| mean `J` | **10.40** | 42.26 | **45/51** |
-| median `J` | **6.64** | 8.14 | |
-| mean `final_err` | **0.294** | 0.387 | |
-
-**The aggregate holds in both currencies, but in metres the default wins the
-MAJORITY of plans (30/51) while losing the aggregate badly.** Split by
-difficulty, that resolves completely:
-
-| bucket | n | tuned | default | tuned wins |
-| --- | --- | --- | --- | --- |
-| easy (default < 0.3 m) | 37 | 0.213 | **0.182** | 11/37 |
-| medium (0.3-1.0) | 3 | 0.791 | **0.589** | 0/3 |
-| hard (> 1.0) | 11 | **1.150** | 2.032 | **10/11** |
-
-Totals: 9.99 m gained, 2.03 m lost, worst single regression 0.282 m. So the
-tuned gains **trade ~3 cm of precision on easy plans for preventing blow-ups on
-hard ones** — and `J` scores that trade as a near-sweep (45/51), because the
-easy-plan "losses" in peak deviation are paid back in accumulated error, control
-effort and terminal miss. `floor_6_00031` alone goes 1042.88 -> 40.73 in `J`.
-
-**Two things to carry into the write-up.** First, the honest claim is not "TVLQR
-tuning halves deviation everywhere" — it is a robustness trade that pays on hard
-trajectories and is ~free on easy ones. Second, **the 7-shape set is enriched for
-hard plans** (11 of 51 library plans are hard; most of our seven are), which is
-why it reads 0.67 vs 1.13 where the library reads 0.449 vs 0.605. That is the
-right design for a corrector test set, but it must be described as one and not
-as a representative sample of the robot's work.
-
-**`J` and `max|e_cross|` disagree on 24 of 51 plans while agreeing on the
-aggregate direction.** The 2026-08-13 gaincheck found them agreeing on the
-aggregate too; at n=51 the per-plan divergence is much larger than that suggested.
-
 ### Generating evaluation trajectories by construction (2026-08-14)
 
 Queue item 8, built. Motivation is sharper than "more plans": **every per-shape
@@ -1702,79 +815,77 @@ onto the VM under whatever is currently running.** That is usually what you want
 (a fix lands for the jobs behind it) but it does mean an in-flight job can pick
 up edited code at its next `python3 -m`; the batch loops make that a real window.
 
-### Realistic friction, IMU gating, and repeats (2026-08-04)
+### The current plant: patch weights, IMU gating, repeats (2026-08-04)
 
-Three changes landed together. **They re-baseline everything: no number measured
-before 2026-08-04 is comparable with one measured after**, because the plant
-(friction distribution) changed deliberately.
+Three changes landed together and **re-baselined everything measured before
+them**, because the friction distribution changed deliberately.
 
-**1. The patch friction distribution is now a floor, not an ice rink.** Added
-`linoleum` (mu 0.45, the actual deployment surface) and `wet_tile` (0.30) to
-`PROFILES`, plus `DEFAULT_PATCH_WEIGHTS` — the samplers no longer draw
-uniformly. Was: uniform over `[slippery, icy, directional_x, directional_y]`, so
-**half of every patch set was at or below tyre-on-ice friction** and a quarter of
-episodes ran on black ice end to end. Now ~60% at mu >= 0.30 and 10% ice, so the
-hard surfaces are the exception they are in reality. `ground_friction_sampler`
-is weighted too and **excludes the directional profiles** — a whole floor that
-grips one axis and slides the other has no physical analogue. Rationale: gains
-tuned against black ice are over-aggressive on linoleum, and the deployment
-target is rubber on university linoleum and tile. Tests in
-`test_terrain_weights.py`; a profile with no weight raises rather than silently
-never being drawn. Still to do: a `sand` profile (the advisor wants ice *and*
-sand, and Coulomb mu alone does not model granular flow).
+**1. The patch friction distribution is a floor, not an ice rink.** `PROFILES`
+gained `linoleum` (mu 0.45, the actual deployment surface) and `wet_tile`
+(0.30), and `DEFAULT_PATCH_WEIGHTS` replaced uniform sampling — which had put
+**half of every patch set at or below tyre-on-ice friction**. Now ~60% at
+mu >= 0.30 and 10% ice. `ground_friction_sampler` is weighted too and
+**excludes the directional profiles**: a whole floor that grips one axis and
+slides the other has no physical analogue. A profile with no weight raises
+rather than silently never being drawn (`test_terrain_weights.py`).
 
 **The world's own ground is still `mu=1.0`** (concrete-like) in
 `rl_corrector.world`. If deployment is linoleum everywhere, the nominal
 no-patch plant is grippier than reality and every gain inherits that bias. Not
-changed yet — it is a bigger re-baseline and wants a decision.
+changed — it is a re-baseline and wants a decision.
 
-**2. The IMU read is gated** (`_wait_imu_advance`), matching the pose gate that
-has existed since 2026-08-02. Motivation is in "The wheel-velocity residual was
-NOT the seed" above: the un-gated IMU was the largest difference between two
-otherwise-identical rollouts, by twelve orders of magnitude, and it feeds the RL
-observation. `stale_imu_steps` counts giving up, and the gate is only paid when
-`use_imu` is on, so TVLQR tuning costs nothing for it. **The goal is not
-determinism** — the real robot's IMU is noisy and laggy and the policy must
-tolerate that. The goal is that the sim's sensor error be a knob we choose
-(inject a deliberate latency/noise model in the env, matched to the measured
-real IMU) rather than an artifact of VM CPU load with no real-world counterpart.
-The deliberate sensor model is **not written yet**; when it is, it must live in
-the bridge/env and leave the obs layout untouched, or the policy stops being
-deployable.
+**2. The IMU read is gated** (`_wait_imu_advance`), matching the pose gate. The
+un-gated read was the largest difference between two otherwise-identical
+rollouts, by twelve orders of magnitude, and it feeds the RL observation.
+`stale_imu_steps` counts giving up; the gate is only paid when `use_imu` is on,
+so TVLQR work costs nothing for it. **The goal is not determinism** — the real
+IMU is noisy and laggy and the policy must tolerate that. The goal is that the
+sim's sensor error be a knob we choose (a deliberate latency/noise model matched
+to the measured real IMU) rather than an artifact of VM CPU load. **That model
+is not written yet**; when it is, it must live in the bridge/env and leave the
+obs layout untouched, or the policy stops being deployable.
 
-**3. The tuner averages repeats.** `tune_tvlqr --repeats 3` (default) drives the
-whole trajectory set n times per candidate and reduces per trajectory via
-`objective.reduce_repeats`. Measured on the 26 real repeats in the old log:
+**3. The tuner averages repeats.** `--repeats 3` (default), reduced per
+trajectory by `objective.reduce_repeats`; the cache key includes `repeats`,
+`reduce` and `patch_weights`, so an old cache cannot be replayed into a run
+whose numbers mean something different. Measured sd of the estimate: single
+sample 0.0933, median-of-3 0.0692, **mean-of-3 0.0547**, mean-of-5 0.0413 — see
+the Settled stub for why the median loses.
 
-| estimator | sd of the estimate | cost/eval |
-| --- | --- | --- |
-| single sample | 0.0933 | 35 s |
-| median-of-3 | 0.0692 | 105 s |
-| **mean-of-3** | **0.0547** | 105 s |
-| mean-of-5 | 0.0413 | 175 s |
+### The tuning machinery (`agx_planning/tuning/`)
 
-**The median LOSES, which was not the prediction.** The aggregate already
-averages over 7 trajectories, of which at most two are contaminated per repeat,
-so the outlier is diluted 7-fold before the estimator sees it while the median
-pays its variance penalty in full. It is plain sqrt(n) averaging. Use mean-of-3
-to search, mean-of-5 to validate a winner. The cache key now includes
-`repeats`, `reduce` and `patch_weights`, so an old cache cannot be replayed into
-a run whose numbers mean something different.
+Still the rig for any controller comparison, even though the gain search itself
+is closed. `just tune-tvlqr` (detached), then `just fetch-tune && just
+plot-tune`; `soak.py` / `just soak` is the batch driver and `variance_probe` the
+single-rollout one.
 
-Still outstanding for the tuner: Nelder-Mead reports the **minimum observed
-draw**, which is the winner's-curse machine that produced both bad results. With
-sd 0.055 that bias is much smaller, but the structural fix is a noise-aware
-optimizer (Bayesian optimization with a nugget term, reporting the posterior-mean
-optimum). Not yet done.
-
-**Parallel sims are NOT a prerequisite** any more, contrary to the 2026-08-03
-handover: mean-of-3 is ~105 s/eval serially, so a converged run is ~2 h. They
-remain the right answer for RL *training* throughput.
-
-**RL action space, decided 2026-08-04:** keep the 4-wheel residual. The physical
-Scout takes only `(v, omega)` and computes wheel efforts in firmware, so a 4-D
-residual cannot deploy as-is — that is accepted as an implementation detail that
-could be changed (firmware), and **TVLQR is what any real-world demo runs**.
+- `simplex.py`, `objective.py`, `cache.py`, `epsilon.py`, `shape.py`,
+  `trace_diff.py` are **pure and unit-tested** — no ROS, no Gazebo, no torch,
+  same rule as the RL pure modules. The simplex tests are aimed at one thing:
+  proving the search *minimizes*. A tuner that maximizes produces an
+  identical-looking log and hands back the worst gains it found.
+- **`--max-evals` bounds candidate GAIN PAIRS, never rollout length**, and
+  `--max-evals 1 --repeats 5 --q-cross Q --r-omega R` is exactly a clean
+  measurement at a chosen point in the same code path — that is how a tuned
+  point gets validated.
+- **The trajectory set is fixed, never sampled**, so candidates are compared on
+  identical work. A failed rollout makes the whole evaluation `inf`, never a
+  mean over survivors.
+- **Failures are never cached.** `inf` means "the sim broke", almost never
+  "these gains are bad": killing the tuner mid-evaluation invalidated the
+  bridge's rclpy context and wrote 56 bogus `inf` evaluations in three seconds.
+  They are written with `_failed: true` for diagnosis and never returned.
+- **Resumable at zero cost** — the JSONL cache replays the search and re-measures
+  nothing; it refuses to resume onto a different problem.
+- Search runs in **log10** of both gains, so a step is a ratio and no move can
+  propose a negative gain. `--q-bounds` exists because `x0` is CLIPPED into the
+  box, so a probe outside it silently measures the boundary.
+- Every evaluation records **per-trajectory** errors, so the landscape can be
+  re-analysed per shape without re-driving anything.
+- Outstanding: Nelder-Mead reports the **minimum observed draw**, which is a
+  winner's-curse machine. The structural fix is a noise-aware optimizer (BO with
+  a nugget, reporting the posterior-mean optimum). Partly done — the 2026-08-07
+  and job-60 runs used BO — but the reporting is still by best draw.
 
 ### Instrumentation: per-step state traces
 
@@ -1807,193 +918,107 @@ Cumulative counters are rebased per rollout — the world is deliberately not
 restarted between runs, so comparing `sim_time` raw reports a fake 250-step
 divergence on every pair.
 
+**Two bugs in the traced-soak path (fixed 2026-08-14) are worth knowing because
+neither could fail loudly.** `--trace-every N` subsampled by *rollout index*
+against a 35-rollout gain x trajectory cycle, so `gcd(5,35)=5` traced the same 7
+cells forever — subsampling is by **cycle** now. And tracing is armed by
+**file**, not by rollout: untraced rollouts were appended to the previous
+traced one's CSV, producing a 1084-row "track" for a 186-step plan that scored
+29 m. `disable_trace()` now exists and `soak.py` calls it. The reusable lesson:
+a subsample stride and a cycle length are not independent, and a trace file is a
+**resource with a lifetime**, not a flag. Both failures produce data that
+parses, scores, and looks like a measurement. (`variance_probe` was never
+affected — it traces every rollout.)
+
 `tuning/trace_dump.py` prints selected rows of one trace, for when a run is bad
 in isolation rather than merely different from another.
 
-### The patch friction values are unvalidated, and half of them are black ice
+### The patch friction values are still unvalidated against reality
 
-**Nobody has ever checked these against reality** — they were picked on a laptop,
-at a much slower real-time factor, by eye, to make the robot visibly slip. Asked
-about twice before and lost both times; hence this section. Current `PROFILES`
+The *distribution* was fixed on 2026-08-04; the *values* never were. **Nobody
+has ever checked these against a real surface** — they were picked on a laptop,
+by eye, to make the robot visibly slip. Asked about twice before and lost both
+times; hence this section. Current `PROFILES`
 (`src/rudn-ordjo-building/rudn_ordjo_building/surface_patches.py`) vs. real
-rubber-on-surface coefficients:
+rubber-on-surface coefficients (dry concrete 0.7-1.0, wet concrete 0.5-0.7,
+tyre on ice 0.1-0.15):
 
 | profile | mu | real-world equivalent |
 | --- | --- | --- |
 | `rough` | 2.5 | above dry rubber on concrete — effectively "cannot slip" |
-| `directional_x/y` | 1.0 / 0.15 | grips one axis, slides the other |
-| `slippery` | 0.2 | wet smooth tile / oily floor — **realistic** |
+| `directional_x/y` | 1.0 / 0.15 | grips one axis, slides the other — **unphysical**, a ground `fdir1` is world-fixed |
+| `linoleum` | 0.45 | the deployment surface; sits exactly on the steering knee |
+| `wet_tile` | 0.30 | below the knee — "no steering", deliberately |
+| `slippery` | 0.2 | wet smooth tile / oily floor |
 | `icy` | 0.05 | polished or wet black ice — real, but not an indoor floor |
 
-For reference: dry concrete 0.7-1.0, wet concrete 0.5-0.7, tyre on ice 0.1-0.15.
+**Chi, not mu, is the quantity to match** — it is what the model consumes, and
+unlike mu it is measurable on the real robot (see "Measuring `slip_chi` on the
+real robot"). The route is: drive the real robot on linoleum, on the ice
+mock-up and on sand, get chi per surface, then tune each profile's `mu` until
+the sim's chi matches. That closes the sim-to-real loop on the one parameter
+the planner takes, and nothing else here does.
 
-`along_path_terrain_sampler` draws uniformly from
-`["slippery", "icy", "directional_x", "directional_y"]`, so **half of every patch
-set is at or below tyre-on-ice friction**. That is an adversarial worst case, not
-a representative indoor floor — describe it that way in any write-up.
-
-**The deployment target is rubber tyres on university linoleum and tile**, and
-the advisor specifically wants a comparison on **ice and sand**. So the wanted
-change (not yet made, because it would invalidate comparison with everything
-measured so far):
-
-- add a realistic `linoleum` / `wet_tile` (mu ~= 0.35) and make it the common case;
-- add a `sand` profile (high mu but low shear strength — needs thought, since a
-  Coulomb mu alone does not model granular flow);
-- re-weight the sampler so `icy` is the rare adversarial case, not 25% of draws.
-
-Also still unanswered and cheap: `slip1`/`slip2` sit in a `<friction><ode>` block
+Still unanswered and cheap: `slip1`/`slip2` sit in a `<friction><ode>` block
 while gz-sim runs **DARTSIM**, which likely ignores ODE's force-dependent-slip
 parameters — meaning `mu` may be the only knob ever connected. The `icy_noslip`
 profile exists solely to test this: drive across `icy` and `icy_noslip` in one
 run, and identical behaviour proves `slip1/slip2` are decorative.
 
-### `slip_chi` is a function of the SURFACE, and that is the live bug (2026-08-05)
+### `slip_chi` is a function of the SURFACE, and the steering knee is `mu2`
 
-Dropping the world ground from `mu=1.0` to `0.45` made the default-gain tuning
-objective jump from 1.1706 m to **20.6148 m**. A no-patch diagnostic
-(`/tmp/mu_diag`, bare linoleum, zero terrain) shows it is **not** a corrector
-failure and **not** the patch distribution:
+Measured 2026-08-05 with `slip_ident` on a real-time world, then re-measured
+after the wheel fix (`sweep_data/ground_mu_chi*.csv`, driver
+`tools/sweep_ground_mu.sh`). The pre-fix curve and its narrative are in
+[docs/corrector-history.md](docs/corrector-history.md); the mechanism below is
+unchanged and is the reason a frozen PMP plan cannot handle friction zones.
 
-| trajectory | identity | tvlqr |
-| --- | --- | --- |
-| floor_1_00049 (straight) | 0.53 / 0.54 | 0.59 / 0.86 |
-| floor_6_00023 (corner) | **27.25 / 27.95** | **30.31 / 30.92** |
+**The mechanism.** [wheel.xacro](src/scout_ros2/scout_description/urdf/wheel.xacro#L63)
+gives each wheel `mu1=200.0` (rolling) and `mu2` (lateral), and Gazebo combines
+two contacting surfaces by taking the **smaller** coefficient. So `mu1=200` is
+never realized — it encodes "the wheel is never the longitudinal limit, the
+GROUND decides", which is what makes a patch's `mu` mean anything at all in the
+rolling direction. A skid-steer yaws by gripping longitudinally while scrubbing
+sideways, so **the longitudinal:lateral ratio IS the steering mechanism**, and
+it survives only while `ground > wheel mu2`: there the ground binds
+longitudinally and the wheel binds laterally, two independent constraints. At or
+below `mu2` the ground binds **both**, the ratio collapses to 1:1, and grip and
+steering are lost inseparably. Provenance: Grigorii Matiukhin, 2026-02-13, in
+the team's own `scout_ros2` fork — not AgileX upstream, so it is ours to change.
 
-Open loop diverges as badly as TVLQR, so the **nominal PMP plan is unfollowable
-on a realistic floor**. The straight is fine and the corner is not, which points
-straight at the yaw model.
+**The knee is at the wheel's `mu2`, to the digit**, and it moved with it when
+`mu2` went 0.7 → 0.45 — predicted before the run both times. Min-combination is
+settled, not a hypothesis. Above the knee chi is ~1.36-1.57 and the spread
+across turn radii is small; at or below it the robot achieves **4-7% of
+commanded yaw rate** and most arcs are unmeasurable.
 
-**Measured cause (same day, `slip_ident` on the real-time world):** it is not a
-mis-tuned chi, it is that **an isotropic low-friction ground deletes the tyre
-model's anisotropy, which IS the steering mechanism.**
+**The free variable is the RATIO `ground/mu2`, not absolute friction** — the
+curve translated rather than deformed. That is what makes
+`sweep_ground_mu.sh` a reusable instrument for "does this tyre model steer".
 
-`tools/sweep_ground_mu.sh` measures chi against ground `mu`
-(`sweep_data/ground_mu_chi.csv`, logs per point):
+**Chi barely moved at nominal: 1.3718 → 1.3575 (~1%).** Above the knee chi cares
+*that* you are above it, not by how much — so `PlannerConfig.slip_chi = 1.373`
+was still within ~1% and **the baked plans did not need re-planning** for the
+wheel fix. The spread across radii improved (0.0299 → 0.0072), so a single
+`slip_chi` describes this plant better than it did the old one.
 
-| ground `mu` | chi | yaw gain | usable arcs | spread across radii |
-| --- | --- | --- | --- | --- |
-| 1.0 | **1.3718** | 0.729 | 6 | 0.030 |
-| 0.9 | 1.3879 | 0.721 | 6 | 0.051 |
-| 0.8 | 1.4438 | 0.694 | 6 | 0.129 |
-| **0.7** | **10.147** | **0.100** | 2 | 2.672 |
-| 0.6 | 11.760 | 0.086 | 2 | 2.547 |
-| 0.5 | 14.441 | 0.071 | 2 | 4.101 |
-| 0.45 | **16.478** | 0.061 | 2 | 3.619 |
+**Consequences that constrain what we can model:**
 
-(This whole section describes the plant as it was, with the wheel's `mu2` at 0.7.
-That was changed to 0.45 on 2026-08-07 and the cliff moved with it — see "The
-wheel fix" below. The mechanism and the method are unchanged; only the number
-where it breaks moved.)
-
-**The cliff is at 0.7 — the wheel's own `mu2`, to the digit.** Above it only the
-longitudinal channel erodes, so chi drifts up gently while the spread across
-radii quadruples (a single `slip_chi` is already losing validity at 0.8, before
-anything looks broken). At 0.7 both coefficients meet and yaw gain falls
-seven-fold in one step of 0.1.
-
-The 1.0 row reproduces `PlannerConfig.slip_chi = 1.373` to four figures with an
-0.028 spread across radii, so the measurement chain is sound and the two rows are
-comparable. At 0.45 the robot achieves **5% of commanded yaw rate** — it barely
-rotates at all, which is why seven of eight arcs were rejected as unmeasurable.
-
-Why: [wheel.xacro](src/scout_ros2/scout_description/urdf/wheel.xacro#L63) gives
-each wheel `mu1=200.0` (rolling) and `mu2=0.7` (lateral), and Gazebo combines two
-contacting surfaces by taking the **smaller** coefficient. So `mu1=200` is never
-realized — it encodes "the wheel is never the longitudinal limit, the ground
-decides", which is what its comment says. Against a ground of 1.0 the effective
-pair is (1.0 rolling, 0.7 lateral): a **1.43:1** ratio, a perfectly physical
-number. (An earlier version of this note called it "a 285:1 anisotropy". That was
-wrong — 285:1 is the nominal wheel pair, which the ground caps away.)
-
-That 1.43:1 is the steering mechanism, since a skid-steer yaws by gripping
-longitudinally while scrubbing sideways. It survives only while
-`ground > wheel mu2`: there the ground binds longitudinally and the wheel binds
-laterally, two independent constraints. Below 0.7 the ground binds **both**, so
-lowering it reduces grip *and* collapses the ratio to 1:1 — inseparably. The
-sweep shows exactly that shape.
-
-Provenance: Grigorii Matiukhin, 2026-02-13, in the team's own `scout_ros2` fork —
-not AgileX upstream, so it is ours to change.
-
-So "make the floor realistic" cannot be done by lowering an isotropic ground
-plane. The anisotropy that matters is in the **wheel** frame (rolling vs lateral)
-and only the wheel can express it; a ground `fdir1` is world-fixed, which is
-exactly why the `directional_x/y` patch profiles are unphysical. And per-zone
-friction has to live in the ground, because patches are ground entities. That
-tension is the thing to solve before any re-baselining.
-
-**Every profile in `surface_patches.py` is below 0.7** — linoleum 0.45, wet_tile
-0.30, slippery 0.20, icy 0.05 — so every slip patch ever driven over has been
-simulating "loses steering", not "slides". That includes the RL training terrain
-and every corrector comparison. The friction values were not merely uncalibrated
-(as the section above says); they were outside the model's valid domain.
-
-### The wheel fix: `mu2` 0.7 → 0.45, applied and confirmed (2026-08-07)
-
-`mu2=0.7` was the problem — it sat at the top of the realistic range for rubber,
-so every physically plausible floor landed at or below it. It is now **0.45** in
-`wheel.xacro`. **`mu1` deliberately stays at 200**: it is never realized (the
-ground caps it), and it encodes "the wheel is never the longitudinal limit, the
-GROUND decides", which is exactly what makes a friction patch's `mu` mean
-anything in the rolling direction. Only `mu2` sets the knee, so only `mu2` moved.
-
-Re-run of `sweep_ground_mu.sh` (`sweep_data/ground_mu_chi_mu2_045.csv`), against
-the old curve:
-
-| ground `mu` | chi @ `mu2=0.7` | chi @ `mu2=0.45` | yaw gain | arcs | spread |
-| --- | --- | --- | --- | --- | --- |
-| 1.0 | 1.3718 | **1.3575** | 0.737 | 6 | 0.007 |
-| 0.8 | 1.4438 | **1.3651** | 0.733 | 6 | 0.023 |
-| 0.6 | 11.760 | **1.4037** | 0.713 | 6 | 0.058 |
-| 0.5 | 14.441 | **1.5713** | 0.641 | 6 | 0.341 |
-| **0.45** | 16.478 | **15.583** | 0.065 | 2 | 3.449 |
-| 0.4 | — | 18.729 | 0.055 | 2 | 5.733 |
-| 0.3 | — | 25.362 | 0.040 | 2 | 6.084 |
-
-**The knee moved to 0.45, to the digit** — predicted before the run, exactly as
-the 0.7 knee was. Min-combination is settled, not a hypothesis.
-
-**The curve TRANSLATED rather than deformed, and the free variable is the RATIO
-`ground/mu2`, not absolute friction.** 0.5/0.45 (ratio 1.11) gives chi 1.57;
-the old 0.8/0.7 (ratio 1.14) gave 1.44. So `sweep_ground_mu.sh` measures one
-curve in one variable and `mu2` slides it — that is what makes it a reusable
-instrument for "does this tyre model steer" rather than a one-off.
-
-**Chi at nominal barely moved: 1.3718 → 1.3575, ~1%.** The prediction was a
-visible drop from the improved ratio (1.43:1 → 2.22:1) and that was **wrong** —
-above the knee chi cares *that* you are above it, not by how much. Consequence:
-`PlannerConfig.slip_chi = 1.373` is still within ~1% at ground 1.0, so the
-existing baked plans did **not** need re-planning for this change. The spread
-across radii also improved (0.0299 → 0.0072), so a single `slip_chi` describes
-this plant *better* than it described the old one.
-
-**Usable band is ground >= 0.5.** Linoleum at 0.45 sits exactly on the knee and
-is marginal; wet_tile (0.30), slippery (0.20) and icy (0.05) are all still below
-it. Ice being uncontrollable is **correct** rather than a limitation — on real
-ice `mu_long ~= mu_lat` and a real skid-steer genuinely cannot steer. The model
-was never broken for ice; it was broken for linoleum, because the wheel was
-parameterised for concrete.
-
-**The limit that survives the fix, unchanged:** under min-combination with an
-isotropic ground, *any* ground below the wheel's `mu2` gives ratio 1. "Slides but
-still steers" is inexpressible at low friction — a surface is either above the
-knee or it has no steering authority. **`sand` is still blocked on this**, at any
-wheel setting; it needs a different mechanism, and that is a question for the
-advisor alongside the planner-vs-corrector one.
-
-**What still stands:** chi is genuinely a property of the SURFACE (1.36 vs 25.4
-across this curve), so it cannot be a constant on a floor with ice/sand zones —
-it is not constant *within one trajectory*. That remains a modelling gap rather
-than a tuning problem, and the structural reason a frozen PMP plan cannot handle
-zones.
-
-**Do not lower the ground plane to model a slippery floor.** Both worlds are at
-`mu=1.0` and should stay there; slipperiness belongs in the wheel pair or in a
-patch, and any patch below 0.45 now means "no steering", deliberately.
-
-**Everything measured before this change was measured on a different plant.**
-The identity / TVLQR / RL comparison and every tuning result predate it.
+- **Do not lower the ground plane to model a slippery floor.** Both worlds are
+  at `mu=1.0` and should stay there; slipperiness belongs in the wheel pair or
+  in a patch, and any patch below 0.45 now means "no steering", deliberately.
+- **Usable band is ground >= 0.5.** Linoleum at 0.45 sits exactly on the knee
+  and is marginal; every other profile is below it.
+- **Ice being uncontrollable is CORRECT, not a limitation** — on real ice
+  `mu_long ≈ mu_lat` and a real skid-steer genuinely cannot steer. The model was
+  never broken for ice; it was broken for linoleum, because the wheel was
+  parameterised for concrete. This is the SVCM dichotomy's second branch.
+- **"Slides but still steers" is inexpressible at low friction** under
+  min-combination with an isotropic ground, at any wheel setting. `sand` is
+  blocked on this, and it is a question for the advisor.
+- **Chi is a property of the SURFACE** (1.36 vs 25.4 across the sweep), so it
+  cannot be a constant on a floor with ice/sand zones — it is not constant
+  *within one trajectory*. That is a modelling gap, not a tuning problem.
 
 ### Measuring `slip_chi` on the real robot (method, 2026-08-05)
 
@@ -2070,52 +1095,38 @@ is cheap.
 1. **Fix SAC's entropy runaway before any retrain.** `ent_coef` reached 3.31.
    Either pin it (`ent_coef=0.05` instead of `"auto"`) or set an explicit
    `target_entropy` — the default `-dim(A)` is far too permissive for a 4-D
-   residual whose useful range is tiny. This is the single highest-value change:
-   every hour of the 20260730 run after ~800k steps made the policy worse.
+   residual whose useful range is tiny. Every hour of the 20260730 run after
+   ~800k steps made the policy worse.
 2. **Bound the per-episode return.** Huber bounded the reward's slope, not the
    accumulated return over 200 non-terminating steps, and `critic_loss` still
    reached 1.2e4. Options: normalize the return, cap per-step cost outright, or
-   reinstate termination with a large-but-finite terminal penalty (which is not
-   the same as the 0.5 m corridor that caused the original no-recovery problem).
-3. ~~Re-measure everything on a genuine S-curve.~~ **DONE 2026-08-02:** the eval
-   set is now **seven shape-distinct plans** (`config/eval_trajectories.yaml`) —
-   straight, corner, S, zigzag, tight V, U-turn, loop. It grew from three
-   because a rollout now costs ~5 s instead of ~20-25 s (the world was
-   free-running between steps). `floor_6_00042`, the "S-curve" that was really
-   an L, is dropped. Still to do: actually re-measure on it.
-4. ~~Explain the run-to-run variance properly.~~ **SOLVED 2026-08-02, see
-   "The run-to-run variance was an 8 mm reset error amplified by patch edges".**
-5. **Widen the tuning search to the full Q/R diagonal** (`q_along`, `q_heading`,
-   `r_v`) once the 2-D search proves the machinery. Nelder-Mead handles 5-D, but
-   the evaluation budget grows and the variance in (4) sets the noise floor on
-   what can be resolved.
-6. **Give the RL residual a fair fight**: train it *on top of* tuned TVLQR rather
-   than on top of identity, so the policy learns the residual that a good linear
-   controller cannot supply, instead of re-deriving feedback from scratch. This
-   is also the version most defensible in a write-up — the advisor's requirement
-   is that RL be part of the system, not that it beat everything alone.
-7. ~~Parallel sims via namespacing.~~ **BUILT AND VERIFIED 2026-08-15**, see
-   "Parallel sims: `WORKER`" below. The 2026-08-02 prediction was right in every
-   particular — two env vars, no launch-file surgery, no topic remapping — and
-   the sizing guidance from it still stands: `cores ~= workers + 2`, watching RAM
-   since each Gazebo loads the world meshes independently.
-8. ~~Generate interesting trajectories by construction.~~ **BUILT 2026-08-14**,
-   see "Generating evaluation trajectories by construction". The A*-as-proxy
-   caveat below turned out to be the important part: the proxy predicts route
-   *position* well and *turning* not at all, so shape is labelled from the
-   solved plan instead. Original note: The 100 recorded plans came from random
-   goals, and it shows: ~20 have any shape at all, all on page 1 of the gallery,
-   and pages 3-5 are straight lines. So the evaluation set is capped by what the
-   library happens to contain. Proposed instead: sample start/goal pairs from the
-   baked map, run a cheap A* (or the FM2 field itself) to *predict* the route
-   without paying for a PMP solve, score each route for tortuosity — turning per
-   metre, number of curvature sign changes, reversals — and keep only the
-   high-scoring pairs to run through the real planner. Screening is cheap and the
-   PMP solve is the expensive part, so this inverts the current ratio. Two things
-   to get right: the A* route must be a fair proxy for what PMP actually produces
-   (worth validating on the existing 100 before trusting it), and the score must
-   ignore the leading in-place pivot for the same reason `trim_pivot` does.
-9. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
+   reinstate termination with a large-but-finite terminal penalty (not the same
+   as the 0.5 m corridor that caused the original no-recovery problem).
+   `-epsilon.step_cost(...)` is the per-step integrand and is the reward any
+   future RL should use.
+3. **Give the RL residual a fair fight**: train it *on top of* tuned TVLQR
+   rather than on top of identity, so the policy learns the residual a good
+   linear controller cannot supply instead of re-deriving feedback from scratch.
+   Also the most defensible version in a write-up — the advisor's requirement is
+   that RL be part of the system, not that it beat everything alone.
+4. **Per-worker job queues.** `tools/jobq.sh` is single-lane in the default
+   partition, so parallelism today means driving `WORKER=n` by hand. This is
+   what would turn ~55 core-hours of PMP labelling into an overnight run.
+5. **Compare against Nav2 baselines (DWA, MPPI, TEB)** — carried over from the
+   paper draft's Experiment 4, which named them and was never run. Metrics
+   proposed there: path length, travel time, max curvature, and control energy
+   `int ||(a_l, a_r)||^2 dt`. The comparison is not like-for-like: those are
+   closed-loop planners, so the comparable object is the whole FM2+PMP+TVLQR
+   stack, not the corrector alone.
+6. **Widen the search to the full Q/R diagonal** (`q_along`, `q_heading`,
+   `r_v`) — the 2-D machinery is proven, but note the 2-D result needed 40 plans
+   and mean-of-5 to resolve, so budget accordingly and validate on the broad set.
+   Low priority: `J` could not separate points inside the 2-D plateau at all.
+7. **A `sand` profile.** The advisor wants ice *and* sand. Blocked on the
+   modelling limit below, not on parameter choice: a Coulomb `mu` alone does not
+   model granular flow, and under min-combination any ground below the wheel's
+   `mu2` has no steering authority at all.
+8. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
    6 m). Still unexplained, still excluded, still a planner bug rather than a
    control one.
 
