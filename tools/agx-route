@@ -3,7 +3,7 @@
 # currently alive, preferring the direct one.
 #
 # There are two routes to the SAME machine:
-#   direct  programmer@172.26.13.37            (needs the lab VPN)
+#   direct  programmer@172.30.187.53            (needs the lab VPN)
 #   jump    programmer@192.168.71.113  via  llm_test2@kron.botik.ru:2202
 #
 # The VPN drops whenever the laptop lid closes and takes ~15 minutes to come
@@ -27,7 +27,7 @@
 #   AGX_ROUTE_VERBOSE=1     announce the chosen route on stderr
 set -uo pipefail
 
-DIRECT_HOST=172.26.13.37
+DIRECT_HOST=172.30.187.53
 DIRECT_PORT=22
 JUMP_PROXY=llm_test2@kron.botik.ru
 JUMP_PROXY_PORT=22

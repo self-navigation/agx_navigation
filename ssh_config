@@ -12,7 +12,7 @@
 #     `ssh agx` / `scp x agx:` / `rsync agx:...` work with no flags.
 
 Host agx
-    HostName 172.26.13.37
+    HostName 172.30.187.53
     User programmer
     ProxyCommand /home/danya/university/clown-car/agx_navigation/tools/agx-route %h %p
     ServerAliveInterval 30
