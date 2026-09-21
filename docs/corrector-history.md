@@ -1596,3 +1596,27 @@ patch, and any patch below 0.45 now means "no steering", deliberately.
 **Everything measured before this change was measured on a different plant.**
 The identity / TVLQR / RL comparison and every tuning result predate it.
 
+
+---
+
+## A failed plan hung every client (fixed 2026-08-18)
+
+`TrajectoryBuffer.active_traj_id` is set in `_on_chunk`, so a plan that failed at
+**chunk 0** never set it, `_on_action_result` dropped the result as a mismatch,
+and `_on_tick`'s idle guard returned before `_finish()` could publish the zero
+and the completion sentinel. The stack went silent with the robot stationary and
+every client waited out its own timeout. Fixed in `_on_action_result`; verified
+live (a failed goal now advances the driver 0.4 s later).
+
+Two things that outlive the fix:
+
+- **BVP mesh-node exhaustion fails ~36% of fresh start/goal pairs** — the same
+  rate measured building the v2 library. That is not only a data-generation
+  problem; it is a runtime failure mode on ordinary goals, and a goal the
+  planner cannot solve must degrade **visibly**.
+- **The failure is a property of the start/goal PAIR, not of the goal.** The
+  same goal failed from one start pose and was reached from another.
+- Method note: the pipeline itself was healthy and the bug was in the failure
+  path. **A stack that works is not evidence about what it does when a component
+  says no.**
+*Moved out of CLAUDE.md on 2026-09-21; the durable facts survive as a stub under "Settled".*
