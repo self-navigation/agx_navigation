@@ -12,7 +12,7 @@
 #     `ssh agx` / `scp x agx:` / `rsync agx:...` work with no flags.
 
 Host agx
-    HostName 172.26.13.37
+    HostName <AGX_DIRECT_HOST>
     User programmer
     ProxyCommand ./tools/agx-route %h %p
     ServerAliveInterval 30
