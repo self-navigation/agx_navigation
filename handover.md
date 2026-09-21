@@ -121,7 +121,7 @@ The "failed plan hung every client" narrative moved to
    is now **24pp**; body 21pp, references 3pp. A comparison section needs 2-3pp,
    so **find 3-4pp**. The lever is his own instruction — *«сократить эксперимент
    — сделать таблицей, оставить 2 строки подписи»* — applied to
-   Акспериментальная методика, which is **7pp**, the only block big enough.
+   Экспериментальная методика, which is **7pp**, the only block big enough.
    Nothing else exceeds 3pp. Free duplication: the geometric-mean rationale is
    stated three times (draft.tex lines ~407, 409, 411).
 
