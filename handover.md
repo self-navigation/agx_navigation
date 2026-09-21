@@ -6,21 +6,35 @@ This file describes **now**: what is running, what is half-finished, what to do
 next, and the reasoning behind decisions that have not yet become findings.
 Rewrite it rather than appending.
 
-**This session in one line:** no experiments — housekeeping only. The VM's new
-VPN IP landed, CLAUDE.md was split (1169 → 622 lines) into two new reference
-docs, and **the VM was cleaned of five weeks of orphans**. Nothing is running
-anywhere.
+**This session in one line:** paper work, no experiments. **The advisor's
+rewrite is now the base for `draft.tex`** (branch `advisor-revision-port` in
+`../paper`), our corrected draft-5 is preserved at commit `97687d4`, and the
+one real data bug in the paper is fixed. Nothing is running anywhere.
 
-**The work now has an external driver: the advisor reviewed the paper on
+**Drive the paper work from this repo**, not from `../paper` — nearly every
+open question needs the source, the soak data or CLAUDE.md's Settled stubs.
+
+**The work has an external driver: the advisor reviewed the paper on
 2026-09-16.** That review, not the re-planner, sets the next few sessions.
 
 ## The advisor's review (2026-09-16) — what he actually asked for
 
 His revised TeX (a model-assisted rewrite of our draft, cut to 23 pages) came
-over Telegram, so it is always re-downloadable; a working copy sits **untracked**
-at `../paper/advisor-revision-2026-09-16.tex`. **Do not commit his file.** It is
-a reference to diff against — the job is to port his changes into our own
-draft-5, hunk by hunk, keeping our numbers.
+over Telegram, so it is always re-downloadable.
+
+**Superseded 2026-09-21: his rewrite is now the base, not a reference.** The
+earlier plan here said draft-5 stays the source and his file must not be
+committed. That predated reading his chat, which asks for **his** text
+corrected (*«прошу ознакомиться с новым текстом, если нейронка наврала —
+исправить»*), not ours shortened. Two things settled it: our corrected
+draft-5 is safe in git history, and **the excess length is not where he thinks
+it is** — cutting his named sections 8 and 9 recovers at most 2 of the 9 pages,
+because our experiments were already 8pp and §8 was 1pp. The oversized block was
+the OCP+PMP derivation at 7pp, which his rewrite already compresses to 4pp.
+
+**The working checklist is `../paper/porting-notes.md`** — re-injection items,
+the gain-number provenance, the substantive review comments with source-line
+anchors, and how to re-derive them.
 
 His four asks, in his order:
 
@@ -42,6 +56,25 @@ for checking his revision, and several of our own numbers are easy to overstate
 — in particular the tuning result is a **robustness trade**, not "tuning halves
 deviation", and `J` is an **upper bound on epsilon, never epsilon itself**. If
 the revision states either more strongly than that, it is wrong and we fix it.
+
+Audited 2026-09-21. Both traps were sprung in **his** version, not ours: he
+dropped the epsilon caveat entirely and blunted the robustness trade. Our
+draft-5 was already correct on both, so ask 4 is mostly a **preservation**
+problem while compressing. Both are now re-injected into the new base.
+
+**One real data bug was ours, and he inherited it.** The 40-plan gain table
+spliced two measurement campaigns — three rows from job 50 (mean-of-3) and two
+from job 100 (mean-of-5). Cross-run comparability is an assumption we do not
+hold. Fixed in both files; provenance in `porting-notes.md`. The visible
+consequence: the miss-rate claim is **22.0% → 11.5%** read inside job 100, not
+20.0% → 11.5% read across both.
+
+**Ask 1 is bigger than "add Nav2 arms".** He wants a **dynamic** environment
+(*«среда должна быть динамическая»*), and the advantage it is meant to expose —
+committing to one plan and perturbing it locally, instead of Nav2 re-running A\*
+and oscillating between equal routes — **depends on the re-join re-planner,
+which does not exist yet**. So ask 1 and re-planner Phase 0 are the same piece
+of work. See the `dynamic-obstacle-comparison-framing` memory.
 
 ## State
 
@@ -78,11 +111,23 @@ The "failed plan hung every client" narrative moved to
 
 ## Do this next, in order
 
-1. **Diff his revision against our draft-5** and port the changes we accept into
-   our file, on a branch. His version is a reference copy, not the new source of
-   truth — check each hunk against CLAUDE.md's live claims as you go (ask 4).
+1. **Finish the re-injection checklist in `../paper/porting-notes.md`.**
+   Items 1 (gain table) and 2 (epsilon bound) are done. Remaining: the
+   robustness-trade numbers, the seven-shape enrichment guard, the evidence he
+   cut that favours us (zigzag 88.8% → 2.6%, the mu/mu2 ratio invariance), the
+   abstract's unqualified "2.127 → 1.127", and the mu2 contact-patch wording.
 
-2. **Plan the baseline comparison (ask 1) — the gating item.** Design notes
+2. **Trim to make room for the comparison section.** The base built at 23pp and
+   is now **24pp**; body 21pp, references 3pp. A comparison section needs 2-3pp,
+   so **find 3-4pp**. The lever is his own instruction — *«сократить эксперимент
+   — сделать таблицей, оставить 2 строки подписи»* — applied to
+   Акспериментальная методика, which is **7pp**, the only block big enough.
+   Nothing else exceeds 3pp. Free duplication: the geometric-mean rationale is
+   stated three times (draft.tex lines ~407, 409, 411).
+
+3. **Plan the baseline comparison (ask 1) — the gating item.** It is the same
+   work as re-planner Phase 0 below, because the advantage only shows in a
+   dynamic environment and the local re-plan does not exist yet. Design notes
    before anyone writes code:
    - **The comparable object is the whole FM2+PMP+TVLQR stack, not the
      corrector.** DWB/MPPI/TEB are closed-loop planners; our corrector is not a
@@ -107,13 +152,13 @@ The "failed plan hung every client" narrative moved to
      is still single-lane** (CLAUDE.md queue item 5). Either drive workers by
      hand or build per-worker queues first.
 
-3. **Re-planner Phase 0** — measure the re-join solve failure rate over ~200
+4. **Re-planner Phase 0** — measure the re-join solve failure rate over ~200
    sampled problems. It is **offline and needs no Gazebo**, so it can run
    alongside the baseline work rather than competing for the sim. The library
    build failed 36%; inherit that and the supervised plan is wrong rather than
    slow. Full plan in [docs/corrector-design.md](docs/corrector-design.md).
 
-4. **GUI camera follow — still BLOCKED on Moonlight.** The demo itself drove to
+5. **GUI camera follow — still BLOCKED on Moonlight.** The demo itself drove to
    arrival twice on 2026-08-19 (final_err 0.047 m). What fails is making the
    Gazebo camera track the robot through the API: the `CameraTracking` plugin
    loads via `--gui-config` with no error and does not follow (the keys exist —
@@ -122,12 +167,12 @@ The "failed plan hung every client" narrative moved to
    right-click `scout_mini` → Follow, then
    `tools/with-worker 1 python3 tools/drive_goal.py --x 6.0 --y 3.0`.
 
-5. **Stratify a second eval set** into `config/eval_trajectories.yaml`, *added*
+6. **Stratify a second eval set** into `config/eval_trajectories.yaml`, *added*
    alongside the seven rather than replacing them — swapping would silently
    re-baseline every number in CLAUDE.md. The seven stay the fast search set;
    the broad 40 are for claims.
 
-6. **Launch races: still no failing case to collect.** `fixture_up.sh` retries
+7. **Launch races: still no failing case to collect.** `fixture_up.sh` retries
    and prints the failing check, so evidence accumulates for free. Four
    bring-ups have now been ready on attempt 1. Do not touch `main.launch.py`
    until something actually fires.
