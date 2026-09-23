@@ -105,20 +105,22 @@ v and omega now derived states):
                      - (1 - w_F) * w_h * (theta - theta_pursuit)
                      - w_v * v_ref * (v - v_ref_eff) * gate'(F . h) * cross_F_h
                      - w_brake * (1 - F . h) * v^2 * cross_F_h
-                     + pos_gate * (lambda_x * v sin(theta) - lambda_y * v cos(theta))
-  (pos_gate = ((1 + F.h)/2) ** align_gate_power gates the position-
-   costate coupling into lambda_th -- the anti-understeer fix; see
-   PMPShootingSolver._ode.)
+                     + lambda_x * v sin(theta) - lambda_y * v cos(theta)
+  (Ungated here: the position-costate gate lives in Hv below.)
 
 The wheel costates are the chain-rule images of the old (lambda_v,
 lambda_omega) through (v, omega) = A (w_l, w_r), lambda_w = A^T
 lambda_(v,omega). With the body-space Hamiltonian partials
   Hv  = w_v * (v - v_ref_eff) + w_brake * (1 - F . h)^2 * v
-        + lambda_x cos(theta) + lambda_y sin(theta)
+        + pos_gate * (lambda_x cos(theta) + lambda_y sin(theta))
         + w_v_barrier * sign(v) * max(0, |v| - v_max)
   Hom = w_omega_run * omega + lambda_th
         + w_omega_barrier * sign(omega) * max(0, |omega| - omega_max)
-the wheel costate ODEs are
+where pos_gate = ((1 + F.h)/2) ** align_gate_power is the anti-understeer
+fix (see PMPShootingSolver._ode). It has no counterpart in L and its
+theta-derivative is not in lambda_th_dot, so the solved BVP is the PMP
+system only up to this heuristic modification of the adjoint. The
+wheel costate ODEs are
   lambda_wl_dot = -(c_v * Hv - c_w * Hom)
                   - w_wheel_barrier * sign(w_l) * max(0, |w_l| - w_wheel_max)
   lambda_wr_dot = -(c_v * Hv + c_w * Hom)

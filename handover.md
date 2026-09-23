@@ -1,4 +1,4 @@
-# Handover — 2026-09-21
+# Handover — 2026-09-23
 
 **Read this first, and keep it current.** It is the primary record of what we
 are doing; CLAUDE.md is the cumulative record of what we have *established*.
@@ -6,10 +6,36 @@ This file describes **now**: what is running, what is half-finished, what to do
 next, and the reasoning behind decisions that have not yet become findings.
 Rewrite it rather than appending.
 
-**This session in one line:** paper work, no experiments. **The advisor's
-rewrite is now the base for `draft.tex`** (branch `advisor-revision-port` in
-`../paper`), our corrected draft-5 is preserved at commit `97687d4`, and the
-one real data bug in the paper is fixed. Nothing is running anywhere.
+**This session in one line:** paper work, no experiments. Re-injection items
+3-7 are done, and so is the derivation audit. The advisor has **answered the
+questions**. Nothing is running anywhere.
+
+**2026-09-23: the advisor's answers change the plan** (full text and reading in
+`../paper/porting-notes.md`, "The advisor's answers"):
+
+- **The venue is now MDPI *Mathematics*, and 23 pp is only a recommendation.**
+  The trim that used to be step 2 is **cancelled**. The draft is now 26 pp.
+- **External baselines (Nav2) are required.** Our self-comparisons do not
+  count. Step 3 below stands, and it is still the gating item.
+- **The theorem has no source to cite, and it is ours to rebuild** so that
+  every experiment follows from it. For a mathematics journal this is now the
+  second gating item. The obstacles are listed in porting-notes, "Theorem
+  rebuild".
+- **Gazebo is enough.** Anything that also runs on the real Scout gets
+  reported there, and the paper says why the rest is Gazebo-only.
+
+**Three more provenance errors were found and fixed** while re-injecting, all
+of the form "number quoted under the wrong gains". The seven-shape headline
+2.127 → 1.127 is TVLQR at the **original** `10/0.25`. The 51-plan robustness
+trade (9.99 m / 2.03 m) is `0.276/2.618`. And 88.8% → 2.6% is not from the
+1047-run ladder. **The adopted `2.5/2.618` has only ever been measured on the
+40 broad plans (job 100).** Keep that in mind before quoting any other table as
+"the tuned corrector".
+
+**The derivation audit found one substantive gap.** The solved BVP is the PMP
+system only up to `pos_gate`, a heuristic gate in `H_v` with no counterpart in
+`L`. The paper now says so, and the PMP docstring in `node.py` was fixed to
+match the code. It had put the gate on `λ̇_θ`.
 
 **Drive the paper work from this repo**, not from `../paper` — nearly every
 open question needs the source, the soak data or CLAUDE.md's Settled stubs.
@@ -111,21 +137,21 @@ The "failed plan hung every client" narrative moved to
 
 ## Do this next, in order
 
-1. **Finish the re-injection checklist in `../paper/porting-notes.md`.**
-   Items 1 (gain table) and 2 (epsilon bound) are done. Remaining: the
-   robustness-trade numbers, the seven-shape enrichment guard, the evidence he
-   cut that favours us (zigzag 88.8% → 2.6%, the mu/mu2 ratio invariance), the
-   abstract's unqualified "2.127 → 1.127", and the mu2 contact-patch wording.
+1. ~~Re-injection items 3-7~~ and ~~the derivation audit~~ are **done
+   (2026-09-23)**, uncommitted in both repos at the time of writing. ~~Trim~~
+   is **cancelled** by advisor answer 1.
 
-2. **Trim to make room for the comparison section.** The base built at 23pp and
-   is now **24pp**; body 21pp, references 3pp. A comparison section needs 2-3pp,
-   so **find 3-4pp**. The lever is his own instruction — *«сократить эксперимент
-   — сделать таблицей, оставить 2 строки подписи»* — applied to
-   Экспериментальная методика, which is **7pp**, the only block big enough.
-   Nothing else exceeds 3pp. Free duplication: the geometric-mean rationale is
-   stated three times (draft.tex lines ~407, 409, 411).
+2. **Rebuild the theorem** (advisor answer 3). Decide the statement first,
+   from what the experiments need it to carry, then prove it. The known gaps
+   (undefined "local controllability", the missing value-function stability
+   step, templates that solve a *modified* adjoint) are in porting-notes,
+   "Theorem rebuild". Not started. Also open: the 36/59 ms solve times in the
+   paper have no source. Re-measure them or drop them.
 
-3. **Plan the baseline comparison (ask 1) — the gating item.** It is the same
+3. **Plan the baseline comparison (ask 1, confirmed external by answer 2) — the
+   gating item.** Also plan the Scout/Gazebo split (answer 4): FM²+PMP planning
+   and `slip_ident` transfer to the real chassis, but per-wheel arms,
+   ground-truth scoring and friction patches do not. It is the same
    work as re-planner Phase 0 below, because the advantage only shows in a
    dynamic environment and the local re-plan does not exist yet. Design notes
    before anyone writes code:
