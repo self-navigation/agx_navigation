@@ -41,7 +41,7 @@ import time
 
 import numpy as np
 
-from ..rl_corrector.compare_correctors import _tvlqr_wheels
+from ..rl_corrector.compare_correctors import _identity_wheels, _tvlqr_wheels
 from ..rl_corrector.config import RLCorrectorConfig
 from ..rl_corrector.nominal import load_recorded
 from ..runtime_corrector import tvlqr as tvlqr_mod
@@ -54,6 +54,11 @@ def drive(bridge, cfg, tvcfg, nom, seed, use_terrain=True):
     `final_err` and `max_cross` are kept separately because they have failed
     independently before: a run can track well and stop short (identity on the
     straight) or wander badly and still end near the goal.
+
+    `tvcfg.enabled=False` drives the OPEN-LOOP arm: the plan's wheel commands
+    verbatim, exactly as compare_correctors' identity leg (the 2026-08-07
+    baseline). `tvlqr.correct` itself ignores `enabled`, so the branch has to
+    live here. The correction is zero, so `j_control` is zero by definition.
     """
     from ..rl_corrector.terrain import along_path_terrain_sampler
 
@@ -97,13 +102,17 @@ def drive(bridge, cfg, tvcfg, nom, seed, use_terrain=True):
     for k in range(n_steps):
         planned = nom.poses[k]
         left, right = float(nom.wheels[k][0]), float(nom.wheels[k][1])
-        wheels, diag = _tvlqr_wheels(left, right, planned, st.pose,
-                                     cfg, tvcfg, cache, k)
+        if tvcfg.enabled:
+            wheels, diag = _tvlqr_wheels(left, right, planned, st.pose,
+                                         cfg, tvcfg, cache, k)
+            du = (diag.dv, diag.domega)
+        else:
+            wheels, du = _identity_wheels(left, right, cfg), (0.0, 0.0)
         st = bridge.step(wheels, nom.dt)
         err = tvlqr_mod.tracking_error(planned, st.pose)
         max_cross = max(max_cross, abs(err[1]))
         cross_sq += err[1] ** 2
-        acc.push(err, (diag.dv, diag.domega))
+        acc.push(err, du)
     # `poses` holds n_steps+1 entries; index n_steps is the goal, matching
     # compare_correctors exactly. Using [-1] would silently measure something
     # else if the recorder ever pads.

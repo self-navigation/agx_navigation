@@ -36,7 +36,12 @@ def test_parses_and_preserves_order():
     assert parse_gains(["1,2", "3.5,0.25"]) == [(1.0, 2.0), (3.5, 0.25)]
 
 
+def test_identity_is_the_open_loop_arm():
+    assert parse_gains(["identity", "2.5,2.618"]) == [(None, None), (2.5, 2.618)]
+
+
 @pytest.mark.parametrize("bad", [
+    "Identity",     # near-miss spelling must not silently become a gain arm
     "1",            # no comma at all
     "1,2,3",        # too many fields
     "a,2",          # non-numeric q

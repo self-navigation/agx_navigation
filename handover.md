@@ -102,6 +102,41 @@ and oscillating between equal routes — **depends on the re-join re-planner,
 which does not exist yet**. So ask 1 and re-planner Phase 0 are the same piece
 of work. See the `dynamic-obstacle-comparison-framing` memory.
 
+## RUNNING NOW (queued 2026-09-23 14:43 local, ETA ~17:45)
+
+Three jobs in the VM queue, one after another. **Each job file's header says
+why it exists and how to read either outcome**. Read the header before reading
+the numbers.
+
+| job | what | output (VM `~`) | est. |
+| --- | --- | --- | --- |
+| `110_seven_three_arms` | the seven shapes: open loop, `10/0.25`, `2.5/2.618`, **one campaign**, 100 repeats | `soak_seven_three_arms.jsonl` | ~2 h |
+| `120_broad40_open_loop` | the 40 broad plans: same three arms, mean-of-5 | `soak_broad_open_loop.jsonl` | ~45 min |
+| `130_gramian_joins` | the controllability check re-run against 110/120 | `gramian_*.csv` | ~1 min |
+
+Logs: `~/jobq/logs/<job>.log`. Status: `just queue-status`. **Why these
+exist**: job 110 gives the paper the seven-shape table at the gains it actually
+adopted, because the current table uses the old ones. Job 120 answers "does the
+corrector beat open loop on plans we did not choose?", which has never been
+measured. Early rows match August (open-loop zigzag 7.67 m vs 7.06 +/- 0.71;
+`10/0.25` S-curve 2.130 vs 2.128), so the plant has not drifted.
+
+The soak harness gained an **`identity` arm** for these jobs (`--gains
+identity`, `soak.py` + `variance_probe.drive`). Its `j_control` is 0 by
+definition, so J alone flatters open loop. Read J's tracking and terminal
+parts, plus arrival.
+
+**Already answered (job 105, run by hand 2026-09-23): the theorem's
+controllability hypothesis does NOT explain which plans are hard.** Gramian
+energy vs per-plan J of the adopted corrector over the 40 broad plans:
+Spearman rho = +0.09 (p = 0.59). The prediction was recorded before the run
+and failed. The only correlate is `frac_slow` (share of time with |v| < 0.05):
++0.43 (p = 0.006) vs J. That may be a duration artefact, since J is an
+integral, so do not quote it as a finding. Output:
+`~/gramian_broad40_q25.csv`. Consequence written into the theorem proposal:
+the differences between plans come from delta (how much slip a plan meets), not
+from controllability.
+
 ## State
 
 - **VM: clean and idle.** `pgrep gz sim` empty, job queue empty (`pending/` and
@@ -141,11 +176,19 @@ The "failed plan hung every client" narrative moved to
    (2026-09-23)**, uncommitted in both repos at the time of writing. ~~Trim~~
    is **cancelled** by advisor answer 1.
 
-2. **Rebuild the theorem** (advisor answer 3). Decide the statement first,
+2. **Rebuild the theorem** (advisor answer 3). **A Russian draft for the
+   advisor is at `../paper/theorem-proposal.tex` (PDF next to it)**, with three
+   parts: open loop (his form), feedback with a horizon-independent constant,
+   and a yaw-rate lower bound carrying chi. The user is sending it. Wait for his
+   answer before writing proofs.
+   Real Scout runs: the only trace is Grigorii's bring-up commit `92fe846`
+   (2026-02-26). Nothing was measured, and `slip_ident` has never run on the
+   robot. It is the cheapest thing to put in the Scout column (answer 4) and
+   gives the theorem a real chi. Decide the statement first,
    from what the experiments need it to carry, then prove it. The known gaps
    (undefined "local controllability", the missing value-function stability
    step, templates that solve a *modified* adjoint) are in porting-notes,
-   "Theorem rebuild". Not started. Also open: the 36/59 ms solve times in the
+   "Theorem rebuild". Also open: the 36/59 ms solve times in the
    paper have no source. Re-measure them or drop them.
 
 3. **Plan the baseline comparison (ask 1, confirmed external by answer 2) — the

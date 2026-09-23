@@ -406,6 +406,7 @@ bad idea gets stopped before anyone reads it.
 - **`J` needs the GEOMETRIC mean across trajectories.** `J` spans 0.2 to 1043 across a library sweep and one plan can carry 48% of the arithmetic mean. `objective.DEFAULT_HOW` encodes it: arithmetic for `max_cross`, geometric for `j_total`.
 - **A per-shape claim must name its baseline** — computing one against sweep neighbours rather than the default produced a retracted attribution.
 - **An automatic shape label is a ranking aid, never a claim.** Two labellers have now misled here. **Render the plans before making any per-shape claim.**
+- **Controllability along a plan does not predict how hard it is** (2026-09-23, job 105): Gramian energy of the tracking linearisation vs per-plan J of the adopted corrector over the 40 broad plans, rho = +0.09 (p = 0.59), prediction recorded beforehand. Plan difficulty is the disturbance a plan meets, not its controllability; `tools/controllability_gramian.py`.
 - **Screening candidate start/goal pairs on PREDICTED turning does not work** — the cheap A*/lattice route predicts *where* a plan goes (r=+0.99 on length) and not *how it turns* (+0.30). Shape is labelled from the solved plan instead.
 
 **Gains and tuning (closed — see below)**

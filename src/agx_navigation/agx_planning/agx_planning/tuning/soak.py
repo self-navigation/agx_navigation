@@ -89,6 +89,11 @@ def _request_stop(signum, frame):        # noqa: ARG001
 def parse_gains(items):
     """`--gains q,r` -> [(q, r)]. Defaults to the two 2026-08-12 validated points.
 
+    The literal `identity` is the open-loop arm and parses to (None, None): the
+    plan's commands verbatim, no corrector. It exists so an open-loop reference
+    can be carried IN THE SAME CAMPAIGN as the gain arms (added 2026-09-23 for
+    job 110) rather than borrowed from an older run.
+
     Rejects malformed input loudly: a soak is left unattended for hours, so a
     typo that silently fell back to a default would produce a large, confident,
     mislabelled dataset -- the most expensive kind of mistake here.
@@ -97,6 +102,9 @@ def parse_gains(items):
         return [(0.2762521839107533, 2.6183452282612643), (10.0, 0.25)]
     out = []
     for item in items:
+        if item == "identity":
+            out.append((None, None))
+            continue
         try:
             q_str, r_str = item.split(",")
             q, r = float(q_str), float(r_str)
@@ -194,8 +202,12 @@ def main():
                 if _STOP or (args.max_rollouts and n_done >= args.max_rollouts):
                     break
                 for q_cross, r_omega in gains:
-                    tvcfg = tvlqr_mod.TVLQRConfig(enabled=True, q_cross=q_cross,
-                                                  r_omega=r_omega)
+                    if q_cross is None:
+                        tvcfg = tvlqr_mod.TVLQRConfig(enabled=False)
+                    else:
+                        tvcfg = tvlqr_mod.TVLQRConfig(enabled=True, q_cross=q_cross,
+                                                      r_omega=r_omega)
+                    arm = "identity" if q_cross is None else "tvlqr"
                     for name, nom in noms:
                         if _STOP or (args.max_rollouts and n_done >= args.max_rollouts):
                             break
@@ -233,7 +245,7 @@ def main():
                             # filtered distribution, which is exactly the
                             # mistake objective.py exists to prevent.
                             rec = {"failed": f"{exc.__class__.__name__}: {exc}"}
-                        rec.update(trajectory=name, q_cross=q_cross,
+                        rec.update(trajectory=name, corrector=arm, q_cross=q_cross,
                                    r_omega=r_omega, seed=args.seed,
                                    terrain=not args.no_terrain,
                                    plant=PLANT_VERSION, cycle=cycle,
@@ -246,7 +258,7 @@ def main():
                         os.fsync(fh.fileno())
                         n_done += 1
                         print(f"[soak] {n_done:5d} c{cycle:04d} {name:<14s} "
-                              f"q={q_cross:<7.4f} r={r_omega:<7.4f} "
+                              f"{'identity' if q_cross is None else f'q={q_cross:<7.4f} r={r_omega:<7.4f}':<24s} "
                               f"max_cross={rec.get('max_cross', float('nan')):.4f} "
                               f"final={rec.get('final_err', float('nan')):.4f} "
                               f"lost={rec.get('lost_steps', -1)} "
