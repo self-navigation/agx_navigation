@@ -173,8 +173,26 @@ The "failed plan hung every client" narrative moved to
 ## Do this next, in order
 
 1. ~~Re-injection items 3-7~~ and ~~the derivation audit~~ are **done
-   (2026-09-23)**, uncommitted in both repos at the time of writing. ~~Trim~~
+   (2026-09-23)** and committed in both repos. ~~Trim~~
    is **cancelled** by advisor answer 1.
+
+1b. **When jobs 110-130 have finished** (`just queue-status`; the watcher
+   armed on 2026-09-23 died with that session, so check by hand):
+   - Check the in-campaign identity and `10/0.25` rows against the August
+     table first (2.127 / 1.127 mean). If they are off, the plant drifted: stop.
+   - Rebuild `tab:seven` in `../paper/draft.tex` from job 110 **alone**, with
+     three columns (open loop, `10/0.25`, `2.5/2.618`) and bad-mode rates for
+     zigzag / tight V / U-turn. Then fix the abstract and conclusion numbers,
+     which currently quote the `10/0.25` column.
+   - Add a 40-plan open-loop comparison from job 120 (paired sign tests,
+     `J` split into its parts, arrival). If the corrector does not beat open
+     loop there, the paper must say so next to `tab:seven`.
+   - Read job 130's correlations. If open-loop difficulty correlates with
+     controllability and the corrector's does not, that supports part (b) of
+     the theorem proposal; add one sentence to the proposal's "checked" list.
+   - None of this needs new tooling except a small per-shape summariser for
+     the JSONL (mean, bad-mode rate, geometric-mean J). Write it as
+     `tools/summarize_soak.py` and keep one arm per campaign per table.
 
 2. **Rebuild the theorem** (advisor answer 3). **A Russian draft for the
    advisor is at `../paper/theorem-proposal.tex` (PDF next to it)**, with three
