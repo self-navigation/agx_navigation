@@ -463,6 +463,15 @@ Four facts to keep, because they are what a reader will ask about:
   **enriched for hard plans** and must be described as a corrector test set, not
   as a representative sample of the robot's work.
 
+**Against open loop, in one campaign each (jobs 110/120, 2026-09-23; read
+2026-09-28 with `tools/summarize_soak.py`).** On the 40 broad plans the
+adopted corrector beats open loop on `final_err` 38/40, `max|e_cross|` 33/40,
+`J` 31/40 (all p<0.001; miss 78% -> 11%). On the seven (100 repeats) it wins
+arrival on all seven (miss 73% -> 0.9%) but its PEAK deviation is worse than
+`10/0.25` on the S-curve and U-turn (U-turn 2.53 vs 1.51 m, arriving 0.145 vs
+0.560). The adopted gains trade peak for arrival on reversal shapes; never
+headline peak deviation for them. No plant drift vs August.
+
 ### Reading a gain result: the method that survived
 
 Distilled from ~12000 rollouts. Any future controller comparison should follow it.

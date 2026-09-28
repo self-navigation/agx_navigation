@@ -173,9 +173,13 @@ The "failed plan hung every client" narrative moved to
 ## Do this next
 
 **Moved to the Forgejo tracker on 2026-09-28** — list open issues with the `fj`
-tools. Jobs 110-130 finished cleanly on 2026-09-23, so start with #1 (plant
-drift check + `tab:seven`), then #2 and #3. Gating: Nav2 baselines #10 and the
-theorem #8 (blocked on the advisor).
+tools. **2026-09-28: jobs 110-130 are read and applied** (#1-#3 closed):
+`tab:seven` rebuilt from job 110, job 120's open-loop comparison is in the
+paper, `tools/summarize_soak.py` exists, outputs are in `soak_data/`. Job 130
+did not support theorem part (b): controllability predicts open-loop
+difficulty no better than the corrector's (all rho<0, none significant), so
+nothing was added to the proposal. Gating now: Nav2 baselines #10 and the
+theorem #8 (blocked on the advisor). Unblocked paper items: #4-#7.
 
 ## Standing rules that a new session breaks first
 
