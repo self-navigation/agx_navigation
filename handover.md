@@ -10,6 +10,15 @@ Rewrite it rather than appending.
 3-7 are done, and so is the derivation audit. The advisor has **answered the
 questions**. Nothing is running anywhere.
 
+**2026-09-28: the theorem proposal was rejected, and the comparison is now the ONLY priority.**
+The advisor said: no assumption list, keep the old form, papers don't have
+"branches", leave the theorem as it is for now, and he is waiting for the
+comparison with analogues. So the theorem rebuild is **parked**. The likely
+substantive reason is that part (b) was Riccati/TVLQR, which he had already
+asked to keep out of the paper three times; details in #8. Work #10 first.
+Every remaining paper ask is now an issue (#16–#20). His original files
+(seed docx, annotated draft-5) are in `../paper/advisor/` with a README.
+
 **2026-09-23: the advisor's answers change the plan** (full text and reading in
 `../paper/porting-notes.md`, "The advisor's answers"):
 
