@@ -562,47 +562,11 @@ library build failed 36%. A teacher that answers two-thirds of the time cannot
 label a dataset, and that would make the supervised plan wrong rather than slow.
 It is offline, needs no Gazebo, and is cheap.
 
-### Ideas queued, roughly in order of expected value
+### Pending work lives in the Forgejo tracker
 
-1. **Compare against Nav2 baselines (DWA, MPPI, TEB)** — the advisor's explicit
-   requirement as of 2026-09-16: a paper that only compares the method against
-   itself will not pass Q1 review. Carried over from the paper draft's
-   Experiment 4, which named them and was never run. Metrics proposed there:
-   path length, travel time, max curvature, and control energy
-   `int ||(a_l, a_r)||^2 dt`. The comparison is **not like-for-like**: those are
-   closed-loop planners, so the comparable object is the whole FM2+PMP+TVLQR
-   stack, not the corrector alone.
-2. **Fix SAC's entropy runaway before any retrain.** `ent_coef` reached 3.31.
-   Either pin it (`ent_coef=0.05` instead of `"auto"`) or set an explicit
-   `target_entropy` — the default `-dim(A)` is far too permissive for a 4-D
-   residual whose useful range is tiny. Every hour of the 20260730 run after
-   ~800k steps made the policy worse.
-3. **Bound the per-episode return.** Huber bounded the reward's slope, not the
-   accumulated return over 200 non-terminating steps, and `critic_loss` still
-   reached 1.2e4. Options: normalize the return, cap per-step cost outright, or
-   reinstate termination with a large-but-finite terminal penalty (not the same
-   as the 0.5 m corridor that caused the original no-recovery problem).
-   `-epsilon.step_cost(...)` is the per-step integrand and is the reward any
-   future RL should use.
-4. **Give the RL residual a fair fight**: train it *on top of* tuned TVLQR
-   rather than on top of identity, so the policy learns the residual a good
-   linear controller cannot supply instead of re-deriving feedback from scratch.
-   Also the most defensible version in a write-up — the advisor's requirement is
-   that RL be part of the system, not that it beat everything alone.
-5. **Per-worker job queues.** `tools/jobq.sh` is single-lane in the default
-   partition, so parallelism today means driving `WORKER=n` by hand. This is
-   what would turn ~55 core-hours of PMP labelling into an overnight run.
-6. **Widen the search to the full Q/R diagonal** (`q_along`, `q_heading`,
-   `r_v`) — the 2-D machinery is proven, but the 2-D result needed 40 plans and
-   mean-of-5 to resolve, so budget accordingly. Low priority: `J` could not
-   separate points inside the 2-D plateau at all.
-7. **A `sand` profile.** The advisor wants ice *and* sand. Blocked on a
-   modelling limit, not on parameter choice: a Coulomb `mu` alone does not model
-   granular flow, and under min-combination any ground below the wheel's `mu2`
-   has no steering authority at all. See [docs/measurement-rig.md](docs/measurement-rig.md).
-8. **`floor_1_00050` is a degenerate PMP plan** (`max_turn = 3.14 rad/step` over
-   6 m). Still unexplained, still excluded, still a planner bug rather than a
-   control one.
+Queued ideas and next steps moved to the repo's issues (label `agent-todo`)
+on 2026-09-28 — list them with the `fj` tools. Nav2 baselines #10, SAC
+prerequisites #13, per-worker queues #12, low-priority ideas #14.
 
 ## Conventions
 

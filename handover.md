@@ -102,7 +102,7 @@ and oscillating between equal routes — **depends on the re-join re-planner,
 which does not exist yet**. So ask 1 and re-planner Phase 0 are the same piece
 of work. See the `dynamic-obstacle-comparison-framing` memory.
 
-## RUNNING NOW (queued 2026-09-23 14:43 local, ETA ~17:45)
+## Jobs 110-130 (FINISHED 2026-09-23, all rc=0 — see issues #1-#3)
 
 Three jobs in the VM queue, one after another. **Each job file's header says
 why it exists and how to read either outcome**. Read the header before reading
@@ -170,99 +170,12 @@ The "failed plan hung every client" narrative moved to
 `docs/corrector-history.md`; its durable facts survive as a stub under
 "Settled". Nothing was deleted — every old section was checked to a new home.
 
-## Do this next, in order
+## Do this next
 
-1. ~~Re-injection items 3-7~~ and ~~the derivation audit~~ are **done
-   (2026-09-23)** and committed in both repos. ~~Trim~~
-   is **cancelled** by advisor answer 1.
-
-1b. **When jobs 110-130 have finished** (`just queue-status`; the watcher
-   armed on 2026-09-23 died with that session, so check by hand):
-   - Check the in-campaign identity and `10/0.25` rows against the August
-     table first (2.127 / 1.127 mean). If they are off, the plant drifted: stop.
-   - Rebuild `tab:seven` in `../paper/draft.tex` from job 110 **alone**, with
-     three columns (open loop, `10/0.25`, `2.5/2.618`) and bad-mode rates for
-     zigzag / tight V / U-turn. Then fix the abstract and conclusion numbers,
-     which currently quote the `10/0.25` column.
-   - Add a 40-plan open-loop comparison from job 120 (paired sign tests,
-     `J` split into its parts, arrival). If the corrector does not beat open
-     loop there, the paper must say so next to `tab:seven`.
-   - Read job 130's correlations. If open-loop difficulty correlates with
-     controllability and the corrector's does not, that supports part (b) of
-     the theorem proposal; add one sentence to the proposal's "checked" list.
-   - None of this needs new tooling except a small per-shape summariser for
-     the JSONL (mean, bad-mode rate, geometric-mean J). Write it as
-     `tools/summarize_soak.py` and keep one arm per campaign per table.
-
-2. **Rebuild the theorem** (advisor answer 3). **A Russian draft for the
-   advisor is at `../paper/theorem-proposal.tex` (PDF next to it)**, with three
-   parts: open loop (his form), feedback with a horizon-independent constant,
-   and a yaw-rate lower bound carrying chi. The user is sending it. Wait for his
-   answer before writing proofs.
-   Real Scout runs: the only trace is Grigorii's bring-up commit `92fe846`
-   (2026-02-26). Nothing was measured, and `slip_ident` has never run on the
-   robot. It is the cheapest thing to put in the Scout column (answer 4) and
-   gives the theorem a real chi. Decide the statement first,
-   from what the experiments need it to carry, then prove it. The known gaps
-   (undefined "local controllability", the missing value-function stability
-   step, templates that solve a *modified* adjoint) are in porting-notes,
-   "Theorem rebuild". Also open: the 36/59 ms solve times in the
-   paper have no source. Re-measure them or drop them.
-
-3. **Plan the baseline comparison (ask 1, confirmed external by answer 2) — the
-   gating item.** Also plan the Scout/Gazebo split (answer 4): FM²+PMP planning
-   and `slip_ident` transfer to the real chassis, but per-wheel arms,
-   ground-truth scoring and friction patches do not. It is the same
-   work as re-planner Phase 0 below, because the advantage only shows in a
-   dynamic environment and the local re-plan does not exist yet. Design notes
-   before anyone writes code:
-   - **The comparable object is the whole FM2+PMP+TVLQR stack, not the
-     corrector.** DWB/MPPI/TEB are closed-loop planners; our corrector is not a
-     planner. Comparing "TVLQR vs MPPI" is a category error and a reviewer will
-     say so.
-   - **It must run through the ROS stack, not `GazeboBridge`.** Every corrector
-     number in this repo came from the bridge, which bypasses the ROS graph —
-     but Nav2 only exists inside the ROS stack. So this uses `make fixture` /
-     `make nav2` and `run_recorder`, at ~90 s a run, not the soak harness. That
-     is the main cost driver and the reason to scope it before starting.
-   - **Same plans, same world, same patches, same seeds.** The 40 broad v2 plans
-     are the set (`tools/jobs/broad40.txt`, `~/broad_eval_plans.txt` on the VM);
-     Nav2 gets start/goal pairs, not our solved plans.
-   - **`localization:=amcl` is the honest choice here**, not `truth`: this is a
-     system comparison, and `truth` is our ceiling rather than anyone's
-     deployment. Note it costs the lidar, so runs get slower.
-   - Metrics from the draft's Experiment 4: path length, travel time, max
-     curvature, control energy `int ||(a_l, a_r)||^2 dt` — plus arrival rate and
-     `final_err`, which is what actually separated our own arms.
-   - **Budget it with `WORKER`.** 40 plans x 4 arms x repeats at ~90 s is an
-     overnight job only if it runs several partitions wide, and **the job queue
-     is still single-lane** (CLAUDE.md queue item 5). Either drive workers by
-     hand or build per-worker queues first.
-
-4. **Re-planner Phase 0** — measure the re-join solve failure rate over ~200
-   sampled problems. It is **offline and needs no Gazebo**, so it can run
-   alongside the baseline work rather than competing for the sim. The library
-   build failed 36%; inherit that and the supervised plan is wrong rather than
-   slow. Full plan in [docs/corrector-design.md](docs/corrector-design.md).
-
-5. **GUI camera follow — still BLOCKED on Moonlight.** The demo itself drove to
-   arrival twice on 2026-08-19 (final_err 0.047 m). What fails is making the
-   Gazebo camera track the robot through the API: the `CameraTracking` plugin
-   loads via `--gui-config` with no error and does not follow (the keys exist —
-   confirmed with `strings` on the .so), and an `xdotool` right-click on the
-   Entity Tree row produced no visible context menu. **With Moonlight:**
-   right-click `scout_mini` → Follow, then
-   `tools/with-worker 1 python3 tools/drive_goal.py --x 6.0 --y 3.0`.
-
-6. **Stratify a second eval set** into `config/eval_trajectories.yaml`, *added*
-   alongside the seven rather than replacing them — swapping would silently
-   re-baseline every number in CLAUDE.md. The seven stay the fast search set;
-   the broad 40 are for claims.
-
-7. **Launch races: still no failing case to collect.** `fixture_up.sh` retries
-   and prints the failing check, so evidence accumulates for free. Four
-   bring-ups have now been ready on attempt 1. Do not touch `main.launch.py`
-   until something actually fires.
+**Moved to the Forgejo tracker on 2026-09-28** — list open issues with the `fj`
+tools. Jobs 110-130 finished cleanly on 2026-09-23, so start with #1 (plant
+drift check + `tab:seven`), then #2 and #3. Gating: Nav2 baselines #10 and the
+theorem #8 (blocked on the advisor).
 
 ## Standing rules that a new session breaks first
 
