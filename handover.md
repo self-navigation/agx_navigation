@@ -1,10 +1,41 @@
 # Handover — 2026-09-29
 
-**2026-09-29: THE OVERNIGHT NAV2 COMPARISON IS RUNNING (#10, stage 1).**
+**2026-09-29 (afternoon): THE OVERNIGHT COMPARISON WAS INVALID; NOTHING IS
+RUNNING. Rerun pending a VM CPU upgrade.**
+- The static map publisher sent `/map` on a 2 s heartbeat
+  (`publish_map.launch.py` default), and amcl rebuilds its particle filter on
+  every map it receives, so the pose jumped every 2 s **in all three arms**
+  (31–83 re-inits per run). Our corrector chased 11–28 m of phantom
+  cross-track while ground truth said 0.39 m. Its rows are in
+  `run_data/compare_seed{0,1}/`: **do not quote them**. Details in the #10
+  comment; the live-map design follow-up is #24.
+- Fixed in b1a43f8 (`publish_period 0` + amcl `first_map_only`). The smoke test
+  (`~/compare_smoke2/`, 2 plans × 3 arms) confirmed **1 map receipt per run**.
+  Plan 00369 defeats every arm (it crosses the ice patch).
+- The same commit logs **PMP solve time with a warm/cold tag**
+  (`[pmp_rollout] … solve=…ms warm=`), for #5. First reading under 3-sim load:
+  cold 194 ms, warm 105–126 ms, vs the paper's unsourced 36/59 ms.
+- `summarize_compare.py` now keeps planner-failed runs (never moved) out of the
+  metric means, and adds a paired arrival test (da8508f).
+- The rerun started 13:26 and was **stopped on purpose at ~13:45**: the user is
+  adding vCPUs to the VM (no hotplug, so it needs a reboot). **Start it fresh**
+  into a new directory, and do not resume `~/compare_broad40_v2/` (its few
+  cells ran on the old CPU count). With more cores, run both seeds at once on
+  workers 1-3 and 4-6.
+- **Phase 0 (#11) is designed; code not written yet.** Re-join BC with all 5
+  terminal components hard-pinned; `T_w` log-uniform 0.1–10 s; two cost
+  formulations (A = the planner's field cost, B = minimum effort). The
+  re-join network runs **onboard**; the server does replans and library
+  growth (see the #11 comments). Run it after or beside the rerun, depending
+  on the core count.
+- Video previews: #25 (2-D from tracks first, then Gazebo replay with a color
+  per arm).
+
+**Superseded, kept for its read-out instructions: the overnight run (#10, stage 1).**
 Launched 03:28 local (00:28 VM time). Two passes in sequence, seed 0 then
 seed 1, each 40 broad plans x {ours, nav2-mppi, nav2-rpp}, one arm per worker
 (1-3), every cell a fresh full stack (baked map, amcl, no SLAM). ~3.5 h per
-pass, so it should finish ~10:30.
+pass; it finished 08:58 local, rc=0, and was found invalid (see above).
 - Log: `~/compare_broad40.log` on the VM. Rows, tracks and stack logs are in
   `~/compare_broad40/seed{0,1}/` (`rows.w*.jsonl`, `track_*.npz`,
   `stack_*.log`, `up_*.log`). Each pass ends with a `[cmp] finished ... rc=`
@@ -26,8 +57,6 @@ pass, so it should finish ~10:30.
   - Seed 1 vs seed 0 gives the run-to-run spread per arm.
 - Tuning decisions and the tune3/tune4 numbers are in the comment on #10;
   their outputs are in `run_data/compare_tune{3,4}/`. DWB is excluded (untuned).
-- **Nothing from this session is committed yet** (harness, profile, RPP/amcl
-  config, stack_ready fix, summariser). Commit it before changing anything.
 - New issues: #21 (long corner-to-corner trajectories), #22 (labyrinth
   showcase figure).
 
@@ -179,8 +208,8 @@ from controllability.
 
 ## State
 
-- **VM: BUSY until ~10:30 on 2026-09-29** with the overnight comparison (see
-  top). Three sims on agx1-3. Do not queue anything else on those workers.
+- **VM: idle and clean as of 13:47 on 2026-09-29** (0 sims, 0 stacks),
+  waiting for the vCPU upgrade and reboot. See the top of this file.
 - **Cleaned this session:** the worker-1 fixture + GUI client from the
   2026-08-19 demo, and an **rviz2 that had been running 54 days at 74% CPU** —
   that, not the Gazebos, was the standing load. The old `rl` tmux session
