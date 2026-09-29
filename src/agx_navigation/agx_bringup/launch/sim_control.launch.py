@@ -1,4 +1,5 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch.substitutions import (
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -10,9 +11,29 @@ from agx_bringup import Topics
 
 
 def generate_launch_description():
-    declared_args = []
+    declared_args = [
+        # World-frame spawn pose of the scout_mini. The default (0, 0, 0) is the
+        # historical behaviour the map frame is anchored to (see
+        # truth_localization.py, FRAMES): map == Gazebo world, so a plan's
+        # coordinates are the robot's spawn pose ONLY under this default. A
+        # comparison run that starts a plan elsewhere overrides all three; the
+        # consumer that must move with it is amcl's initial_pose
+        # (static_map.launch.py), which is in the map frame == this frame.
+        DeclareLaunchArgument(
+            "spawn_x", default_value="0.0",
+            description="scout_mini world-frame spawn x [m]."),
+        DeclareLaunchArgument(
+            "spawn_y", default_value="0.0",
+            description="scout_mini world-frame spawn y [m]."),
+        DeclareLaunchArgument(
+            "spawn_yaw", default_value="0.0",
+            description="scout_mini world-frame spawn yaw [rad]."),
+    ]
 
     sim = LaunchConfiguration("sim")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_yaw = LaunchConfiguration("spawn_yaw")
 
     joint_state_spawner = Node(
         package="controller_manager",
@@ -82,11 +103,16 @@ def generate_launch_description():
             "-allow_renaming",
             "true",
             "-x",
-            "0",
+            spawn_x,
             "-y",
-            "0",
+            spawn_y,
             "-z",
             "0.5",
+            # Yaw needs the -Y flag (R/P/Y), not a bare argument: the create
+            # CLI takes -x -y -z -R -P -Y, and a fixed 0 here would silently
+            # drop the plan's start heading.
+            "-Y",
+            spawn_yaw,
         ],
     )
 

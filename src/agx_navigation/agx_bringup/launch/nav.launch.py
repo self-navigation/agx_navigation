@@ -23,6 +23,18 @@ def generate_launch_description():
             default_value="nav2",
             description="Which nav stack to use. Allowed values: nav2, vec-pmp.",
         ),
+        DeclareLaunchArgument(
+            "frontier",
+            default_value="true",
+            description=(
+                "Launch frontier_explorer. Default true: on the real robot, in "
+                "SLAM mode, exploration is part of the deployment. Anything "
+                "with a goal of its own (the fixture, the comparison harness) "
+                "must pass frontier:=false -- a node that publishes goals on "
+                "/goal_pose while a benchmark drives that same topic is a "
+                "confound, not a passenger."
+            ),
+        ),
     ]
 
     nav_mode = LaunchConfiguration("nav_mode")
@@ -48,6 +60,7 @@ def generate_launch_description():
             }
         ],
         output="screen",
+        condition=IfCondition(LaunchConfiguration("frontier")),
     )
 
     return LaunchDescription(

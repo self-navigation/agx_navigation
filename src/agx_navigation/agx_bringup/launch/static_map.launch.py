@@ -65,6 +65,7 @@ from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -85,6 +86,24 @@ def generate_launch_description():
         # every entity Gazebo publishes a pose for.
         DeclareLaunchArgument("world_name", default_value="ordjo_world"),
         DeclareLaunchArgument("model_name", default_value="scout_mini"),
+        # Where the robot was spawned (world frame == map frame, see
+        # truth_localization.py). amcl's initial pose must equal it: the
+        # historical hard-coded (0, 0, 0) is only correct for the historical
+        # spawn point, and amcl seeded elsewhere starts with its particle
+        # cloud around a pose the robot is not at -- on this world's
+        # near-identical corridors that can converge to the wrong corridor
+        # instead of to the robot. sim_control.launch.py owns the spawner; the
+        # two arguments must be given the SAME values, which is why
+        # tools/fixture_up.sh passes both from one --spawn flag.
+        DeclareLaunchArgument(
+            "spawn_x", default_value="0.0",
+            description="must match sim_control's spawn_x"),
+        DeclareLaunchArgument(
+            "spawn_y", default_value="0.0",
+            description="must match sim_control's spawn_y"),
+        DeclareLaunchArgument(
+            "spawn_yaw", default_value="0.0",
+            description="must match sim_control's spawn_yaw"),
     ]
 
     sim = LaunchConfiguration("sim")
@@ -189,9 +208,12 @@ def generate_launch_description():
                 "use_sim_time": sim,
                 "scan_topic": Topics.SCAN,
                 "set_initial_pose": True,
-                "initial_pose.x": 0.0,
-                "initial_pose.y": 0.0,
-                "initial_pose.yaw": 0.0,
+                "initial_pose.x": ParameterValue(
+                    LaunchConfiguration("spawn_x"), value_type=float),
+                "initial_pose.y": ParameterValue(
+                    LaunchConfiguration("spawn_y"), value_type=float),
+                "initial_pose.yaw": ParameterValue(
+                    LaunchConfiguration("spawn_yaw"), value_type=float),
             },
         ],
         condition=LaunchConfigurationEquals("localization", "amcl"),

@@ -47,6 +47,11 @@ DESIGN NOTES.
   includes deciding whether sim time is running, so a node whose own timeouts
   are driven by sim time would hang forever on exactly the failure it exists
   to detect.
+
+* `--mode nav2` selects the nav2 stack's checks (lifecycle nodes ACTIVE, the
+  navigate_to_pose action server, the /cmd_vel chain) instead of the vec-pmp
+  ones; the default `--mode vec-pmp` keeps the original check set unchanged,
+  because every corrector number in the repo was gated on exactly it.
 """
 
 from __future__ import annotations
@@ -113,9 +118,10 @@ class Report:
 
 
 class StackProbe(Node):
-    def __init__(self, expect_planner: bool):
+    def __init__(self, expect_planner: bool, mode: str = "vec-pmp", require_amcl: bool = False):
         super().__init__("stack_ready_probe")
         self.expect_planner = expect_planner
+        self.mode = mode
 
         self._clock_stamps: list[float] = []
         self._map = None
@@ -123,6 +129,10 @@ class StackProbe(Node):
         self._joint_count = 0
         self._odom_count = 0
         self._field_count = 0
+        self._amcl_pose_count = 0
+        # One reusable client per lifecycle node, created lazily in
+        # _lifecycle_state (service names are static per stack).
+        self._lifecycle_clients: dict[str, object] = {}
 
         self.create_subscription(Clock, "/clock", self._on_clock, 10)
         self.create_subscription(OccupancyGrid, "/map", self._on_map, LATCHED)
@@ -133,6 +143,21 @@ class StackProbe(Node):
         self.create_subscription(
             Float32MultiArray, "/vector_field/planner_data", self._on_field, 1
         )
+        self.require_amcl = require_amcl
+        if require_amcl:
+            from geometry_msgs.msg import PoseWithCovarianceStamped
+
+            # amcl's pose estimate, REQUIRED: it flows only once amcl has both
+            # a scan and its initial pose. Before that, map->odom can exist but
+            # the global costmap still reports "Timed out waiting for transform
+            # base_link to map", and a goal sent then races localization.
+            # (It was once subscribed as PoseStamped -- the wrong type, so it
+            # silently never matched and this check could never pass.)
+            self.create_subscription(
+                PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl_pose,
+                QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                           reliability=QoSReliabilityPolicy.RELIABLE),
+            )
 
     # --- callbacks: count and remember, never block ------------------------
     def _on_clock(self, msg: Clock) -> None:
@@ -156,6 +181,35 @@ class StackProbe(Node):
 
     def _on_field(self, _msg: Float32MultiArray) -> None:
         self._field_count += 1
+
+    def _on_amcl_pose(self, _msg) -> None:
+        self._amcl_pose_count += 1
+
+    def _lifecycle_state(self, node_name: str) -> str | None:
+        """Current lifecycle label of `node_name`, or None if unanswerable.
+
+        Graph presence proves a node EXISTS; only the lifecycle state proves it
+        is ACTIVE and therefore serving. The nav2 stack autostarts through
+        nav2_lifecycle_manager, so a node stuck in 'unconfigured'/'inactive'
+        (a crashed plugin load, a bad parameter file) looks alive on every
+        topic count and still navigates nothing.
+        """
+        from lifecycle_msgs.srv import GetState
+
+        cli = self._lifecycle_clients.get(node_name)
+        if cli is None:
+            cli = self.create_client(GetState, f"/{node_name}/get_state")
+            self._lifecycle_clients[node_name] = cli
+        if not cli.service_is_ready():
+            return None
+        fut = cli.call_async(GetState.Request())
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not fut.done():
+            rclpy.spin_once(self, timeout_sec=0.05)
+        try:
+            return fut.result().current_state.label
+        except Exception:  # noqa: BLE001 -- an unanswered probe is a missing state
+            return None
 
     # --- the checks --------------------------------------------------------
     def evaluate(self) -> list:
@@ -207,7 +261,30 @@ class StackProbe(Node):
         checks.append(
             Check("odometry", self._odom_count > 0, f"{self._odom_count} msgs" if self._odom_count else "silent")
         )
+        checks.append(
+            Check(
+                "wheel controller",
+                self.count_subscribers("/wheel_velocity_controller/commands") >= 1,
+                "subscriber present on the command topic",
+            )
+        )
 
+        if self.require_amcl:
+            # amcl pose: required (see the subscription note above).
+            checks.append(
+                Check(
+                    "amcl_pose",
+                    self._amcl_pose_count > 0,
+                    f"{self._amcl_pose_count} msgs"
+                    if self._amcl_pose_count
+                    else "not yet published (no scan / not localized yet)",
+                )
+            )
+
+        if self.mode == "nav2":
+            return checks + self._nav2_checks()
+
+        # --- vec-pmp mode (the original checks, unchanged) -------------------
         # Graph checks: who is listening for a goal, and who commands wheels.
         goal_subs = self.count_subscribers("/goal_pose")
         checks.append(
@@ -215,14 +292,6 @@ class StackProbe(Node):
                 "goal_pose subscribers",
                 goal_subs >= 2,
                 f"{goal_subs} (want >=2: vector_field + runtime_corrector)",
-            )
-        )
-        wheel_subs = self.count_subscribers("/wheel_velocity_controller/commands")
-        checks.append(
-            Check(
-                "wheel controller",
-                wheel_subs >= 1,
-                f"{wheel_subs} subscriber(s) on the command topic",
             )
         )
 
@@ -274,10 +343,72 @@ class StackProbe(Node):
             )
         return checks
 
+    def _nav2_checks(self) -> list:
+        """Readiness for the nav2 arms: lifecycle ACTIVE, action server up.
 
-def probe(timeout: float, settle: float, expect_planner: bool) -> Report:
+        These are the checks the vec-pmp ones cannot make. The nav2 stack
+        autostarts through a lifecycle manager, so every failure mode that
+        matters shows up as a node sitting in unconfigured/inactive while all
+        its topics LOOK fine; and the thing a goal is sent to is the
+        navigate_to_pose ACTION, whose graph presence is its own check.
+        """
+        checks = []
+        for node_name in ("controller_server", "planner_server", "bt_navigator"):
+            state = self._lifecycle_state(node_name)
+            checks.append(
+                Check(
+                    f"{node_name} lifecycle",
+                    state == "active",
+                    f"state: {state}" if state else "get_state unanswered (node down?)",
+                )
+            )
+
+        # The action server. send_goal/get_result are SERVICES in the ROS 2
+        # action protocol (only status/feedback are topics), so a topic-graph
+        # count of send_goal returns 0 forever and this check would fail a
+        # perfectly healthy stack -- which is exactly what the first nav2
+        # bring-up did. Query the node's visible service servers instead.
+        srv_names = set()
+        try:
+            srv_names = {
+                name
+                for (name, _t) in self.get_service_names_and_types_by_node(
+                    "bt_navigator", "/")
+            }
+        except Exception:  # noqa: BLE001 -- graph introspection is best-effort
+            pass
+        status_pubs = self.count_publishers("/navigate_to_pose/_action/status")
+        send_goal_srv = "/navigate_to_pose/_action/send_goal" in srv_names
+        checks.append(
+            Check(
+                "navigate_to_pose action",
+                send_goal_srv and status_pubs >= 1,
+                f"send_goal service {'present' if send_goal_srv else 'ABSENT'}, "
+                f"{status_pubs} status pub(s)",
+            )
+        )
+
+        # The command chain must be complete: something publishing /cmd_vel
+        # (collision_monitor) and twist_to_wheels subscribed to it. Both arms'
+        # motion funnels through this edge; a missing side here means the
+        # robot would navigate beautifully and never move.
+        cmd_vel_pubs = self.count_publishers("/cmd_vel")
+        cmd_vel_subs = self.count_subscribers("/cmd_vel")
+        checks.append(
+            Check(
+                "cmd_vel chain",
+                cmd_vel_pubs >= 1 and cmd_vel_subs >= 1,
+                f"{cmd_vel_pubs} pub(s), {cmd_vel_subs} sub(s) on /cmd_vel",
+            )
+        )
+
+        return checks
+
+
+def probe(timeout: float, settle: float, expect_planner: bool, mode: str = "vec-pmp",
+          require_amcl: bool = False) -> Report:
     rclpy.init()
-    node = StackProbe(expect_planner=expect_planner)
+    node = StackProbe(expect_planner=expect_planner, mode=mode, require_amcl=require_amcl)
     t0 = time.monotonic()
     checks: list = []
     try:
@@ -304,11 +435,21 @@ def main() -> int:
                     help="seconds to listen before each evaluation")
     ap.add_argument("--expect-planner", action="store_true",
                     help="also require planner_data to be FLOWING (only true once a goal is active)")
+    ap.add_argument("--mode", choices=["vec-pmp", "nav2"], default="vec-pmp",
+                    help="which stack's readiness to check (vec-pmp keeps the "
+                         "original checks exactly; nav2 requires the nav2 "
+                         "lifecycle nodes ACTIVE, the navigate_to_pose action "
+                         "server, and a complete /cmd_vel chain)")
+    ap.add_argument("--require-amcl", action="store_true",
+                    help="require /amcl_pose (localization:=amcl, either mode): "
+                         "map->odom alone exists before amcl has localized")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
     try:
-        report = probe(timeout=args.wait, settle=args.settle, expect_planner=args.expect_planner)
+        report = probe(timeout=args.wait, settle=args.settle,
+                       expect_planner=args.expect_planner, mode=args.mode,
+                       require_amcl=args.require_amcl)
     except Exception as exc:  # noqa: BLE001 -- a probe must never traceback at a caller
         print(json.dumps({"ready": False, "error": str(exc)}) if args.json else f"probe failed: {exc}")
         return 2

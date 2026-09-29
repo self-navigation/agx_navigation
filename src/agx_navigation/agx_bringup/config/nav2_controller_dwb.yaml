@@ -1,0 +1,54 @@
+# Dynamic Window Approach local controller for the Nav2 comparison arms.
+#
+# Loaded by nav2.launch.py as an overlay AFTER nav2_params.yaml, replacing only
+# the controller_server's FollowPath block (the global planner, costmaps, BT
+# navigator and velocity smoother are shared by every arm, so the arms differ
+# in exactly one place). nav2_params.yaml's FollowPath is MPPI; its MPPI-only
+# leaves stay in the override map when this overlay wins, which is harmless --
+# undeclared overrides are never materialized by rclcpp.
+#
+# SPEED LIMITS ARE DELIBERATE AND MATCHED TO OUR PLANNER (pmp_planner/config.py:
+# v_max = 0.5 m/s, omega_max = 1.5 rad/s -- body-space behaviour bounds, the
+# same values velocity_smoother already clamps to). Same ceilings for every arm
+# so the comparison measures routing and control policy, not a faster chassis.
+# Accelerations match velocity_smoother's max_accel/max_decel (2.5 / 2.8), so
+# the smoother never clips what DWB produces -- a hidden second controller.
+#
+# Critics are the standard nav2_bringup set (TB3/TB4 navigation.yaml) at their
+# published scales. min_vel_x = 0: the Scout Mini is skid-steer, but every arm
+# here runs forward-only (allow_reversing stays false everywhere) so DWB's
+# differential-drive model is the same abstraction our (v, omega) chassis takes.
+controller_server:
+  ros__parameters:
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: false
+      min_vel_x: 0.0
+      min_vel_y: 0.0
+      max_vel_y: 0.0
+      max_vel_x: 0.5
+      max_vel_theta: 1.5
+      min_speed_xy: 0.0
+      max_speed_xy: 0.5
+      min_speed_theta: 0.0
+      acc_lim_x: 2.5
+      acc_lim_y: 0.0
+      acc_lim_theta: 2.8
+      decel_lim_x: -2.5
+      decel_lim_y: 0.0
+      decel_lim_theta: -2.8
+      # Prune the plan behind the robot; DWB's default prune_plan true.
+      prune_plan: true
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign",
+                "PathDist", "GoalDist", "GoalAlign"]
+      BaseObstacle.scale: 1.0
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.1
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.1
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
