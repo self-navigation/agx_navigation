@@ -1,4 +1,35 @@
-# Handover — 2026-09-23
+# Handover — 2026-09-29
+
+**2026-09-29: THE OVERNIGHT NAV2 COMPARISON IS RUNNING (#10, stage 1).**
+Launched 03:28 local (00:28 VM time). Two passes in sequence, seed 0 then
+seed 1, each 40 broad plans x {ours, nav2-mppi, nav2-rpp}, one arm per worker
+(1-3), every cell a fresh full stack (baked map, amcl, no SLAM). ~3.5 h per
+pass, so it should finish ~10:30.
+- Log: `~/compare_broad40.log` on the VM. Rows, tracks and stack logs are in
+  `~/compare_broad40/seed{0,1}/` (`rows.w*.jsonl`, `track_*.npz`,
+  `stack_*.log`, `up_*.log`). Each pass ends with a `[cmp] finished ... rc=`
+  line.
+- Read it: `rsync -az -e "ssh -F ssh_config" --include='rows*' --include='track_*'
+  --exclude='*' agx:compare_broad40/seed0/ run_data/compare_seed0/`, then
+  `.venv/bin/python tools/summarize_compare.py run_data/compare_seed0 -o <out>`,
+  which writes summary.txt, metrics.png and tracks_<plan>.png.
+- If it died: the job resumes (it skips rows already written). Rerun the same
+  command, but check first with `pgrep -af 'gz[ -]sim'` that no sims are left.
+- How to read it:
+  - RPP's fix (`use_collision_detection: false`) is untested. If RPP still
+    fails near its spawn, it is not a fair baseline yet; fix it or drop it.
+  - MPPI arrives but stalls (tune4: 104 s vs our 28 s). Report the stalls as
+    its behaviour on this map.
+  - Ours: compare against its soak numbers (miss ~11% on the broad 40). A much
+    worse miss rate means the full stack (amcl, the ROS pipeline) costs
+    something the stack-less soak hid. That is itself a finding.
+  - Seed 1 vs seed 0 gives the run-to-run spread per arm.
+- Tuning decisions and the tune3/tune4 numbers are in the comment on #10;
+  their outputs are in `run_data/compare_tune{3,4}/`. DWB is excluded (untuned).
+- **Nothing from this session is committed yet** (harness, profile, RPP/amcl
+  config, stack_ready fix, summariser). Commit it before changing anything.
+- New issues: #21 (long corner-to-corner trajectories), #22 (labyrinth
+  showcase figure).
 
 **Read this first, and keep it current.** It is the primary record of what we
 are doing; CLAUDE.md is the cumulative record of what we have *established*.
@@ -148,8 +179,8 @@ from controllability.
 
 ## State
 
-- **VM: clean and idle.** `pgrep gz sim` empty, job queue empty (`pending/` and
-  `running/` both empty), load decaying from 9.9 to ~5 and still falling.
+- **VM: BUSY until ~10:30 on 2026-09-29** with the overnight comparison (see
+  top). Three sims on agx1-3. Do not queue anything else on those workers.
 - **Cleaned this session:** the worker-1 fixture + GUI client from the
   2026-08-19 demo, and an **rviz2 that had been running 54 days at 74% CPU** —
   that, not the Gazebos, was the standing load. The old `rl` tmux session
