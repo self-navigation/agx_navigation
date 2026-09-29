@@ -1,0 +1,26 @@
+120 rows, 40 plans, arms: ours, nav2-mppi, nav2-rpp
+
+arm           n  arrived stack-fail plan-fail       final_err     travel_time     start_delay      drive_time     path_length  control_energy   min_clearance   (arrived / reached goal phase; means over runs that DROVE)
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+ours         40   13/40           0         5           2.952          48.335          10.628          37.707          17.655        6063.079           0.009
+nav2-mppi    40   17/38           2         0           2.744         107.126           1.890         105.236          19.142        7117.627           0.089
+nav2-rpp     40    8/39           1         0           6.317          60.034           3.541          56.493          13.391        3346.201           0.004
+
+Paired sign tests vs ours (+ = ours better). arrival: plans where both
+reached the goal phase; metrics: plans where both DROVE.
+  nav2-mppi  arrival          ours better 5/15  p=0.302
+  nav2-mppi  final_err        ours better 19/33  p=0.487
+  nav2-mppi  travel_time      ours better 29/33  p=0.000
+  nav2-mppi  start_delay      ours better 0/33  p=0.000
+  nav2-mppi  drive_time       ours better 31/33  p=0.000
+  nav2-mppi  path_length      ours better 24/33  p=0.014
+  nav2-mppi  control_energy   ours better 24/33  p=0.014
+  nav2-mppi  min_clearance    ours better 7/32  p=0.002
+  nav2-rpp   arrival          ours better 8/12  p=0.388
+  nav2-rpp   final_err        ours better 20/34  p=0.392
+  nav2-rpp   travel_time      ours better 18/34  p=0.864
+  nav2-rpp   start_delay      ours better 0/34  p=0.000
+  nav2-rpp   drive_time       ours better 20/34  p=0.392
+  nav2-rpp   path_length      ours better 13/34  p=0.229
+  nav2-rpp   control_energy   ours better 15/34  p=0.608
+  nav2-rpp   min_clearance    ours better 14/27  p=1.000
