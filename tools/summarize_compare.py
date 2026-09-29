@@ -110,29 +110,50 @@ def main():
     plans = sorted({r["plan"] for r in rows})
 
     lines = [f"{len(rows)} rows, {len(plans)} plans, arms: {', '.join(arms)}", ""]
-    hdr = f"{'arm':<11}{'n':>4}{'arrived':>9}{'stack-fail':>11}" + "".join(
+    # A planner-failed run never moved: its final_err is just start-to-goal
+    # distance and its other metrics describe standing still. Count it as a
+    # non-arrival, but keep it out of every metric mean and sign test --
+    # averaging it in inflated `ours` final_err by metres on 2026-09-29.
+    def drove(r):
+        return r is not None and r.get("outcome") not in ("stack-failed", "planner-failed")
+
+    hdr = f"{'arm':<11}{'n':>4}{'arrived':>9}{'stack-fail':>11}{'plan-fail':>10}" + "".join(
         f"{k[:14]:>16}" for k, _, _ in METRICS)
-    lines += [hdr + "   (means over runs that reached the goal phase)", "-" * len(hdr)]
+    lines += [hdr + "   (arrived / reached goal phase; means over runs that DROVE)",
+              "-" * len(hdr)]
     for arm in arms:
         rs = [r for r in rows if r["arm"] == arm]
         ok = [r for r in rs if r.get("outcome") != "stack-failed"]
+        dr = [r for r in ok if drove(r)]
         arr = sum(r.get("outcome") == "arrived" for r in ok)
         cells = []
         for k, _, _ in METRICS:
-            v = [r[k] for r in ok if isinstance(r.get(k), (int, float)) and math.isfinite(r[k])]
+            v = [r[k] for r in dr if isinstance(r.get(k), (int, float)) and math.isfinite(r[k])]
             cells.append(f"{np.mean(v):>16.3f}" if v else f"{'-':>16}")
         lines.append(f"{arm:<11}{len(rs):>4}{arr:>5}/{len(ok):<3}"
-                     f"{len(rs) - len(ok):>11}" + "".join(cells))
+                     f"{len(rs) - len(ok):>11}{len(ok) - len(dr):>10}" + "".join(cells))
 
-    lines += ["", "Paired sign tests vs ours (plans where both arms ran; + = ours better):"]
+    lines += ["", "Paired sign tests vs ours (+ = ours better). arrival: plans where both",
+              "reached the goal phase; metrics: plans where both DROVE."]
     for arm in arms:
         if arm == "ours":
             continue
+        ad = []
+        for p in plans:
+            o, b = by.get((p, "ours")), by.get((p, arm))
+            if o and b and "stack-failed" not in (o.get("outcome"), b.get("outcome")):
+                d = int(o.get("outcome") == "arrived") - int(b.get("outcome") == "arrived")
+                if d:
+                    ad.append(d)
+        if ad:
+            ours = sum(d > 0 for d in ad)
+            p = stats.binomtest(ours, len(ad)).pvalue
+            lines.append(f"  {arm:<11}{'arrival':<16} ours better {ours}/{len(ad)}  p={p:.3f}")
         for k, _, lower in METRICS:
             diffs = []
             for p in plans:
                 o, b = by.get((p, "ours")), by.get((p, arm))
-                if not o or not b or not all(isinstance(x.get(k), (int, float)) for x in (o, b)):
+                if not drove(o) or not drove(b) or not all(isinstance(x.get(k), (int, float)) for x in (o, b)):
                     continue
                 dd = (b[k] - o[k]) if lower else (o[k] - b[k])
                 if dd != 0:
