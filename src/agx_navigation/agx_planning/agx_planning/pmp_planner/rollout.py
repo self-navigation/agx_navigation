@@ -249,6 +249,11 @@ def rollout_generator(
         if goal_reached(state, goal, cfg):
             return RolloutResult(status="success", message="Goal reached")
 
+        # Warm = the solver will seed from the previous solution (solve()
+        # drops it on a new field). Logged beside solve= so the paper's
+        # warm/cold solve time can be read off any stack log (#5).
+        _warm = (solver._prev_sol is not None
+                 and solver.field.version == solver._last_field_version)
         _t_solve = time.perf_counter()
         result = solver.sample_committed_segment(state, goal, dt_sample, n_samples)
         _solve_ms = (time.perf_counter() - _t_solve) * 1e3
@@ -293,9 +298,9 @@ def rollout_generator(
             )
             _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
             _logger.info(
-                "chunk %d (final, %d samples): solve=%.0fms  consumer=%.0fms"
-                "  sim_t=%.2fs  wall=%.1fs",
-                chunk_idx, hit_idx, _solve_ms, _consumer_ms,
+                "chunk %d (final, %d samples): solve=%.1fms warm=%d"
+                "  consumer=%.0fms  sim_t=%.2fs  wall=%.1fs",
+                chunk_idx, hit_idx, _solve_ms, _warm, _consumer_ms,
                 sim_t, time.perf_counter() - _t_rollout_start,
             )
             return RolloutResult(
@@ -325,9 +330,9 @@ def rollout_generator(
         new_d_xy = hypot(state[0] - goal[0], state[1] - goal[1])
 
         _logger.info(
-            "chunk %d (%d samples): solve=%.0fms  consumer=%.0fms"
+            "chunk %d (%d samples): solve=%.1fms warm=%d  consumer=%.0fms"
             "  sim_t=%.2fs  d_xy=%.3fm  stag=%d  wall=%.1fs",
-            chunk_idx - 1, n_samples, _solve_ms, _consumer_ms,
+            chunk_idx - 1, n_samples, _solve_ms, _warm, _consumer_ms,
             sim_t, new_d_xy, stagnation_count,
             time.perf_counter() - _t_rollout_start,
         )
