@@ -222,12 +222,23 @@ nav2:
 # Only amcl consumes the lidar, so only amcl pays for the rendering sensors.
 FIXTURE_LOCALIZATION := $(or $(LOCALIZATION),truth)
 FIXTURE_SENSORS := $(if $(filter amcl,$(FIXTURE_LOCALIZATION)),true,false)
+# NAV_MODE of the fixture. vec-pmp is what the fixture has always been; the
+# comparison harness passes nav2 for the Nav2 arms (same static map + amcl, so
+# the two stacks differ only in the nav layer). A command-line NAV_MODE does
+# NOT reach this sub-make (the explicit assignment below would win on its
+# command line), hence this dedicated variable instead.
+FIXTURE_NAV_MODE ?= vec-pmp
+# Everything else the launch files want that PARAM_VARS does not carry (spawn
+# pose, nav2_controller, frontier, surface_patches override for nav mode...).
+# A dedicated variable rather than EXTRA_PARAMS, because EXTRA_PARAMS set on
+# the command line would be silently REPLACED by the one below, not appended.
+FIXTURE_EXTRA_PARAMS ?=
 
 fixture:
-	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline \
+	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) PMP_MODE=offline \
 		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
-		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS)"
+		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS) $(FIXTURE_EXTRA_PARAMS)"
 
 # ---- RL runtime corrector: training ----------------------------------------
 # Two terminals. First bring up the MINIMAL sim (physics + wheel controller +

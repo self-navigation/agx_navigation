@@ -29,7 +29,11 @@ amcl:
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
-    transform_tolerance: 1.0
+    # 2.0, not the stock 1.0: with 3 sims on the VM (RTF ~0.65) the rendered
+    # lidar stalls for >1 s of sim time, map->odom goes stale, and one failed
+    # lookup aborts a nav2 goal (2026-09-29, compare stage 1). Shared by every
+    # arm that runs amcl, ours included.
+    transform_tolerance: 2.0
     update_min_a: 0.2
     update_min_d: 0.25
     z_hit: 0.5
