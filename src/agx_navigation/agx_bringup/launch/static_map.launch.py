@@ -122,6 +122,11 @@ def generate_launch_description():
             "floor_number": LaunchConfiguration("floor_number"),
             "map_yaml": LaunchConfiguration("map_yaml"),
             "use_sim_time": sim,
+            # No heartbeat: the map is latched. publish_map.launch.py defaults
+            # to 2.0 s, and amcl rebuilds its particle filter on every map it
+            # receives, so a heartbeat made the pose jump every 2 s and
+            # invalidated the 2026-09-29 overnight Nav2 comparison (#10).
+            "publish_period": "0.0",
         }.items(),
     )
 
@@ -208,6 +213,9 @@ def generate_launch_description():
                 "use_sim_time": sim,
                 "scan_topic": Topics.SCAN,
                 "set_initial_pose": True,
+                # Belt and braces with publish_period above: the baked map
+                # never changes, so any later /map would only reset the filter.
+                "first_map_only": True,
                 "initial_pose.x": ParameterValue(
                     LaunchConfiguration("spawn_x"), value_type=float),
                 "initial_pose.y": ParameterValue(

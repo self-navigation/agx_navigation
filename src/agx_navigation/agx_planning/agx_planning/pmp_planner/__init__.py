@@ -35,6 +35,16 @@ if ROS2_AVAILABLE:
     __all__.append("PlannerNode")
 
     def main(args=None):
+        import logging
+        import sys
+
+        # rollout.py logs per-chunk solve times through stdlib logging, which
+        # has no handler under ros2 run, so INFO was silently dropped.
+        _h = logging.StreamHandler(sys.stderr)
+        _h.setFormatter(logging.Formatter("[pmp_rollout] %(message)s"))
+        _rl = logging.getLogger("agx_planning.pmp_planner.rollout")
+        _rl.addHandler(_h)
+        _rl.setLevel(logging.INFO)
 
         rclpy.init(args=args)
         node = PlannerNode()
