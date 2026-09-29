@@ -1,0 +1,48 @@
+# Regulated Pure Pursuit local controller for the Nav2 comparison arms.
+#
+# Loaded by nav2.launch.py as an overlay AFTER nav2_params.yaml, replacing only
+# the controller_server's FollowPath block -- same reasoning as
+# nav2_controller_dwb.yaml, and the same deliberate speed limits: 0.5 m/s and
+# 1.5 rad/s, matched to our planner's v_max / omega_max and the velocity
+# smoother's clamps; max_angular_accel 2.8 matches the smoother too.
+#
+# Everything else is the plugin's Jazzy defaults at the published scale
+# (nav2_regulated_pure_pursuit_controller README). use_rotate_to_heading: true
+# and allow_reversing: false: forward-only like every other arm, and RPP's
+# in-place rotation stands in for the DWB RotateToGoal critic so the arms do
+# not differ in whether the goal heading is ever reached.
+controller_server:
+  ros__parameters:
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.5
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.5
+      rotate_to_heading_angular_vel: 1.5
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      # Off for stage 1 (#10), like the collision monitor: even at 0.5 s RPP
+      # aborted on 'collision ahead' in OPEN floor 0.6 m from the spawn
+      # (tune4, floor_6_v2_00482), and our arm has no such check. Static
+      # world, so the global planner's clearance is the avoidance. Back on
+      # for stage 3 (dynamic obstacles).
+      use_collision_detection: false
+      # 0.5, not 1.0: at 1.0 the arc to the carrot clipped the ~1 m doorway
+      # frames on floor 6 and RPP stalled there on 'collision ahead' (264x).
+      max_allowed_time_to_collision_up_to_carrot: 0.5
+      use_regulated_linear_velocity_scaling: true
+      use_fixed_curvature: false
+      use_cost_regulated_linear_velocity_scaling: true
+      regulatory_linear_scaling_min_radius: 0.9
+      regulatory_linear_scaling_min_speed: 0.25
+      use_rotate_to_heading: true
+      allow_reversing: false
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 2.8
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
