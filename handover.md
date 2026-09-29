@@ -1,5 +1,37 @@
 # Handover — 2026-09-29
 
+**2026-09-29 14:20: THE PROXMOX HOST IS WEDGED (OOM); do #26 BEFORE ANYTHING
+ELSE.** Resizing VM 200 to 48 cores / 64 GiB overcommitted the 251 GiB host.
+The other VM has 200000 MiB, and the V100 passthrough pins all of our RAM at
+start, so the balloon can't help. The host answers ping but not SSH, and the
+on-site admins were asked to reboot it. Recovery steps and the hardening list
+are in #26. Target for ours: **48 cores, 32 GiB**.
+
+**Planned jobs once the host is healthy, in order:**
+1. Verify the guest: `nproc`, `free -h`, `nvidia-smi`, `just route-check`, and
+   no leftover sims (`pgrep -af 'gz[ -]sim'`). Then run `just remote-build`
+   (b1a43f8 and da8508f must be deployed).
+2. Fresh comparison rerun (#10), both seeds at once, into a NEW directory
+   (never resume `~/compare_broad40_v2/`):
+   `tools/agx-run --detach 'SEED=0 OUT_DIR=$HOME/compare_broad40_v3/seed0 WORKERS="1 2 3" bash tools/jobs/140_compare_broad40.sh > ~/cmp_v3_s0.log 2>&1'`,
+   and the same with `SEED=1 …/seed1 WORKERS="4 5 6"` into `~/cmp_v3_s1.log`.
+   Takes about 3.5 h. In the first cells, check the stack logs for one map
+   receipt and for `solve=… warm=` lines. Also watch the guest's real RAM peak
+   (it goes into #26 sizing).
+3. Phase 0 (#11), niced, ~8 processes beside the rerun. This needs code first
+   (written locally, no VM needed): an opt-in re-join mode in
+   `shooting_solver.py`, with 5 terminal pins, a cost A/B switch and mesh
+   T = T_w. Plus a sampler of 200–400 problems from the broad 40 (random k,
+   deviations sized from the soak's TVLQR deviations, T_w log-uniform
+   0.1–10 s) and unit tests. Report the failure rate vs T_w and deviation
+   size for A and B, the failure causes, and the solve times.
+4. #5: from the rerun's stack logs, `grep solve=` gives the warm/cold
+   distribution. It replaces the 36/59 ms in `../paper/draft.tex:350,355`.
+5. Read the rerun with `tools/summarize_compare.py` (instructions below).
+   Compare ours against the soak (miss ~11%), note the amcl-vs-truth gap, and
+   update the paper.
+6. #25: 2-D track animations (no VM cost), later a Gazebo replay.
+
 **2026-09-29 (afternoon): THE OVERNIGHT COMPARISON WAS INVALID; NOTHING IS
 RUNNING. Rerun pending a VM CPU upgrade.**
 - The static map publisher sent `/map` on a 2 s heartbeat
