@@ -21,6 +21,8 @@ PREDICTED wheel-speed state"), up to the deadzone/clip.
 
     run:    tools/rejoin_phase0.py run --n 300 --jobs 8 -o rejoin.jsonl
     report: tools/rejoin_phase0.py report rejoin.jsonl
+    rescue: tools/rejoin_phase0.py rescue rejoin.jsonl -o rescue.jsonl
+            (retry the failures: bigger mesh, multistart, homotopy)
 
 Needs the workspace (scipy + skfmm + the planner), like
 sample_eval_trajectories.py's solve mode.
@@ -189,6 +191,8 @@ def _solve_one(prob):
         goal = np.array([goal_xy[0], goal_xy[1], z["poses"][-1, 2]])
         _CTX[p] = (PMPShootingSolver(cfg, field) if field is not None else None, plan, goal,
                    np.asarray(z["costates"]), float(z["dt_sample"]))
+    if prob.get("_setup_only"):
+        return None
     solver, plan, goal, costates, dt = _CTX[p]
     k, m = prob["k"], prob["m"]
     x0 = plan[k] + np.array(prob["dev"])
@@ -218,6 +222,144 @@ def _solve_one(prob):
                        pin_err=float(np.max(np.abs(yT[0:5] - x_t))))
         out[cost] = res
     return out
+
+
+def _bump_guess(base, x0, x_t, amp):
+    """base with a sideways detour of amp metres at mid-window (sin profile,
+    zero at both pins), perpendicular to the start->target chord. A different
+    homotopy class for turn-drive-turn manoeuvres the straight guess misses."""
+    g = base.copy()
+    s = np.linspace(0.0, 1.0, g.shape[1])
+    d = x_t[:2] - x0[:2]
+    n = np.array([-d[1], d[0]]) / max(np.hypot(*d), 1e-6)
+    g[0:2] += amp * np.sin(np.pi * s)[None, :] * n[:, None]
+    return g
+
+
+def _traj(sol, T_w, n=41):
+    y = sol(np.linspace(0.0, T_w, n))
+    return np.round(y[0:5].T, 4).tolist()
+
+
+def _rescue_one(item):
+    """Retry one failed (problem, cost) harder, recording what worked:
+      1. nodes: the same plan guess, mesh cap raised to --max-nodes;
+      2. multistart: blend guess and plan guess + sideways detours of
+         +-0.4 / +-1.0 m, each with the raised cap;
+      3. homotopy in the deviation: solve dev*alpha for alpha 0 -> 1,
+         warm-starting each rung from the previous solution and halving the
+         step on failure (on-plan, alpha=0, is trivially solvable). Records
+         alpha_max, the largest fraction of the deviation that solved.
+    The trajectory of every success is kept (41 samples of the 5-D state) so
+    the interesting ones can be drawn."""
+    prob, cost, max_nodes = item
+    _solve_one_setup(prob)
+    solver, plan, goal, costates, dt = _CTX[prob["plan_path"]]
+    k, m, T_w = prob["k"], prob["m"], prob["T_w"]
+    dev = np.array(prob["dev"])
+    x_t = plan[k + m]
+    N = solver.cfg.N
+    tries = []
+    t0 = time.time()
+
+    def attempt(name, x0, guess):
+        r = solver.solve_rejoin(x0, x_t, T_w, goal, cost=cost, y_guess=guess,
+                                max_nodes=max_nodes)
+        tries.append(dict(method=name, status=r["status"], message=r["message"][:60],
+                          nodes=r["nodes"], solve_ms=round(r["solve_ms"], 1)))
+        return r
+
+    x0 = plan[k] + dev
+    pg = _plan_guess(plan, costates, dt, k, m, x0, N, cost)
+    win = None
+    r = attempt("nodes", x0, pg)
+    if r["success"]:
+        win = ("nodes", r)
+    if win is None:
+        cands = [("blend", None)] + [(f"bump{a:+g}", _bump_guess(pg, x0, x_t, a))
+                                     for a in (0.4, -0.4, 1.0, -1.0)]
+        for name, g in cands:
+            r = attempt(name, x0, g)
+            if r["success"]:
+                win = (name, r)
+                break
+    alpha_max = None
+    if win is None:
+        alpha, step, sol = 0.0, 0.25, None
+        while step >= 1.0 / 64 and alpha < 1.0:
+            a_try = min(1.0, alpha + step)
+            xa = plan[k] + dev * a_try
+            g = (_plan_guess(plan, costates, dt, k, m, xa, N, cost) if sol is None
+                 else sol(np.linspace(0.0, T_w, N + 1)))
+            if sol is not None:
+                g[0:5, 0] = xa  # move the start pin onto this rung
+            r = solver.solve_rejoin(xa, x_t, T_w, goal, cost=cost, y_guess=g,
+                                    max_nodes=max_nodes)
+            if r["success"]:
+                alpha, sol = a_try, r["sol"]
+            else:
+                step /= 2
+        alpha_max = alpha
+        tries.append(dict(method="homotopy", alpha_max=alpha))
+        if alpha >= 1.0:
+            win = ("homotopy", dict(success=True, sol=sol, max_accel=None))
+    # 4. more time: the same deviation, the window stretched (target moves
+    #    down the plan to k + m'), plan guess, raised cap. tw_solved is the
+    #    shortest stretched window that solves -- "how long would it need?".
+    #    Only run when the stretch is the point (win is None) or asked for.
+    tw_solved, stretch = None, None
+    if win is None:
+        n_plan = len(plan)
+        for f in (1.5, 2.0, 3.0, 4.0, 6.0, 8.0):
+            m2 = int(round(m * f))
+            if m2 < m + 2 or k + m2 >= n_plan:
+                continue
+            x_t2 = plan[k + m2]
+            r = solver.solve_rejoin(x0, x_t2, m2 * dt, goal, cost=cost,
+                                    y_guess=_plan_guess(plan, costates, dt, k, m2, x0, N, cost),
+                                    max_nodes=max_nodes)
+            tries.append(dict(method=f"stretch{f:g}", status=r["status"], T_w=round(m2 * dt, 2)))
+            if r["success"]:
+                tw_solved = m2 * dt
+                stretch = dict(T_w=tw_solved, traj=_traj(r["sol"], tw_solved),
+                               plan_seg=np.round(plan[k:k + m2 + 1, 0:3], 4).tolist())
+                break
+    out = dict(id=prob["id"], cost=cost, rescued=win is not None,
+               method=win[0] if win else None, alpha_max=alpha_max, tries=tries,
+               tw_solved=tw_solved, stretch=stretch,
+               wall_s=round(time.time() - t0, 2))
+    if win:
+        out["traj"] = _traj(win[1]["sol"], T_w)
+        out["plan_seg"] = np.round(plan[k:k + m + 1, 0:3], 4).tolist()
+    return out
+
+
+def _solve_one_setup(prob):
+    p = prob["plan_path"]
+    if p not in _CTX:
+        _solve_one(dict(prob, plan=p, _setup_only=True))
+
+
+def cmd_rescue(a):
+    rows = [json.loads(l) for l in open(a.jsonl)]
+    by_name = {os.path.basename(p)[:-4]: p for p in glob.glob(os.path.join(a.traj_dir, "*.npz"))}
+    items = []
+    for r in rows:
+        r["plan_path"] = by_name[r["plan"]]
+        for cost in a.costs.split(","):
+            if r[cost]["status"] != "ok":
+                items.append((r, cost, a.max_nodes))
+    items = items[:a.limit] if a.limit else items
+    items.sort(key=lambda it: it[0]["plan"])
+    print(f"{len(items)} failed (problem, cost) pairs, {a.jobs} jobs -> {a.out}", flush=True)
+    t0 = time.time()
+    with open(a.out, "w") as fh, Pool(a.jobs, maxtasksperchild=50) as pool:
+        for i, r in enumerate(pool.imap_unordered(_rescue_one, items, chunksize=1)):
+            fh.write(json.dumps(r) + "\n")
+            fh.flush()
+            if (i + 1) % 20 == 0:
+                print(f"  {i + 1}/{len(items)}  {time.time() - t0:.0f}s", flush=True)
+    print(f"done in {time.time() - t0:.0f}s", flush=True)
 
 
 def cmd_run(a):
@@ -309,6 +451,15 @@ def main():
     p = sub.add_parser("report")
     p.add_argument("jsonl")
     p.set_defaults(fn=cmd_report)
+    q = sub.add_parser("rescue", help="retry a run's failures harder (see _rescue_one)")
+    q.add_argument("jsonl")
+    q.add_argument("--costs", default="field,effort")
+    q.add_argument("--max-nodes", type=int, default=20000)
+    q.add_argument("--jobs", type=int, default=8)
+    q.add_argument("--limit", type=int, default=0, help="first N pairs only (timing)")
+    q.add_argument("--traj-dir", default=os.path.join(REPO, "traj_data_v2"))
+    q.add_argument("-o", "--out", default="rejoin_rescue.jsonl")
+    q.set_defaults(fn=cmd_rescue)
     a = ap.parse_args()
     a.fn(a)
 
