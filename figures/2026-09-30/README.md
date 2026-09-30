@@ -8,6 +8,7 @@ effort. `T_w` is the re-join window in **physical time**.
 | file | shows |
 | --- | --- |
 | `rejoin_phase0_regimes.png` | success vs `T_w` for the blend and plan guesses (Wilson 95% CIs), and heatmaps of `T_w` × feasibility margin (`T_w / t_min_wheel`) for A and B |
+| `rejoin_phase0_scatter.png` | every one of the 2000 VM problems as a point (no bucketing): `T_w` vs feasibility margin / lateral offset / heading error, coloured by outcome, for A and B. `render_scatter.py` |
 | `rejoin_phase0_examples.png` | sampled recoveries drawn with the robot footprint: scheduled (plan), actual start (red), target (blue outline), re-join path |
 | `rejoin_phase0_controlled.png` | one straight stretch (floor_6_v2_00105, k=100, 0.81 m/s). Top row: 0.3 m side offset at `T_w` = 0.5/1/2/4 s. Bottom row, all at 3 s: behind, heading, slow wheels, and side plus heading combined |
 | `rejoin_phase0_{local300,plan300}.jsonl` | 300 problems each, blend vs plan guess (laptop) |

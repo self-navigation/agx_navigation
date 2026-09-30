@@ -1,5 +1,17 @@
 # Handover — 2026-09-30
 
+**2026-09-30 15:45: TWO VM JOBS RUNNING, beside v3.**
+- `rejoin_phase0.py rescue` on the 2000-problem failures: `~/rejoin_rescue.{log,jsonl}`, ~30-40 min.
+  Per failed pair it tries a bigger mesh, then multistart (blend, sideways bumps), then homotopy in the
+  deviation (`alpha_max`), then a stretched window (`tw_solved`). On a 24-pair laptop trial, nothing
+  rescued at the same `T_w`. Stretching solved them at 1.0-2.1 s, so the failures are "window too short",
+  not solver luck. Phase 0 is deterministic: repeats are pointless, only the guess matters.
+- #27 bias, 40 plans, all wheels x0.9: TVLQR on worker 7 (`~/bias27/rows.tvlqr.jsonl`) vs identity on
+  worker 8 (`rows.identity.jsonl`). **Still WITH GUI** (launched before the headless default was
+  deployed). The smoke row timed out at rtf 0.022, the same collapse as v3. Discount wall-backstop
+  timeouts. `fixture_up.sh` is now headless by default (`FIXTURE_GUI=true` to watch), but only
+  after the next `just sync`.
+
 **2026-09-30 15:30: STATUS.**
 - **The v3 rerun (#10) is still running on workers 1-6.** It is slower than planned, so the ETA is late
   tonight or tomorrow morning, not 17:45. At ~15:10 seed 0 had ours 13 / MPPI 3 / RPP 4 rows, and
