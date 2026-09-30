@@ -718,6 +718,7 @@ class PMPShootingSolver:
         goal: np.ndarray,
         cost: str = "field",
         y_guess: Optional[np.ndarray] = None,
+        max_nodes: Optional[int] = None,
     ) -> dict:
         """Re-join TPBVP: from an off-plan state back onto the nominal plan.
 
@@ -736,7 +737,8 @@ class PMPShootingSolver:
           "effort" (B) -- minimum wheel-acceleration effort only
                    (gamma_wheel/2 * |a|^2, same tanh-saturated law);
                    costates lx, ly, lth are then constant.
-        goal feeds only v_ref in cost A.
+        goal feeds only v_ref in cost A. y_guess may be on any mesh spanning
+        [0, T_w] (shape (10, n)); max_nodes overrides cfg.bvp_max_nodes.
 
         Never touches the warm-start state of solve(). Returns a dict:
         success, status ("ok" | "fail" | "exception"), message, nodes,
@@ -766,15 +768,19 @@ class PMPShootingSolver:
         def bc(ya, yb):
             return np.concatenate([ya[0:5] - x0, yb[0:5] - x_target])
 
-        t_mesh = np.linspace(0.0, T_w, cfg.N + 1)
-        y_init = y_guess if y_guess is not None else self._rejoin_guess(x0, x_target, t_mesh)
+        if y_guess is not None:
+            y_init = np.asarray(y_guess, dtype=np.float64)
+            t_mesh = np.linspace(0.0, T_w, y_init.shape[1])
+        else:
+            t_mesh = np.linspace(0.0, T_w, cfg.N + 1)
+            y_init = self._rejoin_guess(x0, x_target, t_mesh)
 
         out = {"success": False, "status": "fail", "message": "", "nodes": 0,
                "niter": -1, "solve_ms": 0.0}
         t0 = time.perf_counter()
         try:
             sol = solve_bvp(ode, bc, t_mesh, y_init, tol=cfg.bvp_tol,
-                            max_nodes=cfg.bvp_max_nodes, verbose=0)
+                            max_nodes=max_nodes or cfg.bvp_max_nodes, verbose=0)
         except Exception as e:  # noqa: BLE001 -- a failed label is data here
             out.update(status="exception", message=str(e),
                        solve_ms=(time.perf_counter() - t0) * 1e3)

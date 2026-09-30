@@ -42,6 +42,10 @@ PATCHES=true
 LOCALIZATION=truth
 TRIES=3
 TIMEOUT=120
+# Headless unless someone is watching over Moonlight: a GUI client burns ~100%
+# CPU in software rendering per sim and was the prime suspect in the v3 rtf
+# collapses (2026-09-30). FIXTURE_GUI=true to watch.
+HEADLESS_=$([ "${FIXTURE_GUI:-false}" = true ] && echo false || echo true)
 SESSION=${TMUX_SESSION:-rl}
 NAV_MODE=vec-pmp
 NAV2_CONTROLLER=mppi
@@ -123,7 +127,7 @@ for attempt in $(seq 1 "$TRIES"); do
     tmux new-window -d -t "$SESSION" -n "$WINDOW" \
         "cd $WORKSPACE && DISPLAY=:0 vglrun -d egl0 make fixture $FLOOR_VAR WORKER=$WORKER \
          CORRECTOR=$CORRECTOR LOCALIZATION=$LOCALIZATION FIXTURE_NAV_MODE=$NAV_MODE \
-         HEADLESS=false USE_GPU_RENDER_ACCELERATION=false \
+         HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \
          FIXTURE_EXTRA_PARAMS=\"$EXTRA\" 2>&1 | tee $LOG"
 
     # The probe must run in the stack's own partition and domain, or it will
