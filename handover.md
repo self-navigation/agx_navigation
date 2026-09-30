@@ -1,4 +1,12 @@
-# Handover — 2026-09-29
+# Handover — 2026-09-30
+
+**2026-09-30 14:00: host recovered and hardened (#26 comment has details).** VM 200
+is now 32 GiB, `onboot 0` (start it by hand after a host reboot: `qm start 200`);
+VM 100 is 160 GiB, `onboot 1`. Guest autostart waits 300 s; `touch
+/etc/pve-hold-guests` on the host to skip it. VMs cannot swap, earlyoom kills kvm
+first (ours before VM 100), and `psi-reboot` reboots on a sustained memory stall.
+Untested by a deliberate wedge (no one on site). #26 stays open until VM 100 is
+started at 160 GiB and free RAM checked. Planned jobs below are unblocked.
 
 **2026-09-29 14:20: THE PROXMOX HOST IS WEDGED (OOM); do #26 BEFORE ANYTHING
 ELSE.** Resizing VM 200 to 48 cores / 64 GiB overcommitted the 251 GiB host.
