@@ -5,8 +5,18 @@ is now 32 GiB, `onboot 0` (start it by hand after a host reboot: `qm start 200`)
 VM 100 is 160 GiB, `onboot 1`. Guest autostart waits 300 s; `touch
 /etc/pve-hold-guests` on the host to skip it. VMs cannot swap, earlyoom kills kvm
 first (ours before VM 100), and `psi-reboot` reboots on a sustained memory stall.
-Untested by a deliberate wedge (no one on site). #26 stays open until VM 100 is
-started at 160 GiB and free RAM checked. Planned jobs below are unblocked.
+Untested by a deliberate wedge (no one on site). #26 closed after both VMs ran
+together (host: 54 GiB available, no swap growth, PSI 0).
+
+**2026-09-30 14:12: the v3 comparison rerun (#10) IS RUNNING**, planned job 2
+below, deployed at the current HEAD. Seed 0 is on workers 1-3 and seed 1 on 4-6,
+writing to `~/compare_broad40_v3/seed{0,1}/` with logs `~/cmp_v3_s{0,1}.log`.
+ETA ~17:45 local. The first cells are clean: 1 map receipt per stack, and
+`solve=` lines are present (cold 579 ms, warm 135-146 ms under 6 sims).
+`~/ram_v3.log` logs guest RAM each minute (PVE can't see it, since the balloon
+is off): ~16 GiB used of 31 with 6 sims. If it died, relaunch from
+`~/agx_navigation`, not `~` (the job path is relative); it resumes. Next: read
+it with step 5.
 
 **2026-09-29 14:20: THE PROXMOX HOST IS WEDGED (OOM); do #26 BEFORE ANYTHING
 ELSE.** Resizing VM 200 to 48 cores / 64 GiB overcommitted the 251 GiB host.
