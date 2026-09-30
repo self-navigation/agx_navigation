@@ -3,15 +3,36 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import (
     LaunchConfiguration,
     EqualsSubstitution,
+    PythonExpression,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _wheel_bias_node(context):
+    """The optional wheel_bias fault node (#27); nothing when unset."""
+    spec = LaunchConfiguration("wheel_bias").perform(context).strip()
+    if not spec:
+        return []
+    scale = [float(s) for s in spec.split(",")]
+    if len(scale) != 4:
+        raise ValueError(f"wheel_bias needs 4 comma-separated factors, got {spec!r}")
+    return [Node(
+        package="agx_chassis",
+        executable="wheel_bias",
+        name="wheel_bias",
+        output="screen",
+        parameters=[{"scale": scale}],
+        remappings=[("~/in", "/wheel_bias/in"),
+                    ("~/out", "/wheel_velocity_controller/commands")],
+    )]
 
 
 def generate_launch_description():
@@ -54,6 +75,16 @@ def generate_launch_description():
                 "progress -- project the measured pose onto the plan, so a slow "
                 "robot takes longer instead of stopping early. See the "
                 "trajectory_buffer module docstring."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "wheel_bias",
+            default_value="",
+            description=(
+                "Sim-only actuator fault (issue #27): four factors "
+                "'fl,rl,fr,rr' scaling the corrector's wheel commands before "
+                "the controller, e.g. 0.9,0.9,0.9,0.9 for a battery sag. "
+                "Empty (default) = no bias node, corrector wired straight in."
             ),
         ),
     ]
@@ -132,7 +163,10 @@ def generate_launch_description():
         ],
         remappings=[
             ("~/wheel_cmd_in", "/pmp_planner/wheel_cmd"),
-            ("~/wheel_cmd_out", "/wheel_velocity_controller/commands"),
+            # Through the wheel_bias fault node when one is requested (#27).
+            ("~/wheel_cmd_out", PythonExpression([
+                "'/wheel_bias/in' if '", LaunchConfiguration("wheel_bias"),
+                "'.strip() else '/wheel_velocity_controller/commands'"])),
             # Planner Path for the debug centerline/corridor. Matches the
             # planner's /pmp_planner/trajectory -> /optimal_trajectory remap.
             ("~/plan", "/optimal_trajectory"),
@@ -145,5 +179,6 @@ def generate_launch_description():
             vector_field,
             launch_pmp_planner,
             wheel_corrector,
+            OpaqueFunction(function=_wheel_bias_node),
         ]
     )

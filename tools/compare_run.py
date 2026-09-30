@@ -518,6 +518,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         "--nav2-controller", ARM_TO_CONTROLLER.get(arm, "mppi"),
         "--nav2-profile", args.nav2_profile,
         "--corrector", args.corrector,
+        *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         # The comparison's slip comes from tools/spawn_patches.py (seed 0,
         # along-path). The fixture's own near-origin patches must be OFF, or a
         # wall strike has two candidate causes (CLAUDE.md, SURFACE_PATCHES).
@@ -582,6 +583,7 @@ def run_one(args, plan_path: str) -> dict:
         "arm": args.arm,
         "seed": args.seed,
         "corrector": args.corrector,
+        "wheel_bias": args.wheel_bias or None,
         "localization": args.localization,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm != "ours" else None,
@@ -791,6 +793,9 @@ def main() -> int:
                          "sim whose /clock died")
     ap.add_argument("--ctrl-grid-dt", type=float, default=0.1)
     ap.add_argument("--corrector", default="tvlqr", help="vec-pmp arm's corrector")
+    ap.add_argument("--wheel-bias", default="",
+                    help="sim-only actuator fault for the vec-pmp arm (#27): "
+                         "'fl,rl,fr,rr' command scale, e.g. 0.9,0.9,0.9,0.9")
     ap.add_argument("--localization", default="amcl")
     ap.add_argument("--nav2-profile", default="compare_static",
                     help="config/nav2_profile_<name>.yaml for the nav2 arms "
