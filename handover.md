@@ -1,5 +1,28 @@
 # Handover — 2026-09-30
 
+**2026-09-30 15:30: STATUS.**
+- **The v3 rerun (#10) is still running on workers 1-6.** It is slower than planned, so the ETA is late
+  tonight or tomorrow morning, not 17:45. At ~15:10 seed 0 had ours 13 / MPPI 3 / RPP 4 rows, and
+  seed 1 had 7 / 3 / 7.
+  - Cause: some cells' sim RTF **collapses** to 0.001-0.05 (normally 0.45-0.63) and then hits the 900 s wall
+    backstop, recorded as a timeout. This happens **in all arms, ours included** (4 cases).
+  - The track's sim-time sampling stays even, so the sim slows rather than freezes.
+  - VM at the time: 48 cores ~50% idle, load ~40, CPU PSI some ~12% / full 0, RAM 14/31 GiB, GPU 38%.
+    So the CPU upgrade helped, and this is not raw CPU starvation.
+  - Suspects: `fixture_up.sh` runs `HEADLESS=false` with software rendering (libEGL falls back to
+    `kms_swrast`), so six `gz sim -g` GUI clients burn ~100% CPU each.
+  - **Before quoting v3, treat wall-backstop timeouts as invalid cells (not arm failures), and
+    re-run them.** For the next campaign, consider headless.
+- **Phase 0 (#11) is done**: figures and README are in `figures/2026-09-30/`, and there is a 2000-problem VM run.
+  Min-effort re-join solves 99% at `T_w >= 3 s` (4 ms median). Short windows fail because of physics. Next
+  for #11: decide `T_w` (>= 3 s) and move to Phase 1 (dataset), per `docs/corrector-design.md`.
+- **#27 bias test is wired**: `wheel_bias` node (agx_chassis) plus the launch arg `wheel_bias:=fl,rl,fr,rr`,
+  with `--wheel-bias` in `fixture_up.sh` / `compare_run.py`. The row carries `wheel_bias`. Deployed.
+  - A smoke test (1 plan, all ×0.9, worker 7) is running: `~/bias27/smoke.{log,jsonl}`.
+  - If it arrives, run all 40 plans on worker 7 (and 8), comparing ours+TVLQR vs `--corrector identity`, both biased.
+  - If the node is missing from the stack log or the robot never moves, suspect the launch remap
+    (`PythonExpression` in `vec_pmp.launch.py`).
+
 **2026-09-30 14:00: host recovered and hardened (#26 comment has details).** VM 200
 is now 32 GiB, `onboot 0` (start it by hand after a host reboot: `qm start 200`);
 VM 100 is 160 GiB, `onboot 1`. Guest autostart waits 300 s; `touch
