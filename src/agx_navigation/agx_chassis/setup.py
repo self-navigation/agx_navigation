@@ -21,6 +21,7 @@ setup(
         "console_scripts": [
             "twist_to_wheels = agx_chassis.twist_to_wheels:main",
             "wheel_odometry = agx_chassis.wheel_odometry:main",
+            "wheel_bias = agx_chassis.wheel_bias:main",
         ],
     },
 )
