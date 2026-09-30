@@ -150,6 +150,28 @@ def make_problems(plans, trace_dir, gains, n, seed, tw_range, scale_range):
 _CTX = {}
 
 
+def _plan_guess(plan, costates, dt, k, m, x0, N, cost):
+    """Guess = the nominal plan's own segment k..k+m, with the initial
+    deviation faded out linearly so it meets both pins. Costates: the plan's
+    (cost A's own, so a near-solution for small deviations); zero for cost B,
+    whose on-plan optimum is zero acceleration and hence zero wheel costates."""
+    t_seg = np.arange(m + 1) * dt
+    t_mesh = np.linspace(0.0, m * dt, N + 1)
+    seg = plan[k:k + m + 1].copy()
+    seg[:, 2] = np.unwrap(seg[:, 2])
+    dev = x0 - seg[0]
+    dev[2] = (dev[2] + np.pi) % (2 * np.pi) - np.pi
+    s = t_mesh / max(t_mesh[-1], 1e-9)
+    st = np.stack([np.interp(t_mesh, t_seg, seg[:, i]) for i in range(5)])
+    st += dev[:, None] * (1.0 - s)
+    st[2] += x0[2] - seg[0, 2] - dev[2]  # land on x0's heading branch
+    if cost == "field":
+        cs = np.stack([np.interp(t_mesh, t_seg, costates[k:k + m + 1, i]) for i in range(5)])
+    else:
+        cs = np.zeros((5, t_mesh.size))
+    return np.vstack([st, cs])
+
+
 def _solve_one(prob):
     PlannerConfig, PMPShootingSolver, _build_field, load_occupancy_grid = _imports()
     p = prob["plan"]
@@ -165,8 +187,9 @@ def _solve_one(prob):
                              z["start_xy"], goal_xy, 65, cfg)
         plan = np.column_stack([z["poses"], z["wheel_cmds"]])
         goal = np.array([goal_xy[0], goal_xy[1], z["poses"][-1, 2]])
-        _CTX[p] = (PMPShootingSolver(cfg, field) if field is not None else None, plan, goal)
-    solver, plan, goal = _CTX[p]
+        _CTX[p] = (PMPShootingSolver(cfg, field) if field is not None else None, plan, goal,
+                   np.asarray(z["costates"]), float(z["dt_sample"]))
+    solver, plan, goal, costates, dt = _CTX[p]
     k, m = prob["k"], prob["m"]
     x0 = plan[k] + np.array(prob["dev"])
     x_t = plan[k + m]
@@ -185,7 +208,9 @@ def _solve_one(prob):
         if solver is None:
             out[cost] = dict(status="nofield")
             continue
-        r = solver.solve_rejoin(x0, x_t, prob["T_w"], goal, cost=cost)
+        y_guess = (_plan_guess(plan, costates, dt, k, m, x0, solver.cfg.N, cost)
+                   if prob.get("guess", "blend") == "plan" else None)
+        r = solver.solve_rejoin(x0, x_t, prob["T_w"], goal, cost=cost, y_guess=y_guess)
         res = {k2: r[k2] for k2 in ("status", "message", "nodes", "niter", "solve_ms")}
         if r["success"]:
             yT = r["sol"](prob["T_w"])
@@ -200,6 +225,8 @@ def cmd_run(a):
     probs = make_problems(plans, a.trace_dir, a.gains, a.n, a.seed,
                           (a.tw_min, a.tw_max), (a.scale_min, a.scale_max))
     # Group by plan so each worker builds each field once.
+    for q in probs:
+        q["guess"] = a.guess
     probs.sort(key=lambda q: q["plan"])
     print(f"{len(probs)} problems over {len({q['plan'] for q in probs})} plans, "
           f"{a.jobs} jobs -> {a.out}", flush=True)
@@ -274,6 +301,9 @@ def main():
     r.add_argument("--tw-max", type=float, default=10.0)
     r.add_argument("--scale-min", type=float, default=0.5)
     r.add_argument("--scale-max", type=float, default=3.0)
+    r.add_argument("--guess", choices=("blend", "plan"), default="blend",
+                   help="blend: linear x0->target, zero costates; plan: the "
+                        "nominal segment with the deviation faded out")
     r.add_argument("-o", "--out", default="rejoin_phase0.jsonl")
     r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report")
