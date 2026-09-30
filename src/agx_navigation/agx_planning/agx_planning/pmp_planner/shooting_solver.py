@@ -742,7 +742,8 @@ class PMPShootingSolver:
         success, status ("ok" | "fail" | "exception"), message, nodes,
         niter, solve_ms, and on success sol (OdeSolution), max_accel,
         max_wheel (for checking the pins were reached by an admissible
-        control).
+        control); on a non-exception failure, sol_last (the solver's last
+        iterate -- for plotting only, it satisfies neither pins nor ODE).
         """
         if cost not in ("field", "effort"):
             raise ValueError(f"cost must be 'field' or 'effort', got {cost!r}")
@@ -784,6 +785,8 @@ class PMPShootingSolver:
         out.update(solve_ms=(time.perf_counter() - t0) * 1e3, nodes=int(sol.x.size),
                    niter=int(getattr(sol, "niter", -1)), message=sol.message)
         if not sol.success:
+            # The last iterate, for plotting a failure; never a label.
+            out["sol_last"] = sol.sol
             return out
         sat = cfg.gamma_wheel * cfg.a_wheel_max
         y = sol.sol(np.linspace(0.0, T_w, 201))
