@@ -708,6 +708,125 @@ class PMPShootingSolver:
     def reset_warm_start(self):
         self._prev_sol = None
 
+    # --- Re-join mode (Phase 0 of the re-join re-planner) ------------------
+
+    def solve_rejoin(
+        self,
+        x0: np.ndarray,
+        x_target: np.ndarray,
+        T_w: float,
+        goal: np.ndarray,
+        cost: str = "field",
+        y_guess: Optional[np.ndarray] = None,
+    ) -> dict:
+        """Re-join TPBVP: from an off-plan state back onto the nominal plan.
+
+        Differs from solve() only in the problem statement
+        (docs/corrector-design.md, "The re-join BC"):
+          - horizon is T_w, not T_horizon; the mesh spans [0, T_w];
+          - all 5 terminal states are HARD-PINNED to x_target, the plan's
+            state at index k + T_w/dt (wheel speeds too: playback resumes
+            from there assuming the wheels already turn at the plan's
+            rate). Five terminal state pins replace the five
+            transversalities, so the costates are free at both ends.
+        cost selects the running cost:
+          "field"  (A) -- this planner's _ode unchanged: field-descent,
+                   heading, speed, brake and barrier terms. The pins
+                   override whatever terminal pull the field would add.
+          "effort" (B) -- minimum wheel-acceleration effort only
+                   (gamma_wheel/2 * |a|^2, same tanh-saturated law);
+                   costates lx, ly, lth are then constant.
+        goal feeds only v_ref in cost A.
+
+        Never touches the warm-start state of solve(). Returns a dict:
+        success, status ("ok" | "fail" | "exception"), message, nodes,
+        niter, solve_ms, and on success sol (OdeSolution), max_accel,
+        max_wheel (for checking the pins were reached by an admissible
+        control).
+        """
+        if cost not in ("field", "effort"):
+            raise ValueError(f"cost must be 'field' or 'effort', got {cost!r}")
+        cfg = self.cfg
+        x0 = np.asarray(x0, dtype=np.float64)
+        x_target = np.asarray(x_target, dtype=np.float64).copy()
+        # Unwrap the target heading onto x0's branch so the pin asks for
+        # the short turn, not a spurious 2*pi.
+        x_target[2] = x0[2] + ((x_target[2] - x0[2] + pi) % (2.0 * pi)) - pi
+
+        saved = (self._x0, self._goal, self._align_fade, self._theta_pursuit)
+        self._x0 = x0
+        self._goal = np.asarray(goal, dtype=np.float64)
+        # Cost A outside the goal zone uses pure field alignment.
+        self._align_fade = 1.0
+        self._theta_pursuit = float(x_target[2])
+
+        ode = self._ode if cost == "field" else self._ode_effort
+
+        def bc(ya, yb):
+            return np.concatenate([ya[0:5] - x0, yb[0:5] - x_target])
+
+        t_mesh = np.linspace(0.0, T_w, cfg.N + 1)
+        y_init = y_guess if y_guess is not None else self._rejoin_guess(x0, x_target, t_mesh)
+
+        out = {"success": False, "status": "fail", "message": "", "nodes": 0,
+               "niter": -1, "solve_ms": 0.0}
+        t0 = time.perf_counter()
+        try:
+            sol = solve_bvp(ode, bc, t_mesh, y_init, tol=cfg.bvp_tol,
+                            max_nodes=cfg.bvp_max_nodes, verbose=0)
+        except Exception as e:  # noqa: BLE001 -- a failed label is data here
+            out.update(status="exception", message=str(e),
+                       solve_ms=(time.perf_counter() - t0) * 1e3)
+            return out
+        finally:
+            self._x0, self._goal, self._align_fade, self._theta_pursuit = saved
+
+        out.update(solve_ms=(time.perf_counter() - t0) * 1e3, nodes=int(sol.x.size),
+                   niter=int(getattr(sol, "niter", -1)), message=sol.message)
+        if not sol.success:
+            return out
+        sat = cfg.gamma_wheel * cfg.a_wheel_max
+        y = sol.sol(np.linspace(0.0, T_w, 201))
+        out.update(success=True, status="ok", sol=sol.sol,
+                   max_accel=float(np.max(np.abs(cfg.a_wheel_max * np.tanh(-y[8:10] / sat)))),
+                   max_wheel=float(np.max(np.abs(y[3:5]))))
+        return out
+
+    def _ode_effort(self, t: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """Cost B: L = gamma_wheel/2 * (a_l^2 + a_r^2) only. Same state
+        dynamics and control law as _ode; the costate ODEs are just
+        -dH/dx of the kinematic coupling (no running state cost)."""
+        cfg = self.cfg
+        c_v, c_w = cfg.c_v, cfg.c_w
+        th, wl, wr = y[2], y[3], y[4]
+        lx, ly, lt, lwl, lwr = y[5], y[6], y[7], y[8], y[9]
+        cos_t, sin_t = np.cos(th), np.sin(th)
+        v = c_v * (wl + wr)
+        w = c_w * (wr - wl)
+        sat = cfg.gamma_wheel * cfg.a_wheel_max
+        al = cfg.a_wheel_max * np.tanh(-lwl / sat)
+        ar = cfg.a_wheel_max * np.tanh(-lwr / sat)
+        zero = np.zeros_like(th)
+        dlt = lx * v * sin_t - ly * v * cos_t
+        H_v = lx * cos_t + ly * sin_t
+        H_om = lt
+        return np.vstack([
+            v * cos_t, v * sin_t, w, al, ar,
+            zero, zero, dlt,
+            -c_v * H_v + c_w * H_om,
+            -c_v * H_v - c_w * H_om,
+        ])
+
+    def _rejoin_guess(self, x0: np.ndarray, x_target: np.ndarray,
+                      t_mesh: np.ndarray) -> np.ndarray:
+        """Initial guess: states blended linearly x0 -> x_target, costates
+        zero. Crude but unbiased between A and B, which is what a
+        failure-rate measurement needs; a better guess is a Phase 1
+        optimisation, not a Phase 0 one."""
+        s = (t_mesh - t_mesh[0]) / max(t_mesh[-1] - t_mesh[0], 1e-9)
+        states = x0[:, None] * (1.0 - s) + x_target[:, None] * s
+        return np.vstack([states, np.zeros((5, t_mesh.size))])
+
     # --- Pointwise readout (shared by online + offline paths) -------------
 
     def _control_law_pointwise(
