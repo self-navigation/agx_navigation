@@ -420,6 +420,8 @@ bad idea gets stopped before anyone reads it.
 
 **Bugs fixed, kept as stubs**
 
+- **CPU-heavy Python work inside an rclpy node is GIL-starved** (found 2026-10-01): `MultiThreadedExecutor`'s idle thread busy-spins in `wait_for_ready_callbacks` and takes most of the GIL, so the offline PMP rollout ran ~200x slower in the stack (417 s) than standalone (~2 s). A faster solver would not help. Fixed by moving the solve into a child process (`pmp_planner/solver_process.py`); do the same for any other node doing heavy compute in callbacks — audit is #30.
+
 - **A plan that failed at chunk 0 hung every client** (fixed 2026-08-18): `active_traj_id` was never set, so the result was dropped as a mismatch and the idle guard returned before `_finish()` could publish the zero and the sentinel. What outlives the fix: **BVP mesh-node exhaustion fails ~36% of fresh start/goal pairs**, it is a property of the start/goal **PAIR** and not of the goal, and a goal the planner cannot solve must degrade **visibly**.
 - **Two traced-soak bugs** (fixed 2026-08-14) produced data that parses, scores and looks like a measurement: `--trace-every` subsampled by rollout index against a cycle of commensurate length, and tracing was armed by *file* so untraced rollouts appended to the previous CSV. See [docs/measurement-rig.md](docs/measurement-rig.md).
 - **The job runner killed itself on its first job** (fixed 2026-08-14): the job body ran in a brace group ending in `exit`. Signature: a job shown **running** whose log already says `EXIT rc=0`, and the runner NOT RUNNING.

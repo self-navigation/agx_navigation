@@ -15,7 +15,15 @@ broad40 x {ours, nav2-dwb, nav2-mppi, nav2-rpp} grid it:
   3. sends the goal the way the arm consumes it: /goal_pose for `ours`
      (vec-pmp offline + TVLQR), the NavigateToPose action for the nav2 arms;
   4. waits a SIM-time deadline (3x plan duration + 60 s -- a wall-clock
-     timeout moves with the realtime factor and is wrong by that factor), then
+     timeout moves with the realtime factor and is wrong by that factor).
+     For `ours` that deadline starts at the FIRST WHEEL COMMAND, not at the
+     goal: the corrector buffers the whole rollout before driving, planning
+     is a CPU-bound solve (1-6 s wall per 0.5 s chunk on the broad plans),
+     and a clock started at the goal timed out 8 of 10 probe cells
+     (2026-10-01) that never got to drive. Planning is capped separately in
+     WALL time (--plan-wall-cap -> outcome planner-timeout), and the whole
+     cell -- bring-up, terrain, planning, driving -- by --cell-wall-cap, so a
+     wedged planner or stack cannot hold a worker; then
   5. writes ONE JSONL row to --out and moves to the next plan.
 
 SCORING IS FROM GAZEBO GROUND TRUTH, never /odom and never map->base_link:
@@ -31,14 +39,22 @@ METRICS (identical estimator for every arm):
   final_err        hypot(end - goal_xy), end = ground truth at the terminal event.
   outcome          arrived (final_err <= --tolerance, default 0.5 m, the repo's
                    miss-rate convention) | failed (terminal but short) |
-                   timeout | planner-failed (terminal, and no plan was ever
-                   published: BVP mesh exhaustion for `ours`, planning failure
-                   for nav2) | stack-failed (bring-up or terrain failed).
+                   timeout (drive deadline, or the cell wall cap) |
+                   planner-timeout (`ours` only: no wheel command within
+                   --plan-wall-cap) | planner-failed (terminal, and no plan
+                   was ever published: BVP mesh exhaustion for `ours`,
+                   planning failure for nav2) | stack-failed (bring-up or
+                   terrain failed).
                    `stack_terminal` records what the STACK said separately
                    (sentinel / nav2 result code), so "arrived but nav2
                    aborted a second late" is still readable.
   path_length      polyline length of the ground-truth track after the goal.
   travel_time      sim seconds, goal sent -> terminal event.
+  plan_wall_s      `ours`: wall seconds, goal sent -> first wheel command.
+  drive_t0         sim time the drive deadline started (first wheel command
+                   for `ours`, the goal for nav2). `rtf` is measured over
+                   drive_t0 -> terminal, so it is None for a cell that never
+                   drove (it used to be sim/0-wall garbage, ~1e8).
   max_curvature    max discrete Menger curvature of the ground-truth track,
                    arc-length-resampled at 0.1 m: raw pose/info triples spike
                    on sampling noise, not on real turns.
@@ -184,7 +200,8 @@ class CompareDriver:
     """rclpy node + gz subscription for one run's drive-and-score."""
 
     def __init__(self, world: str, model: str,
-                 goal_tries: int = 3, goal_ack_wait: float = 15.0):
+                 goal_tries: int = 3, goal_ack_wait: float = 15.0,
+                 plan_wall_cap: float = 600.0):
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -193,9 +210,11 @@ class CompareDriver:
         from nav_msgs.msg import Path
         from rosgraph_msgs.msg import Clock
         from std_msgs.msg import Float64MultiArray
+        from action_msgs.msg import GoalStatusArray
 
         self.goal_tries = int(goal_tries)
         self.goal_ack_wait = float(goal_ack_wait)
+        self.plan_wall_cap = float(plan_wall_cap)
         self._rclpy = rclpy
         rclpy.init()
 
@@ -213,6 +232,7 @@ class CompareDriver:
             "wheel": [],    # (sim_t, [w0..w3])
             "sentinel": False,
             "n_plan_paths": 0,
+            "plan_goal_ids": set(),  # PlanToGoal goals the planner has seen
         }
         st = self.state
 
@@ -239,6 +259,15 @@ class CompareDriver:
             lambda m: st.__setitem__("sentinel", st["sentinel"] or m.header.frame_id == ""),
             goal_qos)
         self._goal_pub = self.node.create_publisher(PoseStamped, "/goal_pose", goal_qos)
+        # The planner's action status: a new goal id here means the corrector
+        # received /goal_pose and the planner accepted the solve. That is the
+        # vec-pmp ACK -- motion is not, because the corrector is silent for
+        # the whole planning phase, and republishing into a slow solve
+        # restarts it from chunk 0.
+        self.node.create_subscription(
+            GoalStatusArray, "/pmp_planner/plan_to_goal/_action/status",
+            lambda m: st["plan_goal_ids"].update(
+                bytes(s.goal_info.goal_id.uuid) for s in m.status_list), 10)
 
         import gz.transport13 as gz_transport
         from gz.msgs10.pose_v_pb2 import Pose_V
@@ -459,6 +488,11 @@ class CompareDriver:
                     "stack_terminal": "none", "nav2_error_code": None}
 
         spawn_xy = (self.state["pose"][0], self.state["pose"][1])
+        ids_before = set(self.state["plan_goal_ids"])
+
+        def taken_now() -> bool:
+            return (bool(self.state["plan_goal_ids"] - ids_before)
+                    or self._goal_taken(goal_t, spawn_xy))
         taken = False
         tries = 0
         for tries in range(1, self.goal_tries + 1):
@@ -470,15 +504,13 @@ class CompareDriver:
             # into immediate republishes.
             ack_t = self.state["sim_t"]
             self._wait_terminal(ack_t, self.goal_ack_wait, backstop_s,
-                                kind="sentinel",
-                                extra_pred=lambda:
-                                self._goal_taken(goal_t, spawn_xy))
+                                kind="sentinel", extra_pred=taken_now)
             # Re-check taken DIRECTLY instead of trusting the wait's exit
             # reason: the ack window can also end on its own sim-time deadline
             # (timed_out=True) a step before the solve completes and motion
             # starts -- republishing then would restart a playback that was
             # already healthy.
-            if self._goal_taken(goal_t, spawn_xy):
+            if taken_now():
                 taken = True
                 break
             # Genuinely not taken inside the ack window: republish. The real
@@ -487,10 +519,36 @@ class CompareDriver:
         if not taken:
             return {"terminal": False, "goal_taken": False,
                     "error": f"goal never taken after {tries} publish(es) "
-                             f"(no motion, no wheel commands)",
+                             f"(no planner goal, no motion, no wheel commands)",
                     "stack_terminal": "none", "nav2_error_code": None}
-        # The goal is in: wait out the REAL deadline from the original goal_t.
-        out = self._wait_terminal(goal_t, timeout_s, backstop_s, kind="sentinel")
+        # Planning phase: silent until the whole rollout is buffered. Wait in
+        # WALL time for the first wheel command (or a terminal sentinel =
+        # the planner gave up). Sim time is the wrong clock here: the solve
+        # is CPU-bound, so a sim deadline would measure the RTF.
+        st = self.state
+        wall0 = time.monotonic()
+        plan_cap = min(self.plan_wall_cap, backstop_s)
+        while not st["wheel"] and not st["sentinel"]:
+            if time.monotonic() - wall0 > plan_cap:
+                break
+            self._rclpy.spin_once(self.node, timeout_sec=0.1)
+        plan_wall = time.monotonic() - wall0
+        if not st["wheel"]:
+            out = {"terminal": bool(st["sentinel"]),
+                   "terminal_kind": "sentinel" if st["sentinel"] else None,
+                   "planner_timeout": not st["sentinel"],
+                   "stack_terminal": "none", "nav2_error_code": None,
+                   "travel_time": ((st["sim_t"] - goal_t)
+                                   if st["sim_t"] is not None else None),
+                   "drive_wall": 0.0, "drive_t0": None}
+        else:
+            # The drive deadline starts at the first wheel command.
+            drive_t0 = st["wheel"][0][0]
+            out = self._wait_terminal(drive_t0, timeout_s,
+                                      max(1.0, backstop_s - plan_wall),
+                                      kind="sentinel")
+            out["drive_t0"] = drive_t0
+        out["plan_wall_s"] = plan_wall
         out["goal_publish_tries"] = tries
         return out
 
@@ -632,12 +690,15 @@ def run_one(args, plan_path: str) -> dict:
     # restarted the solve-and-buffer cycle (smoke attempts 4-5). Tie the
     # window to the plan; the retry then only fires on a genuinely lost
     # publish.
-    plan_scaled_ack = max(args.goal_ack_wait, 3.0 * plan["duration"] + 30.0)
+    # (The ack is now the planner's action status, which arrives within a
+    # second; the planning phase has its own wall cap in _drive_vec_pmp.)
+    plan_scaled_ack = args.goal_ack_wait
     drv = None
     try:
         drv = CompareDriver(args.world, args.model,
                             goal_tries=args.goal_tries,
-                            goal_ack_wait=plan_scaled_ack)
+                            goal_ack_wait=plan_scaled_ack,
+                            plan_wall_cap=args.plan_wall_cap)
         if not drv.spin_until(lambda: drv.state["pose"] is not None, 30.0):
             row.update(outcome="stack-failed", stack_up_ok=True,
                        error=f"no ground-truth pose on {drv.topic_pose}",
@@ -648,8 +709,12 @@ def run_one(args, plan_path: str) -> dict:
         row["spawn_err"] = round(math.hypot(start_gt[0] - plan["start"][0],
                                             start_gt[1] - plan["start"][1]), 4)
 
+        # Whatever bring-up and terrain left of the cell's wall budget bounds
+        # the goal phase (planning + driving) as a whole.
+        cell_left = args.cell_wall_cap - (time.monotonic() - t_start)
         res = drv.send_goal(args.arm, plan["goal"], plan["goal_yaw"],
-                            timeout_s=sim_timeout, backstop_s=args.wall_backstop)
+                            timeout_s=sim_timeout,
+                            backstop_s=max(1.0, min(args.wall_backstop, cell_left)))
         if res.get("goal_t") is None:
             # The goal never left the tool (no /clock, no action server...):
             # there is nothing to score, and the metrics below would divide by
@@ -667,6 +732,7 @@ def run_one(args, plan_path: str) -> dict:
 
         st = drv.state
         goal_t = res.get("goal_t")
+        drive_t0 = res.get("drive_t0", goal_t)
         end_pose = st["pose"]
         # Geometric track: XY only (the timestamp column must NOT enter the
         # length/curvature integrals -- the first smoke run "travelled" 101 m
@@ -696,6 +762,8 @@ def run_one(args, plan_path: str) -> dict:
         # one whose planner never delivered a followable plan.
         if final_err is not None and final_err <= args.tolerance:
             outcome = "arrived"
+        elif res.get("planner_timeout"):
+            outcome = "planner-timeout"
         elif res.get("timed_out") or res.get("wall_backstop"):
             outcome = "timeout"
         elif res.get("terminal") and travelled < 0.05:
@@ -723,9 +791,15 @@ def run_one(args, plan_path: str) -> dict:
             max_cross_track=(round(max(nearest_dist_to_polyline((x, y), plan["poses"][:, :2])
                                        for (x, y) in track), 4)
                              if track else None),
-            rtf=(round(travel_time / res["drive_wall"], 3)
-                 if travel_time is not None and res.get("drive_wall") else None),
+            # Over the drive phase only: sim seconds since drive_t0 per wall
+            # second of that same wait.
+            rtf=(round((st["sim_t"] - drive_t0) / res["drive_wall"], 3)
+                 if drive_t0 is not None and st["sim_t"] is not None
+                 and res.get("drive_wall") else None),
             drive_wall_s=round(res.get("drive_wall", 0.0), 1),
+            drive_t0=None if drive_t0 is None else round(drive_t0, 2),
+            plan_wall_s=(round(res["plan_wall_s"], 1)
+                         if res.get("plan_wall_s") is not None else None),
         )
     except Exception as exc:  # noqa: BLE001 -- a crashed run is a row, not a lost one
         row.update(outcome="stack-failed", stack_up_ok=True,
@@ -791,6 +865,12 @@ def main() -> int:
     ap.add_argument("--wall-backstop", type=float, default=900.0,
                     help="wall-clock backstop on the drive phase [s], for a "
                          "sim whose /clock died")
+    ap.add_argument("--plan-wall-cap", type=float, default=600.0,
+                    help="`ours`: wall seconds from goal to first wheel "
+                         "command before the cell is planner-timeout")
+    ap.add_argument("--cell-wall-cap", type=float, default=1500.0,
+                    help="wall-clock cap on a whole cell (bring-up + terrain "
+                         "+ planning + driving) [s]")
     ap.add_argument("--ctrl-grid-dt", type=float, default=0.1)
     ap.add_argument("--corrector", default="tvlqr", help="vec-pmp arm's corrector")
     ap.add_argument("--wheel-bias", default="",
@@ -810,11 +890,9 @@ def main() -> int:
                          "(only while nothing has reacted -- see "
                          "_drive_vec_pmp)")
     ap.add_argument("--goal-ack-wait", type=float, default=15.0,
-                    help="sim seconds to wait for the goal to be taken before "
-                         "republishing; raised automatically to "
-                         "3x plan duration + 30 s to cover the vec-pmp "
-                         "planning phase (wait_for_complete buffers the whole "
-                         "rollout before the first wheel command)")
+                    help="sim seconds to wait for the goal to be taken (the "
+                         "planner's action status shows a new goal) before "
+                         "republishing")
     ap.add_argument("--log-dir", default="/tmp/compare_runs",
                     help="per-run stack bring-up logs")
     ap.add_argument("--spawn-yaw-zero", action="store_true",

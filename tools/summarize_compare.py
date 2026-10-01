@@ -115,7 +115,7 @@ def main():
     # non-arrival, but keep it out of every metric mean and sign test --
     # averaging it in inflated `ours` final_err by metres on 2026-09-29.
     def drove(r):
-        return r is not None and r.get("outcome") not in ("stack-failed", "planner-failed")
+        return r is not None and r.get("outcome") not in ("stack-failed", "planner-failed", "planner-timeout")
 
     hdr = f"{'arm':<11}{'n':>4}{'arrived':>9}{'stack-fail':>11}{'plan-fail':>10}" + "".join(
         f"{k[:14]:>16}" for k, _, _ in METRICS)

@@ -220,6 +220,8 @@ nav2:
 #   make fixture LOCALIZATION=none    # identity map->odom; fastest, least honest
 #
 # Only amcl consumes the lidar, so only amcl pays for the rendering sensors.
+# Nothing here consumes the RGB/depth cameras (only SLAM does, and the nav2
+# compare profile observes the scan alone), so they are always dropped.
 FIXTURE_LOCALIZATION := $(or $(LOCALIZATION),truth)
 FIXTURE_SENSORS := $(if $(filter amcl,$(FIXTURE_LOCALIZATION)),true,false)
 # NAV_MODE of the fixture. vec-pmp is what the fixture has always been; the
@@ -238,7 +240,7 @@ fixture:
 	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) PMP_MODE=offline \
 		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
-		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS) $(FIXTURE_EXTRA_PARAMS)"
+		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS) sim_cameras:=false $(FIXTURE_EXTRA_PARAMS)"
 
 # ---- RL runtime corrector: training ----------------------------------------
 # Two terminals. First bring up the MINIMAL sim (physics + wheel controller +

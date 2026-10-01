@@ -153,7 +153,8 @@ Operating modes (selected by the `mode` parameter at launch):
 
   - "offline": exposes a ROS2 action server `pmp_planner/plan_to_goal`
     (PlanToGoal.action). The client (typically the trajectory interpreter)
-    supplies start_pose and target_pose inline; the server rolls out a
+    supplies start_pose and target_pose inline; the server rolls out (in
+    a child process -- see solver_process.py for the GIL reason) a
     complete start-to-goal trajectory by repeated BVP solves, streaming
     each committed dt_segment-second chunk as action feedback: planned
     poses, per-side wheel-speed setpoints, optimal wheel accelerations,
@@ -394,6 +395,12 @@ class PlannerNode(Node):
         self._exec_stop = threading.Event()
         self._trajectory_id: int = 0
 
+        # The rollout runs in its own process (solver_process.py): on an
+        # executor thread it shared the GIL with rclpy's busy-spinning wait
+        # loop and ran ~200x slower than standalone.
+        from agx_planning.pmp_planner.solver_process import SolverProcess
+        self._solver_proc = SolverProcess(self.cfg)
+
         # ReentrantCallbackGroup so (a) two execute callbacks (the
         # outgoing one returning + the incoming one waiting on
         # _exec_lock) can coexist on different threads, and (b) a long
@@ -437,6 +444,8 @@ class PlannerNode(Node):
         # Wake any in-flight rollout so it can return promptly.
         if self.cfg.mode == "offline" and hasattr(self, "_exec_stop"):
             self._exec_stop.set()
+        if hasattr(self, "_solver_proc"):
+            self._solver_proc.close()
         # Online mode: the forward controller latches the last command,
         # so a node going down mid-motion would leave the wheels spinning
         # at the last setpoint. Best-effort zero on the way out.
@@ -543,6 +552,8 @@ class PlannerNode(Node):
             # additionally drops the warm start because the new instance starts
             # at version=1, never matching the cached _last_field_version.
             self._solver.field = new_field
+            if hasattr(self, "_solver_proc"):
+                self._solver_proc.set_field(data)
             self._field_event.set()
 
         self.get_logger().warn(
@@ -825,7 +836,7 @@ class PlannerNode(Node):
         all_poses: list[np.ndarray] = []
 
         gen = GeneratorReturnCatcher(
-            rollout_generator(self._solver, self.cfg, x0, goal, stop_fn)
+            self._solver_proc.rollout(x0, goal, stop_fn)
         )
         for chunk in gen:
             self._handle_rollout_chunk(chunk, traj_id, all_poses, goal_handle)
