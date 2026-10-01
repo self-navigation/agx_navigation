@@ -23,6 +23,7 @@ all published. The magnitude doubles as a confidence signal for the
 planner (low |grad T| means cut locus or near-goal -> field unreliable).
 """
 
+import array
 import math
 import time
 from dataclasses import dataclass, replace
@@ -173,9 +174,17 @@ class VectorFieldNode(Node):
         if not self._recompute_field():
             return
 
-        self._publish_arrows()
-        self._publish_cost_to_go_grid()
-        self._publish_planner_data()
+        # The planner's data goes out FIRST: the visualisation topics cost
+        # seconds on a 1200x1200 grid (a Python loop for the arrows), and
+        # the planner's action waits on this message with a deadline.
+        timings = []
+        for name, fn in (("planner_data", self._publish_planner_data),
+                         ("cost_to_go", self._publish_cost_to_go_grid),
+                         ("arrows", self._publish_arrows)):
+            t0 = time.monotonic()
+            fn()
+            timings.append(f"{name}={(time.monotonic() - t0) * 1e3:.0f}ms")
+        self.get_logger().info("Published field: " + " ".join(timings))
 
     def _recompute_field(self) -> bool:
         """Run FM2 and store the result.  Returns True on success."""
@@ -390,7 +399,7 @@ class VectorFieldNode(Node):
         msg.header.frame_id = self.node_cfg.map_frame
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.info = self.map_msg.info
-        msg.data = ratio.astype(np.int8).flatten().tolist()
+        msg.data = array.array("b", ratio.astype(np.int8).tobytes())
         self.cost_to_go_pub.publish(msg)
 
     def _publish_planner_data(self):
@@ -404,7 +413,9 @@ class VectorFieldNode(Node):
         if self._field_result is None:
             return
         msg = Float32MultiArray()
-        msg.data = pack_field_array(self._field_result).tolist()
+        # array.array, not .tolist(): a 5.8M-element Python list costs
+        # ~0.3 s to build and assign, the buffer copy ~20 ms.
+        msg.data = array.array("f", pack_field_array(self._field_result).tobytes())
         self.planner_data_pub.publish(msg)
 
     def _cost_to_color(self, t_val: float, t_max: float) -> ColorRGBA:
