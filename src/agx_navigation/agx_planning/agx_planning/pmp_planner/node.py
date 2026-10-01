@@ -14,10 +14,11 @@ The published command is the planned wheel-speed state, plus an optional lead
 tau_wheel * a_i, clipped to wheel_cmd_max and laid out as [w_l, w_l, w_r, w_r]
 in the controller's joint order. In "online" mode a timer solves the local BVP
 and publishes on wheel_cmd_topic. In "offline" mode the node serves
-`pmp_planner/plan_to_goal`: it rolls out the whole trajectory from rest and
-streams each dt_segment chunk (poses, wheel-speed setpoints, accelerations and
-costates) as feedback. JointGroupVelocityController latches its last command,
-so every terminal path publishes an explicit zero.
+`pmp_planner/plan_to_goal`: it rolls out the whole trajectory from rest in a
+child process (solver_process.py) and streams each dt_segment chunk (poses,
+wheel-speed setpoints, accelerations and costates) as feedback.
+JointGroupVelocityController latches its last command, so every terminal path
+publishes an explicit zero.
 """
 
 from dataclasses import dataclass
@@ -228,6 +229,12 @@ class PlannerNode(Node):
         self._exec_stop = threading.Event()
         self._trajectory_id: int = 0
 
+        # The rollout runs in its own process (solver_process.py): on an
+        # executor thread it shared the GIL with rclpy's busy-spinning wait
+        # loop and ran ~200x slower than standalone.
+        from agx_planning.pmp_planner.solver_process import SolverProcess
+        self._solver_proc = SolverProcess(self.cfg)
+
         # ReentrantCallbackGroup so (a) two execute callbacks (the
         # outgoing one returning + the incoming one waiting on
         # _exec_lock) can coexist on different threads, and (b) a long
@@ -271,6 +278,8 @@ class PlannerNode(Node):
         # Wake any in-flight rollout so it can return promptly.
         if self.cfg.mode == "offline" and hasattr(self, "_exec_stop"):
             self._exec_stop.set()
+        if hasattr(self, "_solver_proc"):
+            self._solver_proc.close()
         # Online mode: the forward controller latches the last command,
         # so a node going down mid-motion would leave the wheels spinning
         # at the last setpoint. Best-effort zero on the way out.
@@ -377,6 +386,8 @@ class PlannerNode(Node):
             # additionally drops the warm start because the new instance starts
             # at version=1, never matching the cached _last_field_version.
             self._solver.field = new_field
+            if hasattr(self, "_solver_proc"):
+                self._solver_proc.set_field(data)
             self._field_event.set()
 
         self.get_logger().warn(
@@ -659,7 +670,7 @@ class PlannerNode(Node):
         all_poses: list[np.ndarray] = []
 
         gen = GeneratorReturnCatcher(
-            rollout_generator(self._solver, self.cfg, x0, goal, stop_fn)
+            self._solver_proc.rollout(x0, goal, stop_fn)
         )
         for chunk in gen:
             self._handle_rollout_chunk(chunk, traj_id, all_poses, goal_handle)
