@@ -1,4 +1,72 @@
-# Handover — 2026-09-30
+# Handover — 2026-10-01
+
+## LATEST (02:35): slow planning was GIL starvation, fix in flight, UNCOMMITTED
+
+**The smoke cell FINISHED (VM idle), and the fix is only half-confirmed.** The row is `/tmp/smoke_mp.jsonl` on the VM.
+- **Outcome: `planner-failed`, with "Timeout waiting for vector field" after the 10 s `vector_field_timeout`.** The planner log has no "Got field" line at all, so the field never reached the planner.
+- **This is now the blocker.** Before the fix, the same cell got its field and then planned for 417 s, so field delivery is flaky, not always broken.
+- **Suspects:**
+  - the ~23 MB `/vector_field/planner_data` at depth 1, published only on a map or goal change, so a late or dropped message is never re-sent;
+  - vector_field computing FM2 after the goal arrives, which takes longer than 10 s under GIL contention (#30).
+- **Check:** the timestamps of vector_field's own "published" log vs. the goal. Cheap fixes are raising `vector_field_timeout`, or making planner_data transient-local.
+- **The solver-process path itself was verified locally:** 42 chunks in 2.5 s, preemption OK. It has not yet been exercised in the stack.
+
+What was found and done this session:
+- **Cameras off (`sim_cameras` arg) fixed RTF:** 30 cells ran at RTF ~1.0 with the machine ~70% idle. Camera rendering was the cause of the v3 collapse.
+- **Deadlines in `tools/compare_run.py`:**
+  - the ours drive deadline now starts at the first wheel command;
+  - `--plan-wall-cap` (600 s) gives outcome `planner-timeout`, which is excluded from the means in `summarize_compare.py`;
+  - `--cell-wall-cap` (1500 s) is not enforced by killing anything yet, which needs cgroups (#28).
+- **Every compare cell restarts the whole stack, including gz**, so there is no cross-cell Gazebo contamination.
+- **The root cause of slow planning:** the rclpy `MultiThreadedExecutor`'s idle thread busy-spins and holds the GIL. py-spy showed 89% of samples in `wait_for_ready_callbacks`, and a single busy thread slowed the standalone bench from 68 to 3132 ms per solve.
+  - The fix: the new `pmp_planner/solver_process.py` (a spawned child plus a Pipe, with the field forwarded on every update). It is wired into `node.py` offline mode.
+  - There is a stub in CLAUDE.md under "Bugs fixed", and the audit of the other nodes is #30.
+- **`tools/bench_pmp_rollout.py`** is a standalone per-solve timing bench (`--stack-field` for the launch params). Its `--check-jac` expects `_ode_jac`/`_bc_jac`, which were never written. The analytic Jacobian is now low priority, since the math was ~5% of the time.
+- **New issues:** #28 (cgroups), #29 (why acados was dropped), #30 (GIL audit).
+
+**Uncommitted:**
+- `solver_process.py` and the `node.py` wiring;
+- `compare_run.py`, `summarize_compare.py`, `bench_pmp_rollout.py`;
+- the Makefile, the `sim_cameras` submodule change, CLAUDE.md and this file;
+- the convergence-figures edit in `../paper/draft.tex`.
+
+**Commit after the smoke cell confirms the fix.**
+
+**Background probe running (launched 02:35):** the first 8 broad40 plans, `ours` on worker 1. The log is `/tmp/mp_probe8.log` and the rows are `~/compare_mp_probe8.jsonl` on the VM (~10 min).
+- **It answers:** how often the field-timeout happens, and `plan_wall_s` on cells that do get a field (expect seconds, not minutes).
+- **If most cells drive:** the solver fix is confirmed; commit.
+- **If most cells hit field-timeout:** fix field delivery first.
+
+**Next, in order:**
+1. Confirm the smoke result.
+2. Commit.
+3. Rerun the v3 comparison with cameras off and the solver process (all arms, both seeds).
+4. Investigate "Timeout waiting for vector field": a ~23 MB depth-1 message that the planner possibly missed, probably the same GIL issue in `vector_field` (#30).
+5. Investigate the ~2.8 m final_err on ours' failed rows. This may simply have been planning time lost to starvation; check after the rerun.
+6. Do #28.
+
+**2026-10-01 12:00: host hardening is DONE (#31); nothing to do here.** Since
+2026-10-01 the hypervisor carries `pve-wedge-watchdog` (a hardware watchdog that
+reboots it within ~1 min of a wedge) and a pre-start guard that **refuses to
+start a passthrough VM that would not fit**. If `qm start 200` fails with
+"guard: REFUSING", the host lacks the RAM — shrink, don't bypass. VM 200 is
+back at 32 GiB, `onboot 0`; VM 100 is killed last on OOM, ours first, by design
+(the host's owners lend it to us). A host reboot takes ~3.5 min. Wedge tests
+during the morning rebooted the host several times, so VM 200 was down
+~09:00-11:40 — check the probe above actually finished before then.
+
+**2026-10-01 01:05: ALL THREE JOBS FINISHED; VM IDLE** (two orphaned bias-run sims on w7/w8 were killed).
+Data pulled to `run_data/{compare_v3_seed0,compare_v3_seed1,bias27,rescue}/`.
+- **v3 (#10) is NOT quotable as a comparison.** Timeouts with rtf < 0.2 are RTF collapse, not arm behaviour,
+  and they hit 8-17 of 40 cells per arm, even though the sims were headless (`--headless-rendering`), so the GUI
+  was not the cause. Only 7 (s0) and 8 (s1) plans are valid in all three arms. On valid cells, ours arrives
+  14/24 and 11/21, MPPI 9/24 and 5/18, RPP 4/22 and 3/24. Ours' non-timeout `failed` rows have a median
+  final_err of ~2.8 m, far worse than the soak's miss rate of 11%. So amcl plus the full stack costs a lot, or
+  there is a stack bug. Investigate before any rerun.
+- **#27 bias (x0.9)**: TVLQR arrives 13/27 valid, identity 0/24. On the 19 plans valid in both, it is 10 vs 0.
+  This result is clear.
+- **Rescue (#11)**: effort cost 4/485 rescued and field cost 68/654 at the same `T_w`. Stretching solves at a
+  median `T_w` of 1.5 s. This confirms that the failures come from the window being too short. Pick `T_w` >= 3 s.
 
 **2026-09-30 15:45: TWO VM JOBS RUNNING, beside v3.**
 - `rejoin_phase0.py rescue` on the 2000-problem failures: `~/rejoin_rescue.{log,jsonl}`, ~30-40 min.
@@ -39,8 +107,8 @@
 is now 32 GiB, `onboot 0` (start it by hand after a host reboot: `qm start 200`);
 VM 100 is 160 GiB, `onboot 1`. Guest autostart waits 300 s; `touch
 /etc/pve-hold-guests` on the host to skip it. VMs cannot swap, earlyoom kills kvm
-first (ours before VM 100), and `psi-reboot` reboots on a sustained memory stall.
-Untested by a deliberate wedge (no one on site). #26 closed after both VMs ran
+first (ours before VM 100), and `psi-reboot` reboots on a sustained memory stall
+(superseded 2026-10-01, see above: psi-reboot was too slow and is retired). #26 closed after both VMs ran
 together (host: 54 GiB available, no swap growth, PSI 0).
 
 **2026-09-30 14:12: the v3 comparison rerun (#10) IS RUNNING**, planned job 2

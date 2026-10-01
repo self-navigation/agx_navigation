@@ -17,3 +17,7 @@ Host agx
     ProxyCommand /home/danya/university/clown-car/agx_navigation/tools/agx-route %h %p
     ServerAliveInterval 30
     ServerAliveCountMax 6
+
+# The Proxmox HYPERVISOR is reachable for host-level work (#26, #31), but its
+# route is deliberately not recorded in this repo; ask the user. Not for
+# normal operations -- everything here goes through `agx`.
