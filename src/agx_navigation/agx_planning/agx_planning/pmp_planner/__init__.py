@@ -29,7 +29,7 @@ ROS2_AVAILABLE = importlib.util.find_spec("rclpy") is not None
 
 if ROS2_AVAILABLE:
     import rclpy
-    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.executors import SingleThreadedExecutor
     from .node import PlannerNode
 
     __all__.append("PlannerNode")
@@ -49,7 +49,9 @@ if ROS2_AVAILABLE:
         rclpy.init(args=args)
         node = PlannerNode()
 
-        executor = MultiThreadedExecutor(num_threads=2)
+        # NOT MultiThreadedExecutor: under use_sim_time it busy-spins and
+        # starves every callback of the GIL (see PlannerNode docstring).
+        executor = SingleThreadedExecutor()
         executor.add_node(node)
 
         try:
