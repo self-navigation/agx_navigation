@@ -124,7 +124,9 @@ def forensics(out_dir, w, log, age):
     dest = os.path.join(out_dir, "freeze", cell)
     os.makedirs(dest, exist_ok=True)
     note = [f"captured {time.strftime('%F %T')} worker={w} log_silent={age:.0f}s"]
-    env = dict(os.environ, GZ_PARTITION=f"agx{w}", ROS_DOMAIN_ID=str(40 + w))
+    # UDP only: the SHM transport fails to lock its port files in this state.
+    env = dict(os.environ, GZ_PARTITION=f"agx{w}", ROS_DOMAIN_ID=str(40 + w),
+               FASTDDS_BUILTIN_TRANSPORTS="UDPv4")
     procs = scope_procs(w)
 
     # Per-process / per-thread state for the whole scope: R vs S/D tells
