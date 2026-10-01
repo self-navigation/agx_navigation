@@ -15,7 +15,7 @@
 - **gz `/clock` ticks but ROS `/clock` doesn't:** the bridge died.
 - **Spinning:** livelock.
 
-(Also: gdb is now installed on the VM; py-spy is not, because python3-venv is missing.)
+**01:10, first live captures: gz is NOT frozen, the hang is in ROS/DDS (#32 comment).** Gazebo's own clock ticks at RTF 1.0 while the stack is silent. The harness sits idle in `rcl_wait`. All 4 Nav2 workers hung on their FIRST v5 cell (21:54). The suspect is leaked FastDDS shared memory: `/dev/shm` holds ~7900 entries, never cleaned between stacks. Not proven. **Next session:** read the overnight `freeze/` captures and plot `vitals.csv`. Then try cleaning `/dev/shm` per cell, or turning off the SHM transport, and see if the freezes stop. Also: the ROS `/clock` probe in freeze_watch fails on SHM itself, so fix it to use UDP. py-spy (`~/.pyspy`) can't read the system python3.12; gdb works.
 
 **00:40: the "RTF collapse" is a FREEZE (#32).** In every one of the 50 low-rtf cells, the whole stack goes silent at once, 30-110 s in. No process dies. The GT track runs at the normal rate right up to a hard stop, often with the robot driving at 0.5 m/s. The freezes are not synchronized across workers. The `rtf` field is meaningless for these cells. The guess is that the gz server hangs (or the clock bridge dies). Next: catch a frozen cell live, with a thread dump and gz `/clock` vs ROS `/clock`. **#28 cgroup scopes are built and smoke-tested on w9 (uncommitted)**: rows now carry `cg_*` CPU/memory/pid fields, and `kill_stack` stops the scope `agx-wN`.
 
