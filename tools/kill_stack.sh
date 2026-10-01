@@ -195,4 +195,9 @@ if [ -n "$left" ]; then
     ps -o pid=,args= -p "$(echo "$left" | paste -sd,)" 2>/dev/null | cut -c1-140
     exit 1
 fi
+# FastDDS leaves its SHM segments/port mutexes in /dev/shm when a process is
+# killed (#32: ~7900 entries after one day of campaigns). `shm clean` only
+# removes segments whose owner is dead, so live stacks in other partitions
+# are safe.
+( set +u; source /opt/ros/jazzy/setup.bash && fastdds shm clean ) 2>&1 | sed 's/^/shm: /'
 echo "stack clear -- no workspace ROS nodes or Gazebo in partition '$PARTITION' (RViz spared)"
