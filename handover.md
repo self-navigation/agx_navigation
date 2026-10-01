@@ -8,8 +8,10 @@
 - `vector_field` now publishes planner_data first and without `.tolist()` (~24 ms).
 - Preemption under the async path is untested in the stack; if replans misbehave, look there first.
 
+**v4 COMPARISON RUNNING (launched 14:06, deployed cc1b618):** `tools/jobs/140_compare_broad40.sh`, seed 0 on workers 1-3, seed 1 on 4-6, arms ours/nav2-mppi/nav2-rpp, rows in `~/compare_broad40_v4/seed{0,1}/`, logs `~/cmp_v4_s{0,1}.log`. Expect ~2-3 h (cells ~1-1.5 min each now planning is fast). Resumable: rerun the same command from `~/agx_navigation`. When done: pull to `run_data/compare_v4_seed{0,1}/`, read with `tools/summarize_compare.py`. If ours' `plan_wall_s` is back to tens of seconds, the executor fix regressed; if `planner-failed` with field timeout appears, check `Got field` timing in the stack log.
+
 **Next, in order:**
-1. Rerun v3 comparison: all arms, both seeds, new dir, workers 1-6, cameras off.
+1. Read v4 (above).
 2. Investigate ours' drive misses under amcl (00369 max cross-track 2.07 m).
 3. #28 (cgroups).
 
