@@ -155,6 +155,30 @@ if [ "$MODE" = "list" ]; then
     exit 0
 fi
 
+# CGROUP STOP FIRST (#28). fixture_up.sh launches each stack in a
+# `systemd --user` scope agx-w<N>; stopping the scope signals EVERY process in
+# the cgroup (SIGTERM, then SIGKILL after TimeoutStopSec), including children
+# whose environment the sweep below would not recognise. The env sweep stays as
+# the fallback: stacks launched without a scope, or a user manager that is
+# unreachable. Failure here is never fatal.
+scope_units() {
+    case "$PARTITION" in
+        all)     systemctl --user list-units --plain --no-legend 'agx-w*.scope' 2>/dev/null | awk '{print $1}' ;;
+        default) echo agx-w0.scope ;;
+        agx*)    echo "agx-w${PARTITION#agx}.scope" ;;
+    esac
+}
+if command -v systemctl >/dev/null 2>&1; then
+    for unit in $(scope_units); do
+        if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+            echo "stopping scope $unit"
+            systemctl --user stop "$unit" 2>/dev/null \
+                || systemctl --user kill -s KILL "$unit" 2>/dev/null
+        fi
+        systemctl --user reset-failed "$unit" >/dev/null 2>&1
+    done
+fi
+
 for sig in TERM TERM KILL; do
     pids=$(collect)
     [ -z "$pids" ] && break
