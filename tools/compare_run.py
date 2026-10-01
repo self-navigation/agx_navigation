@@ -598,6 +598,72 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
     return ok, attempts, text
 
 
+def _scope_cgroup_dir(worker) -> str | None:
+    """/sys/fs/cgroup path of the stack's systemd --user scope (#28), or None.
+
+    fixture_up.sh launches the stack as agx-w<N>.scope (agx-w0 = default
+    partition). None when the scope does not exist -- no linger, no user bus,
+    or a stack launched by hand -- and the row's cgroup fields are then null.
+    """
+    unit = f"agx-w{worker or 0}.scope"
+    try:
+        out = subprocess.run(["systemctl", "--user", "show", "-P", "ControlGroup", unit],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return None
+    if not out:
+        return None
+    path = "/sys/fs/cgroup" + out
+    return path if os.path.isdir(path) else None
+
+
+def cgroup_snapshot(worker) -> dict | None:
+    """cpu.stat counters + memory.peak + pids.current of the stack scope."""
+    d = _scope_cgroup_dir(worker)
+    if d is None:
+        return None
+    snap = {"t": time.monotonic(), "dir": d}
+    try:
+        with open(os.path.join(d, "cpu.stat")) as fh:
+            for ln in fh:
+                k, _, v = ln.partition(" ")
+                if k in ("usage_usec", "nr_throttled", "throttled_usec"):
+                    snap[k] = int(v)
+        for f in ("memory.peak", "memory.current", "pids.current"):
+            p = os.path.join(d, f)
+            if os.path.isfile(p):
+                snap[f] = int(open(p).read().strip())
+    except (OSError, ValueError):
+        return None
+    return snap
+
+
+def cgroup_fields(a: dict | None, b: dict | None) -> dict:
+    """Row fields for the window a->b; all null if either snapshot is missing.
+
+    The window is stack-ready -> end of drive (terrain + planning + driving).
+    Bring-up is excluded on purpose: it is launch noise, not the measured cell.
+    `cg_cpu_cores` = usage / wall, i.e. mean cores the stack burned. memory.peak
+    is the scope's lifetime high-water mark (scope lifetime == one cell).
+    """
+    keys = ("cg_usage_usec", "cg_nr_throttled", "cg_throttled_usec", "cg_wall_s",
+            "cg_cpu_cores", "cg_memory_peak", "cg_pids_start", "cg_pids_end")
+    if not a or not b or a.get("dir") != b.get("dir"):
+        return {k: None for k in keys}
+    wall = b["t"] - a["t"]
+    du = b.get("usage_usec", 0) - a.get("usage_usec", 0)
+    return {
+        "cg_usage_usec": du,
+        "cg_nr_throttled": b.get("nr_throttled", 0) - a.get("nr_throttled", 0),
+        "cg_throttled_usec": b.get("throttled_usec", 0) - a.get("throttled_usec", 0),
+        "cg_wall_s": round(wall, 1),
+        "cg_cpu_cores": round(du / 1e6 / wall, 3) if wall > 0 else None,
+        "cg_memory_peak": b.get("memory.peak"),
+        "cg_pids_start": a.get("pids.current"),
+        "cg_pids_end": b.get("pids.current"),
+    }
+
+
 def spawn_patches(args, plan_path: str):
     """tools/spawn_patches.py, in the worker's partition. Returns its JSON."""
     cmd = [os.path.join(HERE, "with-worker"), str(args.worker or ""), "python3",
@@ -667,6 +733,10 @@ def run_one(args, plan_path: str) -> dict:
                    error=f"fixture_up failed after {attempts} attempts (log {up_log})",
                    wall_time=round(time.monotonic() - t_start, 1))
         return row
+    # Per-stack cgroup counters (#28): snapshot now, diff at the end of run_one.
+    cg_start = cgroup_snapshot(args.worker)
+    row["cg_scope"] = cg_start["dir"] if cg_start else None
+    row.update(cgroup_fields(None, None))
 
     # 2. terrain ------------------------------------------------------------
     t_terr = time.monotonic()
@@ -808,6 +878,7 @@ def run_one(args, plan_path: str) -> dict:
     finally:
         if drv is not None:
             drv.close()
+        row.update(cgroup_fields(cg_start, cgroup_snapshot(args.worker)))
 
     row["wall_time"] = round(time.monotonic() - t_start, 1)
     return row

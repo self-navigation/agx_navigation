@@ -101,6 +101,25 @@ fi
 FLOOR_VAR=""
 [ -n "$FLOOR_NUMBER" ] && FLOOR_VAR="FLOOR_NUMBER=$FLOOR_NUMBER"
 
+# CGROUP SCOPE (#28). The stack runs inside a transient `systemd --user` scope
+# named agx-w<N> (agx-w0 = default partition), so that (a) kill_stack.sh can
+# stop the WHOLE stack by cgroup, not just what its name/env sweep finds, and
+# (b) compare_run.py can read per-stack cpu.stat / memory.peak / pids.current.
+# Needs `loginctl enable-linger` for the user (set on the VM 2026-10-02) so the
+# user manager outlives the ssh session. If no user bus is reachable we launch
+# bare, exactly as before, and say so; compare_run then records null stats.
+# The harness (compare_run.py) deliberately stays OUTSIDE the scope, as a
+# sibling: its own rclpy spinning must not be billed to the stack.
+SCOPE_UNIT="agx-w${WORKER:-0}.scope"
+SCOPE_PREFIX=""
+USER_MGR=$(systemctl --user is-system-running 2>/dev/null)
+if command -v systemd-run >/dev/null 2>&1 \
+   && { [ "$USER_MGR" = running ] || [ "$USER_MGR" = degraded ]; }; then
+    SCOPE_PREFIX="systemd-run --user --scope --quiet --collect --unit=$SCOPE_UNIT -p TimeoutStopSec=15 --"
+else
+    echo "[fixture-up] WARNING: no systemd user manager (linger off / no user bus); stack runs WITHOUT a cgroup scope, stats will be null"
+fi
+
 READY_MODE=vec-pmp
 [ "$NAV_MODE" = "nav2" ] && READY_MODE=nav2
 # amcl publishes map->odom before it has localized; wait for its pose too.
@@ -124,8 +143,10 @@ for attempt in $(seq 1 "$TRIES"); do
 
     tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n scratch
     tmux kill-window -t "$SESSION:$WINDOW" 2>/dev/null
+    # A stale scope of the same name would make systemd-run refuse the unit.
+    [ -n "$SCOPE_PREFIX" ] && systemctl --user reset-failed "$SCOPE_UNIT" >/dev/null 2>&1
     tmux new-window -d -t "$SESSION" -n "$WINDOW" \
-        "cd $WORKSPACE && DISPLAY=:0 vglrun -d egl0 make fixture $FLOOR_VAR WORKER=$WORKER \
+        "cd $WORKSPACE && DISPLAY=:0 $SCOPE_PREFIX vglrun -d egl0 make fixture $FLOOR_VAR WORKER=$WORKER \
          CORRECTOR=$CORRECTOR LOCALIZATION=$LOCALIZATION FIXTURE_NAV_MODE=$NAV_MODE \
          HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \
          FIXTURE_EXTRA_PARAMS=\"$EXTRA\" 2>&1 | tee $LOG"
@@ -133,6 +154,13 @@ for attempt in $(seq 1 "$TRIES"); do
     # The probe must run in the stack's own partition and domain, or it will
     # correctly report an empty graph and we would restart a healthy stack.
     if tools/with-worker "$WORKER" python3 tools/stack_ready.py --mode "$READY_MODE" $AMCL_FLAG --wait "$TIMEOUT" --settle 3; then
+        if [ -n "$SCOPE_PREFIX" ]; then
+            if systemctl --user is-active --quiet "$SCOPE_UNIT"; then
+                echo "[fixture-up] scope $SCOPE_UNIT active"
+            else
+                echo "[fixture-up] WARNING: scope $SCOPE_UNIT not active; stats will be null"
+            fi
+        fi
         echo "[fixture-up] READY on attempt $attempt (log: $LOG)"
         exit 0
     fi
