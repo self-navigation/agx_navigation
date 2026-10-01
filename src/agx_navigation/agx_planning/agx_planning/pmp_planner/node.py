@@ -166,7 +166,7 @@ Operating modes (selected by the `mode` parameter at launch):
     end-of-trajectory (success / abort / preempt). A new goal arriving
     mid-rollout preempts the current one server-side: the in-flight
     rollout is woken via _exec_stop, returns "preempted", and the next
-    goal proceeds once the previous releases _exec_lock. Replan
+    goal proceeds once the previous finishes (_exec_busy). Replan
     triggering (path-masked field-change detection) lives in the
     interpreter -- the planner is a pure (start, goal, field) ->
     trajectory function in this mode.
@@ -199,6 +199,8 @@ import numpy as np
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.clock import Clock, ClockType
+import rclpy.task
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import PoseStamped
@@ -258,14 +260,18 @@ class PlannerNode(Node):
     dt_segment-second BVP segment is streamed back as action feedback. A
     new goal arriving mid-rollout preempts the current one: _action_handle_accepted
     fires _exec_stop, the in-flight rollout exits with "preempted", and the
-    new goal then runs once it acquires _exec_lock. Path-masked replan
+    new goal then runs once the previous finishes (_exec_busy). Path-masked replan
     detection lives in the interpreter, not here -- the planner only sees
     fresh action goals.
 
-    NOTE: offline mode requires a MultiThreadedExecutor in main() so that
-    (a) two execute callbacks can coexist (outgoing one returning + incoming
-    one waiting on _exec_lock), and (b) field subscription delivery is not
-    blocked during long BVP solves.
+    NOTE: the node runs on a SingleThreadedExecutor and must stay that way.
+    rclpy's MultiThreadedExecutor busy-spins under use_sim_time with a
+    1 kHz /clock (~115% CPU on an empty node, measured 2026-10-01) and
+    starves every callback of the GIL -- the field callback was entered
+    4-8 s late. Offline mode therefore never blocks a callback: the execute
+    callback is a coroutine that awaits _sleep() between checks, so two
+    goals (outgoing + preempting) and field delivery interleave on the
+    one thread, and the solve itself runs in a child process.
     """
 
     def __init__(self):
@@ -302,10 +308,9 @@ class PlannerNode(Node):
         # forever re-solves from the same stale pose and never sees the
         # robot has moved -- it looks like a planner defect (endless
         # spin-in-place) but is actually callback starvation.
-        # MultiThreadedExecutor(num_threads=2) in __init__.py only helps if
-        # the blocking callbacks are in DIFFERENT groups: with 2 threads and
-        # this group, a stuck solve on one thread no longer prevents pose
-        # updates from running on the other.
+        # (2026-07-29, under the old MultiThreadedExecutor.) Online mode now
+        # runs single-threaded, so a long solve blocks pose updates again;
+        # online mode is infeasible with solve_bvp anyway and is not in use.
         self._io_cb_group = ReentrantCallbackGroup()
 
         self._diag_logger: Optional[TurnDiagnosticLogger] = None
@@ -386,29 +391,25 @@ class PlannerNode(Node):
         client) owns chassis-pose snapshots and goal-source subscriptions;
         the executor owns wheel-command publication.
         """
-        # _exec_lock serialises rollouts so a preempting goal waits for
-        # the previous to release before starting. _exec_stop is the
+        # _exec_busy serialises rollouts so a preempting goal waits for
+        # the previous to finish before starting (a flag suffices: every
+        # callback runs on the executor's one thread). _exec_stop is the
         # signal that wakes a still-running rollout: _action_handle_accepted
         # sets it on a new goal arriving, _do_rollout_action's per-iter
         # check sees it and exits with "preempted".
-        self._exec_lock = threading.Lock()
+        self._exec_busy = False
         self._exec_stop = threading.Event()
         self._trajectory_id: int = 0
 
-        # The rollout runs in its own process (solver_process.py): on an
-        # executor thread it shared the GIL with rclpy's busy-spinning wait
-        # loop and ran ~200x slower than standalone.
+        # The rollout runs in its own process (solver_process.py), so the
+        # node's one thread only shuttles messages.
         from agx_planning.pmp_planner.solver_process import SolverProcess
         self._solver_proc = SolverProcess(self.cfg)
 
-        # ReentrantCallbackGroup so (a) two execute callbacks (the
-        # outgoing one returning + the incoming one waiting on
-        # _exec_lock) can coexist on different threads, and (b) a long
-        # BVP solve in the execute callback doesn't block /vector_field
-        # subscription delivery, which lives in the default
-        # mutually-exclusive group. Together with MultiThreadedExecutor
-        # in main(), field updates flow through during long solves.
+        # Reentrant so two execute coroutines (outgoing + preempting) can
+        # both be in flight; with one thread this only affects scheduling.
         self._action_cb_group = ReentrantCallbackGroup()
+        self._steady = Clock(clock_type=ClockType.STEADY_TIME)
 
         # Feedback QoS: the planner solves BVPs much faster than the
         # chassis plays them back (a 30-second sim trajectory at
@@ -531,8 +532,12 @@ class PlannerNode(Node):
         now a pure (start, goal, field) -> trajectory function; replanning
         is a fresh action goal.
         """
+        _t0 = time.monotonic()
+        self.get_logger().info("field msg: callback entered")
         data = np.asarray(msg.data, dtype=np.float32)
+        _t1 = time.monotonic()
         new_field = parse_field_array(data, self.cfg)
+        _t2 = time.monotonic()
         if new_field is None:
             self.get_logger().warn(
                 f"Field size mismatch: got {data.size} floats, "
@@ -554,10 +559,13 @@ class PlannerNode(Node):
             self._solver.field = new_field
             if hasattr(self, "_solver_proc"):
                 self._solver_proc.set_field(data)
+            _t3 = time.monotonic()
             self._field_event.set()
 
         self.get_logger().warn(
-            f"Got field. Size: {self._field._tt.shape}",
+            f"Got field. Size: {self._field._tt.shape}  asarray="
+            f"{(_t1 - _t0) * 1e3:.0f}ms parse={(_t2 - _t1) * 1e3:.0f}ms "
+            f"swap+forward={(_t3 - _t2) * 1e3:.0f}ms",
             throttle_duration_sec=5.0,
         )
 
@@ -683,21 +691,42 @@ class PlannerNode(Node):
     def _action_handle_accepted(self, goal_handle):
         """Called on every accepted goal. If a previous rollout is in
         flight, set _exec_stop so it exits with "preempted"; the new
-        execute callback will then block briefly on _exec_lock until
-        that one releases. goal_handle.execute() itself is non-blocking
-        (it schedules _action_execute on a worker thread)."""
+        execute coroutine will then wait on _exec_busy until that one
+        finishes. goal_handle.execute() itself is non-blocking (it
+        schedules _action_execute as an executor task)."""
         self._exec_stop.set()
         goal_handle.execute()
 
-    def _action_execute(self, goal_handle):
-        """Execute callback wrapper: serialise rollouts via _exec_lock so
-        a preempting goal cleanly waits for the previous to release
-        before clearing _exec_stop and starting its own rollout."""
-        with self._exec_lock:
-            self._exec_stop.clear()
-            return self._action_execute_inner(goal_handle)
+    async def _sleep(self, seconds: float) -> None:
+        """Yield the executor for `seconds` of WALL time (steady clock: a
+        ROS-clock timer would stall with the sim and race /clock). The only
+        way a callback here may wait -- never block the one thread."""
+        fut = rclpy.task.Future()
 
-    def _action_execute_inner(self, goal_handle):
+        def fire():
+            timer.cancel()
+            fut.set_result(None)
+
+        timer = self.create_timer(seconds, fire, clock=self._steady)
+        try:
+            await fut
+        finally:
+            self.destroy_timer(timer)
+
+    async def _action_execute(self, goal_handle):
+        """Execute coroutine wrapper: serialise rollouts via _exec_busy so
+        a preempting goal cleanly waits for the previous to finish
+        before clearing _exec_stop and starting its own rollout."""
+        while self._exec_busy:
+            await self._sleep(0.01)
+        self._exec_busy = True
+        try:
+            self._exec_stop.clear()
+            return await self._action_execute_inner(goal_handle)
+        finally:
+            self._exec_busy = False
+
+    async def _action_execute_inner(self, goal_handle):
         """Validate the goal, wait for the field, run one rollout, and
         translate the rollout's status string into the appropriate
         action terminal state.
@@ -770,11 +799,10 @@ class PlannerNode(Node):
                 result.trajectory_id = 0
                 return result
 
-            # Block until the field callback signals us, but wake up periodically
-            # to re-check _exec_stop and the deadline. Without this, the executor
-            # thread sleeps through the subscription callback entirely.
+            # Yield so _on_field can run on the executor's one thread, and
+            # wake periodically to re-check _exec_stop and the deadline.
             remaining = deadline - time.monotonic()
-            self._field_event.wait(timeout=min(0.05, max(0.0, remaining)))
+            await self._sleep(min(0.05, max(0.001, remaining)))
 
         self._trajectory_id += 1
         traj_id = self._trajectory_id
@@ -786,7 +814,7 @@ class PlannerNode(Node):
         self._solver.reset_warm_start()
 
         try:
-            status = self._do_rollout_action(goal_handle, traj_id, x0, goal)
+            status = await self._do_rollout_action(goal_handle, traj_id, x0, goal)
         except Exception as e:
             self.get_logger().error(f"Offline rollout crashed: {e!r}")
             goal_handle.abort()
@@ -817,7 +845,7 @@ class PlannerNode(Node):
         result.trajectory_id = int(traj_id)
         return result
 
-    def _do_rollout_action(
+    async def _do_rollout_action(
         self, goal_handle, traj_id: int, x0: np.ndarray, goal: np.ndarray
     ) -> str:
         """Thin adapter: wire ROS 2 cancel/preempt signals into rollout_generator
@@ -839,6 +867,9 @@ class PlannerNode(Node):
             self._solver_proc.rollout(x0, goal, stop_fn)
         )
         for chunk in gen:
+            if chunk is None:  # solver busy: let other callbacks run
+                await self._sleep(0.05)
+                continue
             self._handle_rollout_chunk(chunk, traj_id, all_poses, goal_handle)
 
         terminal: RolloutResult = gen.value

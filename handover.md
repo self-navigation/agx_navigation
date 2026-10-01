@@ -1,49 +1,17 @@
 # Handover — 2026-10-01
 
-## LATEST (02:35): slow planning was GIL starvation, fix in flight, UNCOMMITTED
+## LATEST (14:05): slow planning FIXED and committed; v3 rerun next
 
-**The smoke cell FINISHED (VM idle), and the fix is only half-confirmed.** The row is `/tmp/smoke_mp.jsonl` on the VM.
-- **Outcome: `planner-failed`, with "Timeout waiting for vector field" after the 10 s `vector_field_timeout`.** The planner log has no "Got field" line at all, so the field never reached the planner.
-- **This is now the blocker.** Before the fix, the same cell got its field and then planned for 417 s, so field delivery is flaky, not always broken.
-- **Suspects:**
-  - the ~23 MB `/vector_field/planner_data` at depth 1, published only on a map or goal change, so a late or dropped message is never re-sent;
-  - vector_field computing FM2 after the goal arrives, which takes longer than 10 s under GIL contention (#30).
-- **Check:** the timestamps of vector_field's own "published" log vs. the goal. Cheap fixes are raising `vector_field_timeout`, or making planner_data transient-local.
-- **The solver-process path itself was verified locally:** 42 chunks in 2.5 s, preemption OK. It has not yet been exercised in the stack.
-
-What was found and done this session:
-- **Cameras off (`sim_cameras` arg) fixed RTF:** 30 cells ran at RTF ~1.0 with the machine ~70% idle. Camera rendering was the cause of the v3 collapse.
-- **Deadlines in `tools/compare_run.py`:**
-  - the ours drive deadline now starts at the first wheel command;
-  - `--plan-wall-cap` (600 s) gives outcome `planner-timeout`, which is excluded from the means in `summarize_compare.py`;
-  - `--cell-wall-cap` (1500 s) is not enforced by killing anything yet, which needs cgroups (#28).
-- **Every compare cell restarts the whole stack, including gz**, so there is no cross-cell Gazebo contamination.
-- **The root cause of slow planning:** the rclpy `MultiThreadedExecutor`'s idle thread busy-spins and holds the GIL. py-spy showed 89% of samples in `wait_for_ready_callbacks`, and a single busy thread slowed the standalone bench from 68 to 3132 ms per solve.
-  - The fix: the new `pmp_planner/solver_process.py` (a spawned child plus a Pipe, with the field forwarded on every update). It is wired into `node.py` offline mode.
-  - There is a stub in CLAUDE.md under "Bugs fixed", and the audit of the other nodes is #30.
-- **`tools/bench_pmp_rollout.py`** is a standalone per-solve timing bench (`--stack-field` for the launch params). Its `--check-jac` expects `_ode_jac`/`_bc_jac`, which were never written. The analytic Jacobian is now low priority, since the math was ~5% of the time.
-- **New issues:** #28 (cgroups), #29 (why acados was dropped), #30 (GIL audit).
-
-**Uncommitted:**
-- `solver_process.py` and the `node.py` wiring;
-- `compare_run.py`, `summarize_compare.py`, `bench_pmp_rollout.py`;
-- the Makefile, the `sim_cameras` submodule change, CLAUDE.md and this file;
-- the convergence-figures edit in `../paper/draft.tex`.
-
-**Commit after the smoke cell confirms the fix.**
-
-**Background probe running (launched 02:35):** the first 8 broad40 plans, `ours` on worker 1. The log is `/tmp/mp_probe8.log` and the rows are `~/compare_mp_probe8.jsonl` on the VM (~10 min).
-- **It answers:** how often the field-timeout happens, and `plan_wall_s` on cells that do get a field (expect seconds, not minutes).
-- **If most cells drive:** the solver fix is confirmed; commit.
-- **If most cells hit field-timeout:** fix field delivery first.
+**Root cause of all planner slowness (and the field timeouts): rclpy `MultiThreadedExecutor` under sim time.** With the 1 kHz `/clock` it busy-spins at >100% CPU even on an empty node (SingleThreaded/Events executors: 0%), starving every callback of the GIL. The field callback was entered 4-8 s after publish, past the 10 s timeout.
+- **Fix:** `pmp_planner` runs on `SingleThreadedExecutor`; the action execute path is `async` and awaits a steady-clock `_sleep()`; `SolverProcess.rollout` yields `None` instead of blocking. CLAUDE.md stub rewritten; #30 closed (pmp_planner was the only MT-executor node).
+- **Probe `~/fp7.jsonl` (plans 00208/00369/00249, ours, amcl):** field accepted 0.43-0.48 s after goal, `plan_wall_s` 3.2-6.5 s (was 25-64 s or timeout), planner succeeded on all three. 1/3 arrived; 00208 and 00369 missed by 2.5/3.3 m while DRIVING — under amcl; read that only from the full rerun.
+- `vector_field` now publishes planner_data first and without `.tolist()` (~24 ms).
+- Preemption under the async path is untested in the stack; if replans misbehave, look there first.
 
 **Next, in order:**
-1. Confirm the smoke result.
-2. Commit.
-3. Rerun the v3 comparison with cameras off and the solver process (all arms, both seeds).
-4. Investigate "Timeout waiting for vector field": a ~23 MB depth-1 message that the planner possibly missed, probably the same GIL issue in `vector_field` (#30).
-5. Investigate the ~2.8 m final_err on ours' failed rows. This may simply have been planning time lost to starvation; check after the rerun.
-6. Do #28.
+1. Rerun v3 comparison: all arms, both seeds, new dir, workers 1-6, cameras off.
+2. Investigate ours' drive misses under amcl (00369 max cross-track 2.07 m).
+3. #28 (cgroups).
 
 **2026-10-01 12:00: host hardening is DONE (#31); nothing to do here.** Since
 2026-10-01 the hypervisor carries `pve-wedge-watchdog` (a hardware watchdog that

@@ -131,7 +131,8 @@ class SolverProcess:
 
     def rollout(self, x0, goal, stop_fn: Callable[[], Optional[str]]
                 ) -> Iterator:
-        """Yield RolloutChunks; the generator's return value is the
+        """Yield RolloutChunks, or None when nothing is ready yet (the caller
+        should sleep and resume); the generator's return value is the
         RolloutResult (use with GeneratorReturnCatcher, like rollout_generator)."""
         from agx_planning.pmp_planner.rollout import RolloutResult
 
@@ -150,12 +151,14 @@ class SolverProcess:
             elif time.monotonic() - stop_t > self._grace:
                 self._restart()
                 return RolloutResult(status=reason, message=reason.capitalize())
-            # poll() blocks in C without the GIL -- the whole point.
-            if not self._conn.poll(0.05):
+            # Never block here: the caller is a coroutine on a single-threaded
+            # executor, so an idle tick yields None and the caller sleeps.
+            if not self._conn.poll(0):
                 if not self._proc.is_alive():
                     self._restart()
                     return RolloutResult(status="failed",
                                          message="Solver process died")
+                yield None
                 continue
             kind, payload = self._conn.recv()
             if kind == "chunk":
