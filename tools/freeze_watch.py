@@ -12,7 +12,8 @@ runs BESIDE a campaign (it never touches the stacks) and records:
   freeze/<cell>/   once per cell whose stack log has been silent for
                --stale s while its scope is alive: gdb backtraces of every
                gz process in the scope, per-thread state/wchan/CPU, and a
-               gz-side vs ROS-side /clock probe.
+               gz-side vs ROS-side /clock probe, and py-spy dumps of every
+               Python process (needs ~/.pyspy).
 
 Run on the VM:  python3 tools/freeze_watch.py --out-dir ~/cmp_v5/seed0 --workers "1 2 3"
 Plot locally:   tools/plot_vitals.py <vitals.csv>
@@ -25,6 +26,7 @@ import subprocess
 import threading
 import time
 
+PYSPY = os.path.expanduser("~/.pyspy/bin/py-spy")  # venv; absent -> skipped
 CG_APP = "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
 
 
@@ -149,6 +151,10 @@ def forensics(out_dir, w, log, age):
             with open(os.path.join(dest, f"gdb_{pid}.txt"), "w") as f:
                 f.write(c + "\n\n" + bt)
             note.append(f"gdb dumped pid {pid}: {c[:120]}")
+        elif "python" in c and os.path.exists(PYSPY):
+            out = sh(f"sudo -n {PYSPY} dump --pid {pid}", timeout=60)
+            with open(os.path.join(dest, f"pyspy_{pid}.txt"), "w") as f:
+                f.write(c + "\n\n" + out)
 
     # Does gz itself still tick, and does ROS see it?
     clock = "== gz /clock (2 samples)\n"
