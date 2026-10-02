@@ -76,42 +76,30 @@ MPPI vs Nav2 RPP: 40 plans × 2 seeds, baked map, amcl, a fresh stack per cell.
   failures.
 - Playback is time-indexed (`playback_index=time`). The "nearest point" metric
   was only ever used in our analysis, never in the controller.
-- **Bare-ground soak of the live plans (job 150, PRELIMINARY: 257 of 340 rows):**
+- **Bare-ground soak of the live plans (job 150, final, 34 pairs × 5, `soak_data/soak_live_vs_lib.jsonl`):**
 
-  | | live plans | their library plans |
-  | --- | --- | --- |
-  | mean max cross-track | 0.474 m | 0.609 m |
-  | mean `final_err` | 0.183 m | 0.259 m |
-  | miss rate | 7.4% | 10.5% |
+  | | live plans | their library plans | live worse (sign test) |
+  | --- | --- | --- | --- |
+  | mean max cross-track | 0.472 m | 0.615 m | 7/34, p=0.0008 |
+  | mean `final_err` | 0.182 m | 0.257 m | 14/34, p=0.39 |
+  | miss rate | 6.5% | 10.0% | — |
+  | geo `J` per step | 0.0555 | 0.0571 | 23/34, p=0.06 |
 
-  **The stack's plans are not hard to track; on bare ground they track at
-  least as well as the library plans.** So the miss gap comes from something
-  only the full stack has: walls (contact), amcl's pose (even if unbiased on
-  average), or ROS timing and latency in the corrector node. The live plans'
-  higher `J` (geometric mean 20 vs 13) is probably just their length (about 280
-  vs 186 samples). That is unchecked.
+  **The stack's plans are not hard to track** — better on peak deviation, equal
+  on arrival. Their higher total `J` (20 vs 13) is length (373 vs 237 steps);
+  per step it is the same. So the v7 miss gap comes from something only the full
+  stack has: walls (contact), amcl's pose, or ROS timing in the corrector node.
 
 ## 4. Running now
 
-- **Job 150** on the VM, started 18:18 UTC, ~40 min total, so it should be done
-  by about 22:00 MSK.
-  - Command: `tools/jobs/150_live_vs_library.sh`
-  - Log: `/tmp/lvl.log`
-  - Output: `~/soak_live_vs_lib.jsonl`. It is only written at the end; the
-    in-progress rows are in `.jsonl.w1`.
-  - Traces: `~/soak_live_vs_lib_traces/`
-  - Each live plan alternates with its library pair, in `~/live40/` (live)
-    and `~/traj_data_v2/` (library).
-  - Read the result the same way as the preliminary table above: pair by case,
-    with `trajectory` ending in `__wfp0` = live.
-  - The four failed rows are the usual ~1% patch-spawn failures.
-- Note: `tools/agx-run` does not cd into the repo. Launch jobs with
-  `cd ~/agx_navigation && set +u && source /opt/ros/jazzy/setup.bash && source install/setup.bash && bash tools/jobs/…`.
+Nothing. Job 150 finished 18:58 UTC (340 rows). Launch note: `tools/agx-run`
+does not cd into the repo; launch jobs with
+`cd ~/agx_navigation && set +u && source /opt/ros/jazzy/setup.bash && source install/setup.bash && bash tools/jobs/…`.
+`parallel_soak` writes `<out>.w1` while running and merges into `<out>` at the end.
 
 ## 5. Next, in order
 
-1. **Finish job 150**: final table, then a comment on #34.
-2. **Separate the three stack-only suspects with one comparison run (v8, ours
+1. **Separate the three stack-only suspects with one comparison run (v8, ours
    only).** It needs the user's OK, since it occupies the VM for hours.
    - Arms: `localization:=truth` vs `amcl` on the same plans, each recording
      the new per-tick `tvlqr_diagnostics` and `live_plan` (`compare_run.py`,
@@ -122,10 +110,10 @@ MPPI vs Nav2 RPP: 40 plans × 2 seeds, baked map, amcl, a fresh stack per cell.
        points vs wall proximity.
    - v8 is also the freeze re-test (#32): launch it via
      `tools/agx-run --detach`, as v6 was.
-3. Move the analysis scripts `/tmp/lag.py` and `/tmp/lag2.py` (time-indexed vs
+2. Move the analysis scripts `/tmp/lag.py` and `/tmp/lag2.py` (time-indexed vs
    corrector error, departure, lag, saturation windows) into `tools/`. They are
    on the laptop's /tmp and will vanish on reboot.
-4. Then go back to the comparison (#10, #33) and the re-join Phase 1 (#35).
+3. Then go back to the comparison (#10, #33) and the re-join Phase 1 (#35).
    The tier-2 trigger may need to be deviation-based rather than
    saturation-based, given the finding above.
 
