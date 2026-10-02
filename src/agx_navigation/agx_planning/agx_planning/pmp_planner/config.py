@@ -188,6 +188,27 @@ class PlannerConfig:
     xt_horizon_m: float = 2.5
     xt_sigma_mult: float = 3.0
 
+    # --- Footprint barrier (opt-in, off by default) ---
+    # Adds (1/2)*w_fp*sum_k max(0, fp_margin - d(q_k))^2 to the running
+    # cost, where q_k = p + R(theta) b_k are points on the chassis
+    # rectangle's outline every <= fp_sample_spacing m (corners alone let
+    # a thin door jamb poke in between them) and d is the signed wall distance
+    # (field channel wall_dist). FM2 treats the robot as a point, so
+    # without this a plan may swing a corner into a wall on a turn
+    # (compare v7, #34: 92% of plan overlaps were yawed corners). The
+    # d/dtheta part enters lambda_th WITHOUT the pos_gate, so it is what
+    # rotates the body square to a narrow doorway before driving through.
+    # fp_half_length / fp_half_width: chassis rectangle [m]; inscribed
+    #    0.29 m, circumscribed 0.43 m.
+    # fp_smooth_sigma: Gaussian blur of d [m] -- the bilinear gradient is
+    #    only C^0 across cells, and solve_bvp meshes kinks to death.
+    w_fp: float = 0.0
+    fp_margin: float = 0.05
+    fp_half_length: float = 0.315
+    fp_half_width: float = 0.2925
+    fp_smooth_sigma: float = 0.05
+    fp_sample_spacing: float = 0.08
+
     # --- Goal tolerances ---
     # Both must be satisfied simultaneously to trigger REACHED (zero
     # wheel command). The at-goal yaw correction is handled by the BVP

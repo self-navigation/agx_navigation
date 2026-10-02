@@ -60,6 +60,7 @@ Cost:
           + (1/2) * w_omega_barrier * max(0,|w|-w_max)^2     # soft omega_max barrier
           + (1/2) * w_wheel_barrier * sum_i max(0,|w_i|-w_wheel_max)^2  # joint limit
           + (1/2) * gamma_wheel * (a_l^2 + a_r^2)            # per-wheel effort
+          + (1/2) * w_fp * sum_k phi_k^2                     # footprint barrier (opt-in)
 
   with v, omega the DERIVED body velocities above. Linear and angular
   authority share one per-wheel budget: the old independent (a_max,
@@ -84,6 +85,14 @@ with
   T_lin(p)        = T_ref - F_ref . (p - p_pursuit)
                    (linearization of T around p_pursuit; long-range pull
                     along -F_ref that complements the running L_pos)
+  phi_k(p,th)     = max(0, fp_margin - d(q_k)),  q_k = p + R(theta) b_k
+                   over points b_k on the chassis rectangle's outline
+                   (every fp_sample_spacing); d = signed, smoothed wall distance
+                   (field channel wall_dist), g_k = grad d(q_k). FM2 sees
+                   the robot as a point; this is the only term that knows
+                   it is a rectangle, so it is what squares the body to a
+                   narrow doorway (#34). Off when w_fp = 0 or the field
+                   carries no wall_dist.
 
 Hamiltonian (minimum-principle convention):
   H = L + lambda_x * v cos(theta) + lambda_y * v sin(theta) + lambda_th * omega
@@ -100,13 +109,19 @@ v and omega now derived states):
   gate'(x)   = (p_gate / 2) * ((1 + x) / 2) ** (p_gate - 1)
   cross_F_h  = F_x sin(theta) - F_y cos(theta)
   lambda_x_dot     = -beta * min(T, T_horizon) * dT/dx / T_horizon
+                     + w_fp * sum_k phi_k * g_k,x
   lambda_y_dot     = -beta * min(T, T_horizon) * dT/dy / T_horizon
+                     + w_fp * sum_k phi_k * g_k,y
   lambda_th_dot    = -w_F * w_h * cross_F_h
                      - (1 - w_F) * w_h * (theta - theta_pursuit)
                      - w_v * v_ref * (v - v_ref_eff) * gate'(F . h) * cross_F_h
                      - w_brake * (1 - F . h) * v^2 * cross_F_h
                      + lambda_x * v sin(theta) - lambda_y * v cos(theta)
-  (Ungated here: the position-costate gate lives in Hv below.)
+                     + w_fp * sum_k phi_k * g_k . (R'(theta) b_k)
+  (Ungated here: the position-costate gate lives in Hv below. So the
+   footprint's translational push is gated through lambda_x/y in Hv, but
+   its rotational part acts on lambda_th directly -- the robot can turn
+   away from a wall before it is aligned enough to drive.)
 
 The wheel costates are the chain-rule images of the old (lambda_v,
 lambda_omega) through (v, omega) = A (w_l, w_r), lambda_w = A^T

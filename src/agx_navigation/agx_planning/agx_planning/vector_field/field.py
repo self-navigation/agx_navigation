@@ -81,6 +81,11 @@ class VectorFieldResult:
     origin_x     -- world x of the cell-corner of cell (col=0, row=0) [m].
     origin_y     -- world y of the cell-corner of cell (col=0, row=0) [m].
     resolution   -- cell size [m/cell].
+    wall_dist    -- SIGNED distance to the nearest obstacle cell [m]:
+                    positive in free space, negative inside walls, so
+                    the planner's footprint cost has an outward gradient
+                    even for a body point already in a wall. Optional so
+                    hand-built results (tests) need not supply it.
     """
 
     travel_time: np.ndarray
@@ -91,6 +96,7 @@ class VectorFieldResult:
     origin_x: float
     origin_y: float
     resolution: float
+    wall_dist: Optional[np.ndarray] = None
 
     def query_vec(self, wx: float, wy: float) -> Optional[np.ndarray]:
         """Bilinear interpolation of [vx, vy, T] at world position (wx, wy).
@@ -483,6 +489,7 @@ def compute_field(
         origin_x=origin_x,
         origin_y=origin_y,
         resolution=resolution,
+        wall_dist=edt_free - distance_transform_edt(obstacle_mask) * resolution,
     )
     return result, message
 
@@ -492,7 +499,11 @@ def pack_field_array(result: VectorFieldResult) -> np.ndarray:
 
     Layout (same as /vector_field/planner_data):
       [h, w, origin_x, origin_y, resolution,
-       travel_time(H*W), grad_x(H*W), grad_y(H*W), grad_mag(H*W)]
+       travel_time(H*W), grad_x(H*W), grad_y(H*W), grad_mag(H*W),
+       wall_dist(H*W)]
+
+    wall_dist is appended last (and only when present) so a parser that
+    reads the first four channels by offset is unaffected.
 
     NaN cells in T are replaced with (free_max_T * 4 + 1) so the planner
     can compare without special-casing NaN. This sentinel matches the
@@ -510,20 +521,22 @@ def pack_field_array(result: VectorFieldResult) -> np.ndarray:
         [h, w, result.origin_x, result.origin_y, result.resolution],
         dtype=np.float32,
     )
-    return np.concatenate(
-        [
-            header,
-            tt_out.astype(np.float32).ravel(),
-            result.grad_x.astype(np.float32).ravel(),
-            result.grad_y.astype(np.float32).ravel(),
-            mag_out.astype(np.float32).ravel(),
-        ]
-    )
+    parts = [
+        header,
+        tt_out.astype(np.float32).ravel(),
+        result.grad_x.astype(np.float32).ravel(),
+        result.grad_y.astype(np.float32).ravel(),
+        mag_out.astype(np.float32).ravel(),
+    ]
+    if result.wall_dist is not None:
+        parts.append(result.wall_dist.astype(np.float32).ravel())
+    return np.concatenate(parts)
 
 
 def field_result_to_grid(
     result: VectorFieldResult,
     field_eps: float = 1e-2,
+    wall_sigma: float = 0.05,
 ) -> VectorFieldGrid:
     """Build a VectorFieldGrid directly from a VectorFieldResult.
 
@@ -543,5 +556,7 @@ def field_result_to_grid(
         result.origin_y,
         result.resolution,
         field_eps=field_eps,
+        wall_dist=result.wall_dist,
+        wall_sigma=wall_sigma,
     )
     return grid

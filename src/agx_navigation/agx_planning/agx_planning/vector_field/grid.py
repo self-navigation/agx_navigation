@@ -14,12 +14,19 @@ class VectorFieldGrid:
     |grad T| << eps (goal sink, saddles, flat regions).
 
     Sign convention: F points in the direction of descending T (toward goal).
+
+    Optionally also holds a signed wall distance d(x, y) (>0 free, <0 in
+    walls), Gaussian-smoothed by wall_sigma so the footprint cost built on
+    it is close to C^1 for solve_bvp; query_dist samples it.
     """
 
     def __init__(self):
         self._tt: Optional[np.ndarray] = None
         self._dT_dx: Optional[np.ndarray] = None
         self._dT_dy: Optional[np.ndarray] = None
+        self._wd: Optional[np.ndarray] = None
+        self._dwd_dx: Optional[np.ndarray] = None
+        self._dwd_dy: Optional[np.ndarray] = None
         self._origin_x = 0.0
         self._origin_y = 0.0
         self._res = 1.0
@@ -43,6 +50,8 @@ class VectorFieldGrid:
         origin_y: float,
         resolution: float,
         field_eps: float = 1e-2,
+        wall_dist: Optional[np.ndarray] = None,
+        wall_sigma: float = 0.05,
     ):
         T = T_field.astype(np.float64)
         finite_mask = np.isfinite(T)
@@ -55,6 +64,15 @@ class VectorFieldGrid:
         self._tt = T_filled
         self._dT_dx = d_dcol
         self._dT_dy = d_drow
+        if wall_dist is not None:
+            from scipy.ndimage import gaussian_filter
+            wd = wall_dist.astype(np.float64)
+            if wall_sigma > 0.0:
+                wd = gaussian_filter(wd, wall_sigma / resolution, mode="nearest")
+            w_drow, w_dcol = np.gradient(wd, resolution, resolution)
+            self._wd, self._dwd_dx, self._dwd_dy = wd, w_dcol, w_drow
+        else:
+            self._wd = self._dwd_dx = self._dwd_dy = None
         self._origin_x = origin_x
         self._origin_y = origin_y
         self._res = resolution
@@ -117,6 +135,44 @@ class VectorFieldGrid:
         fux = np.where(in_bounds, fux, 0.0)
         fuy = np.where(in_bounds, fuy, 0.0)
         return T, dx, dy, fux, fuy
+
+    @property
+    def has_wall_dist(self) -> bool:
+        return self._wd is not None
+
+    def query_dist(
+        self,
+        px: np.ndarray,
+        py: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Bilinear sample of the signed wall distance and its gradient.
+
+        Returns (d, dd/dx, dd/dy). Out of bounds counts as deep inside a
+        wall with zero gradient, so it costs but does not steer.
+        """
+        u = (px - self._origin_x) / self._res
+        w = (py - self._origin_y) / self._res
+        rows, cols = self._wd.shape
+        in_bounds = (u >= 0) & (u <= cols - 1) & (w >= 0) & (w <= rows - 1)
+        u_c = np.clip(u, 0.0, cols - 1.0001)
+        w_c = np.clip(w, 0.0, rows - 1.0001)
+        x0 = u_c.astype(int)
+        y0 = w_c.astype(int)
+        fx = u_c - x0
+        fy = w_c - y0
+
+        def bilerp(arr: np.ndarray) -> np.ndarray:
+            return (
+                arr[y0, x0] * (1.0 - fx) * (1.0 - fy)
+                + arr[y0, x0 + 1] * fx * (1.0 - fy)
+                + arr[y0 + 1, x0] * (1.0 - fx) * fy
+                + arr[y0 + 1, x0 + 1] * fx * fy
+            )
+
+        d = np.where(in_bounds, bilerp(self._wd), -1.0)
+        gx = np.where(in_bounds, bilerp(self._dwd_dx), 0.0)
+        gy = np.where(in_bounds, bilerp(self._dwd_dy), 0.0)
+        return d, gx, gy
 
     def query_scalar(
         self,
