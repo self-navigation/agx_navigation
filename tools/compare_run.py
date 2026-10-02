@@ -586,6 +586,61 @@ def _nav2_error_name(code: int) -> str:
 # orchestration: teardown / bring-up / terrain / one row
 # ---------------------------------------------------------------------------
 
+# Scout Mini body (PlannerConfig.fp_half_length / fp_half_width) and the
+# perimeter sampling used for the wall-contact score.
+FP_HALF_LENGTH, FP_HALF_WIDTH, FP_SPACING = 0.315, 0.2925, 0.02
+_SIGNED_DIST = {}
+
+
+def _signed_wall_dist(floor: int):
+    """Signed distance to the baked map's walls [m] (+ free, - inside), cached."""
+    if floor not in _SIGNED_DIST:
+        import yaml
+        from PIL import Image
+        from scipy.ndimage import distance_transform_edt
+        maps = os.path.join(WORKSPACE, "src", "rudn-ordjo-building", "maps")
+        meta = yaml.safe_load(open(os.path.join(maps, f"floor_{floor}.yaml")))
+        img = np.asarray(Image.open(os.path.join(maps, meta["image"])))[::-1]  # row 0 = origin y
+        wall = img == 0
+        r = meta["resolution"]
+        d = (distance_transform_edt(~wall) - distance_transform_edt(wall)) * r
+        _SIGNED_DIST[floor] = (d, r, meta["origin"][0], meta["origin"][1])
+    return _SIGNED_DIST[floor]
+
+
+def wall_contact(track, floor: int) -> dict:
+    """Where the ground-truth BODY met the baked map's walls (#34).
+
+    Scores the rectangle's perimeter, not the centre, against the map the
+    stack planned on. Under phantom_walls the robot drives through walls, and
+    this is the record of it; with solid walls it shows contact (one-cell,
+    5 cm, raster resolution: a grazing touch can read either way).
+    """
+    if len(track) < 2:
+        return dict(wall_min_clear=None, wall_overlap_s=None, wall_first_t=None,
+                    wall_episodes=None)
+    d, r, ox, oy = _signed_wall_dist(floor)
+    T = np.asarray(track, dtype=float)
+    nl, nw = int(2 * FP_HALF_LENGTH / FP_SPACING) + 1, int(2 * FP_HALF_WIDTH / FP_SPACING) + 1
+    lx, wy = np.linspace(-FP_HALF_LENGTH, FP_HALF_LENGTH, nl), np.linspace(-FP_HALF_WIDTH, FP_HALF_WIDTH, nw)
+    body = np.vstack([np.c_[lx, np.full(nl, FP_HALF_WIDTH)], np.c_[lx, np.full(nl, -FP_HALF_WIDTH)],
+                      np.c_[np.full(nw, FP_HALF_LENGTH), wy], np.c_[np.full(nw, -FP_HALF_LENGTH), wy]])
+    c, s = np.cos(T[:, 3])[:, None], np.sin(T[:, 3])[:, None]
+    qx = T[:, 1:2] + body[None, :, 0] * c - body[None, :, 1] * s
+    qy = T[:, 2:3] + body[None, :, 0] * s + body[None, :, 1] * c
+    col = np.clip(((qx - ox) / r).astype(int), 0, d.shape[1] - 1)
+    row = np.clip(((qy - oy) / r).astype(int), 0, d.shape[0] - 1)
+    clear = d[row, col].min(axis=1)
+    # A body point on a wall PIXEL. The baked walls are often one cell thick,
+    # so the signed distance bottoms out at -r and cannot rank depth.
+    inside = clear < 0
+    dt = np.diff(T[:, 0], append=T[-1, 0])
+    return dict(wall_min_clear=round(float(clear.min()), 3),
+                wall_overlap_s=round(float(dt[inside].sum()), 2),
+                wall_first_t=(round(float(T[inside, 0][0]), 2) if inside.any() else None),
+                wall_episodes=int(np.count_nonzero(np.diff(inside.astype(int)) == 1) + inside[0]))
+
+
 def bring_up_stack(args, arm: str, spawn, log_path: str):
     """Fresh stack via fixture_up.sh. Returns (ok, attempts, detail)."""
     nav_mode = "vec-pmp" if arm == "ours" else "nav2"
@@ -597,6 +652,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         "--nav2-profile", args.nav2_profile,
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
+        *(["--phantom-walls"] if args.phantom_walls else []),
         # The comparison's slip comes from tools/spawn_patches.py (seed 0,
         # along-path). The fixture's own near-origin patches must be OFF, or a
         # wall strike has two candidate causes (CLAUDE.md, SURFACE_PATCHES).
@@ -729,6 +785,7 @@ def run_one(args, plan_path: str) -> dict:
         "corrector": args.corrector,
         "wheel_bias": args.wheel_bias or None,
         "localization": args.localization,
+        "phantom_walls": args.phantom_walls,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm != "ours" else None,
         "floor": args.floor,
@@ -891,6 +948,7 @@ def run_one(args, plan_path: str) -> dict:
             max_cross_track=(round(max(nearest_dist_to_polyline((x, y), plan["poses"][:, :2])
                                        for (x, y) in track), 4)
                              if track else None),
+            **wall_contact([s for s in st["track"] if s[0] >= goal_t], args.floor),
             # Over the drive phase only: sim seconds since drive_t0 per wall
             # second of that same wait.
             rtf=(round((st["sim_t"] - drive_t0) / res["drive_wall"], 3)
@@ -978,6 +1036,9 @@ def main() -> int:
                     help="sim-only actuator fault for the vec-pmp arm (#27): "
                          "'fl,rl,fr,rr' command scale, e.g. 0.9,0.9,0.9,0.9")
     ap.add_argument("--localization", default="amcl")
+    ap.add_argument("--phantom-walls", action="store_true",
+                    help="walls visible to the lidar but without collision "
+                         "(#34); contact is then scored by wall_* row fields")
     ap.add_argument("--nav2-profile", default="compare_static",
                     help="config/nav2_profile_<name>.yaml for the nav2 arms "
                          "(costmap inflation, collision monitor); '' = stock")

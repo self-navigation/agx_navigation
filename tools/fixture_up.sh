@@ -71,6 +71,7 @@ while [ $# -gt 0 ]; do
         --frontier)       FRONTIER=$2; shift 2 ;;
         --spawn)          SPAWN_X=$2; SPAWN_Y=$3; SPAWN_YAW=$4; shift 4 ;;
         --wheel-bias)     WHEEL_BIAS=$2; shift 2 ;;
+        --phantom-walls)  PHANTOM_WALLS=true; shift ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -87,6 +88,8 @@ LOG="/tmp/fixture${WORKER}.log"
 EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRONTIER"
 # Sim-only actuator fault, vec-pmp only (#27): 'fl,rl,fr,rr' command scale.
 [ -n "${WHEEL_BIAS:-}" ] && EXTRA="$EXTRA wheel_bias:=$WHEEL_BIAS"
+# Diagnostic (#34): walls the lidar sees but the robot drives through.
+[ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must
 # be OFF to keep one plant per run); true is the launch default and is simply

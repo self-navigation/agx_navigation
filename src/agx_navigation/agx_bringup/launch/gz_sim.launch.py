@@ -25,6 +25,42 @@ from launch_ros.actions import Node
 from agx_bringup import Topics
 
 
+def spawn_phantom_floor(context):
+    """The floor exactly as spawn_floor.launch.py builds it, minus every collision.
+
+    gpu_lidar renders VISUAL geometry, so the walls stay observable. Collision-
+    free walls cannot be expressed through spawn_floor's own args, and that
+    file lives in the rudn-ordjo-building submodule, so its builder is reused
+    here rather than patched there. Both the building mesh and the world ground
+    plane use friction mu=1 (the mesh by ODE default), so dropping the slab's
+    collision does not change the plant.
+    """
+    import importlib.util
+    import os
+    import xml.etree.ElementTree as ET
+    from ament_index_python.packages import get_package_share_directory
+
+    pkg = get_package_share_directory("rudn_ordjo_building")
+    spec = importlib.util.spec_from_file_location(
+        "spawn_floor", os.path.join(pkg, "launch", "spawn_floor.launch.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    floor = LaunchConfiguration("floor_number").perform(context)
+    with open(os.path.join(pkg, "models", "model_template.sdf")) as f:
+        sdf = f.read().replace("{floor_num}", floor)
+    sdf = mod.exclude_part(sdf, floor, 4, "center")
+    sdf = mod.exclude_part(sdf, floor, 6, "right")
+    root = ET.fromstring(sdf)
+    for link in root.iter("link"):
+        for col in link.findall("collision"):
+            link.remove(col)
+    sdf = ET.tostring(root, encoding="unicode").replace(
+        "package://rudn_ordjo_building/", f"file://{pkg}/")
+    return [Node(package="ros_gz_sim", executable="create", output="screen",
+                 arguments=["-name", f"rudn_ordjo_building_floor_{floor}",
+                            "-string", sdf, "-x", "23", "-y", "5", "-z", "0"])]
+
+
 def launch_gz_sim(context):
     headless = LaunchConfiguration("headless")
     is_headless = headless.perform(context).lower() in ["true", "1", "yes"]
@@ -83,6 +119,14 @@ def generate_launch_description():
                         "default (they are what the corrector exists to handle); "
                         "set false to isolate planner geometry from slip.",
         ),
+        DeclareLaunchArgument(
+            "phantom_walls",
+            default_value="false",
+            description="Sim-only diagnostic (#34): spawn the building with its "
+                        "visuals but NO collision, so the lidar (and amcl) see "
+                        "the walls while the robot drives through them. The "
+                        "world's ground plane carries the robot.",
+        ),
     ]
 
     headless = LaunchConfiguration("headless")
@@ -111,7 +155,8 @@ def generate_launch_description():
     gz_sim = OpaqueFunction(function=launch_gz_sim)
 
     spawn_floor = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
+        condition=UnlessCondition(LaunchConfiguration("phantom_walls")),
+        launch_description_source=PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [
                     FindPackageShare("rudn_ordjo_building"),
@@ -223,6 +268,8 @@ def generate_launch_description():
             gz_sim,
             gz_bridge,
             spawn_floor,
+            OpaqueFunction(function=spawn_phantom_floor,
+                           condition=IfCondition(LaunchConfiguration("phantom_walls"))),
             spawn_surface_patches,
         ]
     )
