@@ -63,3 +63,16 @@ above ("20% of plans overlap") is a rough proxy. These numbers replace it:
   contact (IQR 0.23–0.58 m), typically by turning early or overshooting a turn
   (00105, 00369). That is the corrector's known weakness at turns.
 - 13 of our 25 arrivals also grazed a wall on the way.
+
+## RETRACTION (2026-10-02 evening): the "plan overlaps" were the wrong plan
+
+`plan_poses` in the v7 track files (`tools/compare_run.py`) is the **library**
+plan from `traj_data_v2` (186 poses for 00105), not the plan the stack solved live.
+The live planner runs with `STACK_PLANNER_PARAMS`, and for 00105 it produced 280 poses. `tools/replan_footprint.py`
+reproduces the live plan exactly (same pose count, same start). Against the
+**live** plans, only 1/40 (00419) overlaps a wall. The "21 plans overlap" split
+above is withdrawn. **Nearly all of our wall strikes are tracking**: the
+robot's max distance from the live plan has a median of 0.51 m, and 65/70 runs exceed 0.2 m.
+The yaw-aware footprint barrier (`w_fp`, commit 2046190) does no harm: across 0/20/100/500,
+nothing changes on the 40 broad plans or the 19 narrow doors on floors 2–6. All
+doors are crossed with ≤5.5° yaw error at w_fp=0, because there is nothing for it to fix, so it stays off.
