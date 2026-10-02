@@ -1,5 +1,30 @@
 # Handover — 2026-10-01
 
+## LATEST (2026-10-02 20:00): v7 finished with ZERO freezes; comparison fails on wall strikes (#32, #34)
+
+- **v7 had no freezes in any of its 240 cells** (finished 16:35 UTC). v6 had 42 on the same setup.
+  - **Ruled out:** leftovers on the VM (the user is the only login since the reboot, and v5 froze early); `freeze_watch` (its loop is passive).
+  - **Remaining differences from v6:**
+    - **Launch method:** v7 used plain `ssh … bash -lc`; v6 used `tools/agx-run --detach`.
+    - **The bpftrace probe:** still running, so stop it with `sudo pkill bpftrace` before v8.
+  - **Next (v8):** relaunch exactly as v6 (`agx-run --detach`) with the trace on. If freezes come back, the trace names the sender. If not, turn the probe off for the run after.
+  - Before v8, stop the stale tracer and check `pgrep -af freeze_watch` is empty. A 16 h-old v6 `freeze_watch` was found and killed at 18:04 MSK.
+- **Comparison result** is in `figures/2026-10-02/README.md` (stamped PRELIMINARY):
+  - Our misses are mostly **wall strikes**: 32 of 42.
+  - The PMP plans have a median clearance of only **3 cm** beyond the footprint, and 20% overlap a wall. The soak bench never caught this because `rl_corrector.world` has no walls.
+  - **Fix the plan's clearance (#34) before any headline number.**
+  - Robust in both seeds: vs MPPI, ours is ~3.5× faster and uses 2.5–3× less energy, with equal `final_err`. Vs RPP, ours has better `final_err`.
+- Issues closed today: #11 (done 09-30), #12, #28, #29 (acados is a direct method; the indirect PMP + corrector split is deliberate), #31. New: #33 (recent-paper arms; the user has the names) and #34.
+
+## LATEST (2026-10-02 17:00): v6 read — freezes are NOT SHM; the stack is killed when ANOTHER worker tears down (#32)
+
+- Freeze timeouts: 21 in seed0 (SHM), 21 in seed1 (UDP-only), so the A/B is negative. In every freeze, `cg_pids` goes ~366 → 127: the ROS launch tree died and only gz survived.
+- All 42 freezes start 4-9 s after a DIFFERENT worker's `Stopping agx-wN.scope` (user journal). The killer worker varies.
+- Timeouts with rtf ≈ 1 (~20, Nav2 only) are real Nav2 recovery loops. Count them as arm failures.
+- Live test on w8/w9 (VM idle): six w8 teardowns did not touch w9, and the env/partition tagging is correct. **Mechanism still unknown.** Next: trace signal senders (bpftrace `signal:signal_generate` / auditd) during a 6-worker run.
+- The w8/w9 test stacks were torn down.
+- **17:08 (MSK): v7 RUNNING, the signal-trace run.** v7 is v6 unchanged (seed0 on w1-3, seed1 on w4-6), with rows in `~/compare_broad40_v7/` and logs in `~/cmp_v7_s{0,1}.log`. Beside it, `sudo bpftrace ~/sigtrace.bt` (it runs as root, so stop it with `sudo pkill bpftrace`) logs every HUP/INT/KILL/PIPE/TERM to `~/sigtrace_v7.log`, with the sender pid/comm, its parent and its cgroup, and the target pid/comm. Times are VM UTC. **Read it:** for each freeze (`cg_pids_end` ≈ 127, rtf < 0.2), take the victim's last stack-log timestamp and grep the trace in the ±10 s around it for signals to the victim's pids. The sender's cgroup names the culprit.
+
 ## LATEST (14:07): slow planning FIXED; v4 comparison RUNNING on the VM
 
 **Root cause of all planner slowness (and the field timeouts): rclpy `MultiThreadedExecutor` under sim time.** With the 1 kHz `/clock` it busy-spins at >100% CPU even on an empty node (SingleThreaded/Events executors: 0%), starving every callback of the GIL. The field callback was entered 4-8 s after publish, past the 10 s timeout.
