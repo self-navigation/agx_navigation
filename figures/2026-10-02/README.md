@@ -43,3 +43,23 @@ strikes disappear without losing the speed/energy advantage.
 
 Data: `run_data/compare_v7_seed{0,1}/` (gitignored; VM `~/compare_broad40_v7`).
 Regenerate with `.venv/bin/python figures/2026-10-02/render.py`.
+
+## Follow-up: the FM2 field and the true footprint (`field_failures.png`, `render_field.py`)
+
+This recomputes the field exactly as `vec_pmp.launch.py` configures it
+(exponential profile, R = 0.5 m) and checks the real **0.63 × 0.585 m rectangle at
+the plan's yaw**, instead of the 0.29 m circle used above. The circle statistic
+above ("20% of plans overlap") is a rough proxy. These numbers replace it:
+
+- **The doorway mechanism works.** Plans go through the middle of doorways (00105).
+- **Where a plan does overlap a wall, it is a yawed corner.** In 92% of overlapping
+  plan poses the robot's centre is 0.30–0.41 m from the wall: outside the
+  inscribed radius, inside the circumscribed one (0.43 m). FM2 treats the robot
+  as a point and slows it isotropically, so nothing in the field knows
+  that a turning rectangle sweeps its corners outward.
+- **About half our failures have a clear plan.** 41 of our 42 misses touched a wall
+  (true footprint). In 21 of those the plan itself overlaps. In the other 20 the
+  plan is clear and the robot left it: median 0.40 m off-plan at first
+  contact (IQR 0.23–0.58 m), typically by turning early or overshooting a turn
+  (00105, 00369). That is the corrector's known weakness at turns.
+- 13 of our 25 arrivals also grazed a wall on the way.
