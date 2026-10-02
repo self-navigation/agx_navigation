@@ -230,6 +230,11 @@ class CompareDriver:
             "pose": None,   # latest ground truth (x, y, yaw)
             "track": [],    # (sim_t, x, y, yaw), downsampled to 20 Hz
             "wheel": [],    # (sim_t, [w0..w3])
+            # ours only: the corrector's per-tick CorrectionDiagnostics (#34) and
+            # the plan it is actually following (the LIVE solve, which is not
+            # the library plan in plan["poses"]).
+            "diag": [],     # (sim_t, [CorrectionDiagnostics.FIELDS...])
+            "live_plan": None,  # (N, 3) x, y, yaw from the latest Path
             "sentinel": False,
             "n_plan_paths": 0,
             "plan_goal_ids": set(),  # PlanToGoal goals the planner has seen
@@ -247,6 +252,21 @@ class CompareDriver:
             self.node.create_subscription(
                 Path, topic,
                 lambda m: st.__setitem__("n_plan_paths", st["n_plan_paths"] + 1), 5)
+        def _on_live_plan(m):
+            # Offline mode republishes the CUMULATIVE path per chunk, so the
+            # latest is the whole plan; an empty Path is the planner's
+            # end/failure clear and must not erase it.
+            if not m.poses:
+                return
+            st["live_plan"] = np.array(
+                [(p.pose.position.x, p.pose.position.y,
+                  2.0 * math.atan2(p.pose.orientation.z, p.pose.orientation.w))
+                 for p in m.poses], dtype=float).reshape(-1, 3)
+        self.node.create_subscription(Path, "/optimal_trajectory", _on_live_plan, 5)
+        self.node.create_subscription(
+            Float64MultiArray, "/wheel_corrector/tvlqr_diagnostics",
+            lambda m: st["diag"].append((st["sim_t"], list(m.data)))
+            if st["sim_t"] is not None else None, 50)
         self.node.create_subscription(
             Float64MultiArray, "/wheel_velocity_controller/commands",
             lambda m: st["wheel"].append((st["sim_t"], list(m.data)))
@@ -813,9 +833,19 @@ def run_one(args, plan_path: str) -> dict:
         # only scalars, and a scalar cannot show *how* an arm got stuck).
         track_path = os.path.join(args.log_dir, f"track_{tag}.npz")
         wheel = st["wheel"]
-        np.savez(track_path, track=np.array(st["track"], dtype=float),
+        diag = st["diag"]
+        # Compressed: the per-tick diagnostics are the bulk of the file.
+        # plan_poses is the LIBRARY plan the goal came from; live_plan is what
+        # the stack solved and followed (empty for nav2 arms / no plan).
+        np.savez_compressed(
+                 track_path, track=np.array(st["track"], dtype=float),
                  wheel_t=np.array([c[0] for c in wheel], dtype=float),
                  wheel_cmd=np.array([c[1] for c in wheel], dtype=float).reshape(-1, 4),
+                 diag_t=np.array([c[0] for c in diag], dtype=float),
+                 diag=(np.array([c[1] for c in diag], dtype=float) if diag
+                       else np.zeros((0, 16))),
+                 live_plan=(st["live_plan"] if st["live_plan"] is not None
+                            else np.zeros((0, 3))),
                  goal_t=goal_t, plan_poses=plan["poses"],
                  goal_xy=np.asarray(plan["goal"], dtype=float))
         row["track_path"] = track_path

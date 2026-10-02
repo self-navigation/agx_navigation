@@ -122,11 +122,14 @@ def run_one(job):
     x0 = np.array([*case["start"], case["yaw0"], 0.0, 0.0])
     goal = np.array([*case["goal"], case["goal_yaw"]])
     t0 = time.perf_counter()
-    poses, status, msg = [], "?", ""
+    poses, cmds, lams, status, msg = [], [], [], "?", ""
     gen = ro.rollout_generator(solver, cfg, x0.copy(), goal)
     try:
         while True:
-            poses.append(next(gen).poses)
+            ch = next(gen)
+            poses.append(ch.poses)
+            cmds.append(ch.wheel_cmds)
+            lams.append(ch.costates)
     except StopIteration as stop:
         status, msg = getattr(stop.value, "status", "?"), getattr(stop.value, "message", "")
     except Exception as e:  # a crash is a failure to count, not to abort the sweep
@@ -154,6 +157,14 @@ def run_one(job):
                 rec["door_yaw_err_deg"] = round(float(np.degrees(err.max())), 1)
             rec["width"] = case["width"]
         np.save(os.path.join(out_dir, f"{case['case']}__wfp{w_fp:g}.npy"), P)
+        # The same plan in traj_data_v2's schema, so the soak bench can drive
+        # exactly what the stack would have (the library plans differ, #34).
+        np.savez(os.path.join(out_dir, f"{case['case']}__wfp{w_fp:g}.npz"),
+                 poses=P, wheel_cmds=np.concatenate(cmds), costates=np.concatenate(lams),
+                 dt_sample=1.0 / cfg.control_rate,
+                 map_yaml=os.path.join(MAPS, f"floor_{case['floor']}.yaml"),
+                 start_xy=np.asarray(case["start"]), goal_xy=goal[:2],
+                 shape=f"stack_replan_wfp{w_fp:g}")
     return rec
 
 
