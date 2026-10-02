@@ -92,15 +92,31 @@ MPPI vs Nav2 RPP: 40 plans × 2 seeds, baked map, amcl, a fresh stack per cell.
 
 ## 4. Running now
 
-Nothing. Job 150 finished 18:58 UTC (340 rows). Launch note: `tools/agx-run`
-does not cd into the repo; launch jobs with
-`cd ~/agx_navigation && set +u && source /opt/ros/jazzy/setup.bash && source install/setup.bash && bash tools/jobs/…`.
-`parallel_soak` writes `<out>.w1` while running and merges into `<out>` at the end.
+**Job 160, overnight stack-factor sweep** (launched 22:08 MSK 2026-10-02,
+~5 h on 3 workers). `tools/jobs/160_stack_factors.sh`; header explains it.
+Log `/tmp/fac.log`; per-worker logs and rows in `~/compare_factors/<cfg>/rows.s<seed>.jsonl`,
+tracks (with per-tick diag + live plan) in `~/compare_factors/<cfg>/s<seed>/`.
+Ours only, 40 broad plans x seeds 0,1:
+
+| cfg | localization | walls | corrector |
+| --- | --- | --- | --- |
+| A | amcl | solid | tvlqr (= v7 replicate; freeze re-test #32) |
+| B | truth | solid | tvlqr |
+| C | amcl | phantom | tvlqr |
+| D | truth | phantom | tvlqr |
+| E | truth | phantom | identity (open loop) |
+
+Phantom walls = `phantom_walls:=true` (new launch flag): the building is
+spawned with visuals but no collision, so lidar/amcl see it and the robot
+drives through; every row now carries `wall_overlap_s`, `wall_first_t`,
+`wall_episodes`, `wall_min_clear` (footprint vs baked map, 5 cm raster).
+Read: A vs B and C vs D = amcl; A vs C and B vs D = contact; D vs job 150's
+6.5% = ROS timing/node; D vs E = does the corrector help in the stack.
+Smoke (1 plan, cfg C) ran clean: floor spawned, no wall overlap, failed at 0.76 m.
 
 ## 5. Next, in order
 
-1. **Separate the three stack-only suspects with one comparison run (v8, ours
-   only).** It needs the user's OK, since it occupies the VM for hours.
+1. **Read job 160** (running; it is the v8 below, with phantom walls added).
    - Arms: `localization:=truth` vs `amcl` on the same plans, each recording
      the new per-tick `tvlqr_diagnostics` and `live_plan` (`compare_run.py`,
      added today, not yet exercised).
