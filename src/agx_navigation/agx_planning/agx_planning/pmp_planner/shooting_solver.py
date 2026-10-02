@@ -12,6 +12,59 @@ from agx_planning.pmp_planner.config import PlannerConfig
 from agx_planning.vector_field import VectorFieldGrid
 
 
+def footprint_cost(field: VectorFieldGrid, px, py, th, cfg: PlannerConfig):
+    """Footprint barrier L_fp and its gradient, vectorized over the mesh.
+
+    L_fp = (w_fp/2) * sum_k phi_k^2,  phi_k = max(0, fp_margin - d(q_k)),
+    q_k = p + R(theta) b_k over points b_k on the rectangle's OUTLINE,
+    every <= fp_sample_spacing (corners included). Corners alone are not
+    enough: a door jamb thinner than a side pokes in between them.
+    With g_k = grad d(q_k):
+        dL/dp     = -w_fp * sum_k phi_k g_k
+        dL/dtheta = -w_fp * sum_k phi_k g_k . (R'(theta) b_k)
+    Only mesh points whose centre is within reach of a wall are sampled.
+    Returns (L, dL/dx, dL/dy, dL/dtheta), each shaped like px.
+    """
+    px, py, th = np.atleast_1d(px), np.atleast_1d(py), np.atleast_1d(th)
+    L = np.zeros_like(px)
+    gx_sum = np.zeros_like(px)
+    gy_sum = np.zeros_like(px)
+    gth_sum = np.zeros_like(px)
+    a, b = cfg.fp_half_length, cfg.fp_half_width
+    reach = np.hypot(a, b) + cfg.fp_margin + 0.05
+    near = field.query_dist(px, py)[0] < reach
+    if not near.any():
+        return L, gx_sum, gy_sum, gth_sum
+    bxy = _outline(a, b, cfg.fp_sample_spacing)  # (K, 2)
+    c, s = np.cos(th[near])[:, None], np.sin(th[near])[:, None]
+    # R(theta) b and its theta-derivative R'(theta) b = (-ry, rx)
+    rx = bxy[None, :, 0] * c - bxy[None, :, 1] * s
+    ry = bxy[None, :, 0] * s + bxy[None, :, 1] * c
+    qx = px[near][:, None] + rx
+    qy = py[near][:, None] + ry
+    d, ddx, ddy = field.query_dist(qx.ravel(), qy.ravel())
+    d, ddx, ddy = (v.reshape(qx.shape) for v in (d, ddx, ddy))
+    phi = np.maximum(0.0, cfg.fp_margin - d)
+    w = cfg.w_fp
+    L[near] = 0.5 * w * (phi * phi).sum(axis=1)
+    gx_sum[near] = -w * (phi * ddx).sum(axis=1)
+    gy_sum[near] = -w * (phi * ddy).sum(axis=1)
+    gth_sum[near] = -w * (phi * (-ddx * ry + ddy * rx)).sum(axis=1)
+    return L, gx_sum, gy_sum, gth_sum
+
+
+def _outline(a: float, b: float, spacing: float) -> np.ndarray:
+    """Points on the boundary of the [-a,a] x [-b,b] rectangle, corners included."""
+    corners = np.array([[a, b], [-a, b], [-a, -b], [a, -b]])
+    pts = []
+    for i in range(4):
+        p0, p1 = corners[i], corners[(i + 1) % 4]
+        n = max(1, int(np.ceil(np.hypot(*(p1 - p0)) / spacing)))
+        t = np.arange(n)[:, None] / n
+        pts.append(p0 + t * (p1 - p0))
+    return np.concatenate(pts)
+
+
 class PMPShootingSolver:
     """TPBVP solver for the 5D wheel-space skid-steer PMP problem.
 
@@ -190,6 +243,15 @@ class PMPShootingSolver:
             dlx = dlx - cfg.w_xt * r_xt * n_perp[:, 0]
             dly = dly - cfg.w_xt * r_xt * n_perp[:, 1]
 
+        # Footprint barrier (opt-in): -dL_fp/d(x, y, theta).
+        if cfg.w_fp > 0.0 and self.field.has_wall_dist:
+            _, gpx, gpy, gth = footprint_cost(self.field, px, py, th, cfg)
+            dlx = dlx - gpx
+            dly = dly - gpy
+            dlt_fp = -gth
+        else:
+            dlt_fp = 0.0
+
         # Heading costate -- identical in form to the unicycle version;
         # v is now the derived quantity. Alignment is faded by w_F;
         # speed and brake contributions vanish naturally near the goal
@@ -204,6 +266,7 @@ class PMPShootingSolver:
             - cfg.w_brake * one_minus_dot * v * v * cross_F_h
             + lx * v * sin_t
             - ly * v * cos_t
+            + dlt_fp
         )
 
         # Body-channel Hamiltonian gradients. H_v gates the position-
