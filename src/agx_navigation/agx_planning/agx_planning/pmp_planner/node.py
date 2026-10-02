@@ -7,7 +7,8 @@ are the left/right wheel-pair speeds; control is the per-wheel acceleration
 (w_r - w_l) * r/track_eff, with track_eff = track * slip_chi lumping lateral
 skid into the kinematics. The cost combines a travel-time potential, field
 alignment, a gated speed reference, a heading-coupled brake, soft wheel-speed
-barriers and per-wheel effort. The position-costate coupling is gated by
+barriers, per-wheel effort and an optional footprint barrier (w_fp) that keeps
+the chassis outline off the walls. The position-costate coupling is gated by
 pos_gate, a heuristic change to the adjoint against understeer.
 
 The published command is the planned wheel-speed state, plus an optional lead

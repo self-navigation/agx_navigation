@@ -86,8 +86,10 @@ def parse_field_array(
     Expected layout:
       [h, w, origin_x, origin_y, resolution, travel_time(H*W), ...]
 
-    Any channels after travel_time (grad_x, grad_y, grad_mag) are ignored --
-    the grid recomputes the direction field internally from grad T.
+    The grad_x, grad_y and grad_mag channels are ignored -- the grid
+    recomputes the direction field internally from grad T. The optional
+    5th channel, wall_dist, feeds the footprint cost (cfg.w_fp); without
+    it that cost is silently off.
     """
     if data.size < 5:
         return None
@@ -100,8 +102,10 @@ def parse_field_array(
         return None
 
     T = data[5 : 5 + n].reshape(h, w)
+    wall = data[5 + 4 * n : 5 + 5 * n].reshape(h, w) if data.size >= 5 + 5 * n else None
     grid = VectorFieldGrid()
-    grid.update(T, ox, oy, res, field_eps=cfg.field_eps)
+    grid.update(T, ox, oy, res, field_eps=cfg.field_eps, wall_dist=wall,
+                wall_sigma=cfg.fp_smooth_sigma)
     return grid
 
 
