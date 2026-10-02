@@ -1,5 +1,14 @@
 # Handover — 2026-10-01
 
+## LATEST (2026-10-02 21:05): RUNNING on the VM: live-vs-library soak (#34)
+
+- v7 diagnosis (comment on #34): the misses are **not amcl** (the corrector's error matches ground truth) and **not schedule lag** (0.2 s behind when it leaves the path; the lag builds up after contact). TVLQR **is not saturated** when it departs. The robot drifts off clear plans with authority to spare.
+- Running: `tools/jobs/150_live_vs_library.sh` (log `/tmp/lvl.log`, out `~/soak_live_vs_lib.jsonl`, traces `~/soak_live_vs_lib_traces/`). It soaks 34 stack-equivalent live plans (`~/live40/`, from `replan_footprint.py`) alternating with their library counterparts. Bare ground, ground truth, adopted gains, ×5.
+  - Live plans miss far more than library plans here too: the stack's plans themselves are hard to track, so look at the planner params that differ (`STACK_PLANNER_PARAMS`) and the TVLQR fit to them.
+  - Similar: the building (walls/amcl/ROS timing) is the difference after all.
+- `compare_run.py` now records per-tick `tvlqr_diagnostics` + `live_plan` (compressed npz). Not yet exercised in a run.
+- bpftrace stopped.
+
 ## LATEST (2026-10-02 20:45): plan-overlap claim RETRACTED; misses are tracking (#34)
 
 - v7's `plan_poses` was the library plan, not the live one. Against the live plans (reproduced by `tools/replan_footprint.py`), only 1/40 overlaps a wall, and the robot strays from them by a median of 0.51 m. Fix the turn tracking next; do not inflate the plans.
