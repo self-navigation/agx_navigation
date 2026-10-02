@@ -1,5 +1,12 @@
 # Handover — 2026-10-01
 
+## LATEST (2026-10-02 20:45): plan-overlap claim RETRACTED; misses are tracking (#34)
+
+- v7's `plan_poses` was the library plan, not the live one. Against the live plans (reproduced by `tools/replan_footprint.py`), only 1/40 overlaps a wall, and the robot strays from them by a median of 0.51 m. Fix the turn tracking next; do not inflate the plans.
+- The footprint barrier `w_fp` (2046190) is in place but **off**: offline sweeps at 0/20/100/500 change nothing, and all 19 narrow doors are crossed aligned (≤5.5°) at w=0.
+- TODO: make `compare_run.py` record the live plan.
+- The VM still has bpftrace running (`sudo pkill bpftrace`). v8 has not been started yet; ask first.
+
 ## LATEST (2026-10-02 20:00): v7 finished with ZERO freezes; comparison fails on wall strikes (#32, #34)
 
 - **v7 had no freezes in any of its 240 cells** (finished 16:35 UTC). v6 had 42 on the same setup.
