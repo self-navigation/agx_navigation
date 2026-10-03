@@ -1,0 +1,3 @@
+amcl:
+  ros__parameters:
+    sigma_hit: 0.1
