@@ -90,33 +90,37 @@ MPPI vs Nav2 RPP: 40 plans × 2 seeds, baked map, amcl, a fresh stack per cell.
   per step it is the same. So the v7 miss gap comes from something only the full
   stack has: walls (contact), amcl's pose, or ROS timing in the corrector node.
 
-## 4. Running now
+## 4. Job 160 result (finished 01:30 MSK 2026-10-03, read 05:35)
 
-**Job 160, overnight stack-factor sweep** (launched 22:08 MSK 2026-10-02,
-~5 h on 3 workers). `tools/jobs/160_stack_factors.sh`; header explains it.
-Log `/tmp/fac.log`; per-worker logs and rows in `~/compare_factors/<cfg>/rows.s<seed>.jsonl`,
-tracks (with per-tick diag + live plan) in `~/compare_factors/<cfg>/s<seed>/`.
-Ours only, 40 broad plans x seeds 0,1:
+**Job 160, stack-factor sweep**: 10 units × 40 broad plans, all rc=0, no freezes
+(#32 re-test passed, cfg A = v7 replicate). Data on the VM in
+`~/compare_factors/<cfg>/rows.s<seed>.jsonl`, tracks (per-tick diag + live plan)
+in `~/compare_factors/<cfg>/s<seed>/`; header in `tools/jobs/160_stack_factors.sh`.
+Miss = `final_err > 0.5 m` over driven runs (8-11 planner-failed per cfg excluded):
 
-| cfg | localization | walls | corrector |
-| --- | --- | --- | --- |
-| A | amcl | solid | tvlqr (= v7 replicate; freeze re-test #32) |
-| B | truth | solid | tvlqr |
-| C | amcl | phantom | tvlqr |
-| D | truth | phantom | tvlqr |
-| E | truth | phantom | identity (open loop) |
+| cfg | localization | walls | corrector | miss | arrived |
+| --- | --- | --- | --- | --- | --- |
+| A | amcl | solid | tvlqr | **61%** (43/71) | 28 |
+| B | truth | solid | tvlqr | 39% (27/70) | 43 |
+| C | amcl | phantom | tvlqr | 25% (18/72) | 54 |
+| D | truth | phantom | tvlqr | **9%** (6/69) | 63 |
+| E | truth | phantom | identity | 80% (55/69) | 14 |
 
-Phantom walls = `phantom_walls:=true` (new launch flag): the building is
-spawned with visuals but no collision, so lidar/amcl see it and the robot
-drives through; every row now carries `wall_overlap_s`, `wall_first_t`,
-`wall_episodes`, `wall_min_clear` (footprint vs baked map, 5 cm raster).
-Read: A vs B and C vs D = amcl; A vs C and B vs D = contact; D vs job 150's
-6.5% = ROS timing/node; D vs E = does the corrector help in the stack.
-Smoke (1 plan, cfg C) ran clean: floor spawned, no wall overlap, failed at 0.76 m.
+Paired sign tests on `final_err`: B>A 54/72, D>C 57/72 (amcl hurts, p<1e-4);
+C>A 53/72 (p=1e-4), D>B 48/70 (p=0.003) (contact hurts); D>E 64/71.
+
+- **ROS timing / the corrector node is ruled out**: D (9%) matches the soak bench (6.5-11.5%).
+- **The v7 gap is amcl + wall contact, compounding** (9% -> 25%/39% -> 61%).
+- **This partly contradicts "it is NOT amcl" (section 3)**: the corrector's error
+  matched truth error, yet swapping amcl for truth changes outcomes. Hypothesis:
+  amcl's pose is wrong in a way that both measures share. Under investigation.
+- Caveat: `wall_overlap_s > 0` in ~55/80 rows even in D; about half start after the
+  plan should have ended (so include time stopped near the goal). Also check the
+  5 cm raster before trusting the wall fields.
 
 ## 5. Next, in order
 
-1. **Read job 160** (running; it is the v8 below, with phantom walls added).
+1. **Job 160 is read (section 4).** Next: departure analysis + figures (figures/2026-10-03/). The old plan for it follows.
    - Arms: `localization:=truth` vs `amcl` on the same plans, each recording
      the new per-tick `tvlqr_diagnostics` and `live_plan` (`compare_run.py`,
      added today, not yet exercised).
