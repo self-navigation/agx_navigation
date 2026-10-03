@@ -118,6 +118,19 @@ C>A 53/72 (p=1e-4), D>B 48/70 (p=0.003) (contact hurts); D>E 64/71.
   plan should have ended (so include time stopped near the goal). Also check the
   5 cm raster before trusting the wall fields.
 
+**Departure analysis (2026-10-03, `figures/2026-10-03/`, `tools/departure_series.py`):**
+the corrector's believed pose is rebuilt from its diagnostics (self-check: mm under
+truth). **The section-3 claim "it is NOT amcl" is RETRACTED.** Under amcl the
+corrector believes about 0.65x its true peak cross-track error. amcl's pose error
+climbs 0.1 -> 0.3 m in the 3 s before a departure, while the believed error stays
+flat, so TVLQR never reacts. Under truth, believed = true and departures are
+corrected within ~3 s. With solid walls a wall pin makes amcl follow odometry
+(wheels spin), and it drifts metres (00350 s0: 8 m). Bug: the diag `index` field
+is -1 on every tick (k must be rebuilt from time, dt 0.1 s).
+Next: why amcl lags (update rate / `update_min_d`, odom bias from wheel_odometry's
+missing chi feeding amcl's motion model), and wall-pin detection (wheels turning
+but no IMU/scan motion) as a tier-2/3 trigger.
+
 ## 5. Next, in order
 
 1. **Job 160 is read (section 4).** Next: departure analysis + figures (figures/2026-10-03/). The old plan for it follows.
