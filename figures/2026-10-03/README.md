@@ -24,3 +24,10 @@ The diag `index` field is −1 throughout, so k is rebuilt from time. Under
   corner (clearance < 0 from t = 13.6 s). amcl's pose keeps "driving the plan"
   (odometry says the wheels turn) and drifts 8 m from truth. The corrector
   believes it is on track the whole time.
+- `failure_vs_recovery.png` — misses aligned at their FINAL upward 0.2 m crossing,
+  arrivals at the crossing before their worst (recovered) excursion. With solid walls
+  (A, B) the median miss is already in wall contact ~3.5 s before onset, and in B
+  the corrector sees its error exactly and still cannot recover: contact misses are
+  physical (pinned). Under amcl with phantom walls (C) misses are slow drift with the
+  believed error stuck at 0.1-0.2 m while the true error is 0.5-0.6 m: localization
+  blindness. D's 6 misses are late excursions near the plan's end.

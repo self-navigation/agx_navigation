@@ -108,6 +108,64 @@ def fig_event_aligned(runs):
     fig.savefig(os.path.join(HERE, "event_aligned.png"), dpi=130)
 
 
+def excursion_onset(d):
+    """Upward DEPART crossing that starts the excursion that matters.
+
+    Miss: the LAST upward crossing (the excursion it never came back from).
+    Arrival: the crossing before its largest true |e_cross| (the worst scare
+    it did recover from). None if the run never crosses.
+    """
+    e, t = d["ect"], d["t"]
+    up = np.nonzero((e[1:] > DEPART) & (e[:-1] <= DEPART) & (t[1:] >= 0))[0] + 1
+    if not len(up):
+        return None
+    if d["miss"]:
+        return int(up[-1])
+    peak = int(np.argmax(np.where(t >= 0, e, -1)))
+    before = up[up <= peak]
+    return int(before[-1]) if len(before) else int(up[0])
+
+
+def fig_failure_vs_recovery(runs):
+    """Miss vs arrival, aligned at the excursion onset (median + IQR)."""
+    lag = np.arange(-60, 101)
+    qty = [("loc_err", "pose error [m]"), ("ect", "TRUE |e_cross| [m]"),
+           ("ecb", "BELIEVED |e_cross| [m]"), ("clear", "wall clearance [m]")]
+    fig, ax = plt.subplots(len(qty), 4, figsize=(17, 11), sharex=True, sharey="row")
+    for j, c in enumerate(CFG):
+        for grp, ls in ((True, "-"), (False, "--")):
+            sel = [(d, excursion_onset(d)) for d in runs[c] if d["miss"] == grp]
+            sel = [(d, k) for d, k in sel if k is not None]
+            for i, (key, lab) in enumerate(qty):
+                M = np.full((len(sel), len(lag)), np.nan)
+                for r, (d, k) in enumerate(sel):
+                    jj = k + lag
+                    ok = (jj >= 0) & (jj < len(d[key]))
+                    M[r, ok] = d[key][jj[ok]]
+                enough = np.sum(np.isfinite(M), 0) >= 4
+                if not enough.any():
+                    continue
+                med = np.where(enough, np.nanmedian(M, 0), np.nan)
+                lo, hi = (np.where(enough, np.nanpercentile(M, q, 0), np.nan) for q in (25, 75))
+                col = "tab:red" if grp else "tab:grey"
+                a = ax[i, j]
+                a.plot(lag / 10, med, color=col, ls=ls,
+                       label=f"{'miss' if grp else 'arrived'} (n={len(sel)})")
+                a.fill_between(lag / 10, lo, hi, color=col, alpha=0.15)
+                a.set_ylabel(lab) if j == 0 else None
+        ax[0, j].set_title(f"{c}: {CFG[c]}")
+        ax[0, j].legend(fontsize=8)
+        for i in range(len(qty)):
+            ax[i, j].axvline(0, color="k", lw=0.8, ls=":")
+            ax[i, j].grid(alpha=0.3)
+        ax[3, j].axhline(0, color="k", lw=0.8)
+        ax[-1, j].set_xlabel("s from excursion onset")
+    fig.suptitle("Miss: final excursion. Arrived: worst excursion it recovered from. "
+                 f"Median + IQR. {STAMP}", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "failure_vs_recovery.png"), dpi=120)
+
+
 def fig_believed_vs_true(runs):
     fig, ax = plt.subplots(1, 4, figsize=(16, 4.4), sharex=True, sharey=True)
     for a, c in zip(ax, CFG):
@@ -196,6 +254,7 @@ def casebook(d, c, path):
 def main():
     runs = load()
     fig_event_aligned(runs)
+    fig_failure_vs_recovery(runs)
     fig_believed_vs_true(runs)
     fig_loc_err(runs)
     # Casebook: the 3 worst misses in A, and the same plans under B, C, D.
