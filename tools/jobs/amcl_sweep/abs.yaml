@@ -1,0 +1,8 @@
+amcl:
+  ros__parameters:
+    alpha1: 0.05
+    alpha2: 0.05
+    alpha3: 0.05
+    alpha4: 0.05
+    max_beams: 240
+    sigma_hit: 0.1
