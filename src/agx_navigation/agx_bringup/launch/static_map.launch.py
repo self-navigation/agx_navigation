@@ -96,6 +96,10 @@ def generate_launch_description():
         # two arguments must be given the SAME values, which is why
         # tools/fixture_up.sh passes both from one --spawn flag.
         DeclareLaunchArgument(
+            "amcl_params", default_value=cfg_file("nav2_params.yaml"),
+            description="extra amcl params file, layered over nav2_params.yaml "
+                        "(#34 sweep); the default re-applies the base file, a no-op"),
+        DeclareLaunchArgument(
             "spawn_x", default_value="0.0",
             description="must match sim_control's spawn_x"),
         DeclareLaunchArgument(
@@ -209,6 +213,9 @@ def generate_launch_description():
         output="screen",
         parameters=[
             cfg_file("nav2_params.yaml"),
+            # Sweep hook (#34): a params file layered over nav2_params.yaml's
+            # amcl block. The default is the base file itself, i.e. a no-op.
+            LaunchConfiguration("amcl_params"),
             {
                 "use_sim_time": sim,
                 "scan_topic": Topics.SCAN,

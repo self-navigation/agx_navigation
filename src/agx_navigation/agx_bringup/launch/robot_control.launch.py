@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import (
+    DeclareLaunchArgument,
     IncludeLaunchDescription,
 )
 from launch.conditions import IfCondition, UnlessCondition
@@ -63,21 +64,34 @@ def generate_launch_description():
         ],
     )
 
-    ekf_node = Node(
-        package="robot_localization",
-        executable="ekf_node",
-        name="ekf_filter_node",
-        output="screen",
-        parameters=[
-            cfg_file("ekf_params.yaml"),
-            {"use_sim_time": sim},
-        ],
-        remappings=[
-            ("odom", Topics.ODOM),
-            ("imu", Topics.IMU),
-            ("odometry/filtered", Topics.ODOM_FILTERED),
-        ],
-    )
+    declared_args.append(DeclareLaunchArgument(
+        "ekf_wheel_yaw", default_value="true",
+        description="fuse wheel odometry's yaw rate (odom0_config index 11) in "
+                    "the EKF. It is chi-biased (see ekf_params.yaml); false lets "
+                    "the gyro own yaw. Default true = historical behaviour (#34)."))
+
+    def ekf(wheel_yaw: bool):
+        overrides = {"use_sim_time": sim}
+        if not wheel_yaw:
+            overrides["odom0_config"] = [True, True, False,
+                                         False, False, False,
+                                         True, True, False,
+                                         False, False, False,
+                                         False, False, False]
+        cond = IfCondition if wheel_yaw else UnlessCondition
+        return Node(
+            package="robot_localization",
+            executable="ekf_node",
+            name="ekf_filter_node",
+            output="screen",
+            parameters=[cfg_file("ekf_params.yaml"), overrides],
+            remappings=[
+                ("odom", Topics.ODOM),
+                ("imu", Topics.IMU),
+                ("odometry/filtered", Topics.ODOM_FILTERED),
+            ],
+            condition=cond(LaunchConfiguration("ekf_wheel_yaw")),
+        )
 
     return LaunchDescription(
         declared_args
@@ -86,6 +100,7 @@ def generate_launch_description():
             sim_control_launch,
             life_control_launch,
             # imu_filter,
-            ekf_node,
+            ekf(True),
+            ekf(False),
         ]
     )

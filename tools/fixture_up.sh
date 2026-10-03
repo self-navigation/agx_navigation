@@ -72,6 +72,8 @@ while [ $# -gt 0 ]; do
         --spawn)          SPAWN_X=$2; SPAWN_Y=$3; SPAWN_YAW=$4; shift 4 ;;
         --wheel-bias)     WHEEL_BIAS=$2; shift 2 ;;
         --phantom-walls)  PHANTOM_WALLS=true; shift ;;
+        --no-ekf-wheel-yaw) EKF_WHEEL_YAW=false; shift ;;
+        --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -90,6 +92,8 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 [ -n "${WHEEL_BIAS:-}" ] && EXTRA="$EXTRA wheel_bias:=$WHEEL_BIAS"
 # Diagnostic (#34): walls the lidar sees but the robot drives through.
 [ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
+[ -n "${EKF_WHEEL_YAW:-}" ] && EXTRA="$EXTRA ekf_wheel_yaw:=$EKF_WHEEL_YAW"
+[ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must
 # be OFF to keep one plant per run); true is the launch default and is simply
