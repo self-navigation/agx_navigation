@@ -146,6 +146,25 @@ missing chi feeding amcl's motion model), and wall-pin detection.
   on the real robot. Whether the real localization error is bounded the same way is
   unknown until there is real data (see the questions asked in chat 2026-10-03).
 
+## 4b. Running now (launched 2026-10-03 ~06:05 MSK)
+
+- **Job 170** (`tools/jobs/170_loc_factors.sh`, log `/tmp/loc170.log`, out
+  `~/compare_loc/`), ~1h40 on workers 1-3: `C` (amcl, phantom, control) vs `Cy`
+  (same, `--no-ekf-wheel-yaw`) vs `Ay` (amcl, solid, no wheel yaw), 40 plans x 2 seeds.
+  **Cy << C miss** = the chi-biased wheel yaw is what blinds amcl, so fix the EKF
+  (this also affects the real robot: same EKF under rtabmap). **Cy ~ C** = look at amcl
+  itself (job 180).
+- **Job 180** (`tools/jobs/180_amcl_sweep.sh`, log `/tmp/amcl180.log`, out
+  `~/compare_amcl/`) waits for 170, then ~18 h: 2^4 amcl factors (gate, alpha,
+  beams, sigma_hit) x EKF wheel yaw, phantom walls, `base` = control. Codes in
+  `tools/jobs/amcl_sweep/configs.txt`. Read main effects by paired sign test vs
+  `base` on miss / final_err, and the believed/true |e_cross| ratio via
+  `tools/departure_series.py`.
+- **Real robot ran rtabmap, not amcl** (`slam.launch.py`; commit 92fe846, 2026-02-26;
+  odom from vendor `scout_base`, same EKF). Our amcl block was first launched in #34.
+  So job 160-180 bound sim amcl only. The user can get robot access ~Thu 2026-10-08:
+  plan a real localization-error measurement for then.
+
 ## 5. Next, in order
 
 1. **Job 160 is read (section 4).** Next: departure analysis + figures (figures/2026-10-03/). The old plan for it follows.
