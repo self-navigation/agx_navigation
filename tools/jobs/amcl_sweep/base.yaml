@@ -1,0 +1,3 @@
+amcl:
+  ros__parameters:
+    max_beams: 60  # = base, a no-op override

@@ -27,7 +27,7 @@ if [ -n "$CONFIG_FILE" ]; then
     while read -r name args; do
         [ -z "$name" ] || [ "${name:0:1}" = "#" ] && continue
         CFG[$name]="$args"; ORDER_DEFAULT+=("$name")
-    done <"$CONFIG_FILE"
+    done < <(sed "s|__REPO__|$PWD|g" "$CONFIG_FILE")
 else
     CFG[C]="--localization amcl --phantom-walls"
     CFG[Cy]="--localization amcl --phantom-walls --no-ekf-wheel-yaw"
