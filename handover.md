@@ -128,8 +128,23 @@ corrected within ~3 s. With solid walls a wall pin makes amcl follow odometry
 (wheels spin), and it drifts metres (00350 s0: 8 m). Bug: the diag `index` field
 is -1 on every tick (k must be rebuilt from time, dt 0.1 s).
 Next: why amcl lags (update rate / `update_min_d`, odom bias from wheel_odometry's
-missing chi feeding amcl's motion model), and wall-pin detection (wheels turning
-but no IMU/scan motion) as a tier-2/3 trigger.
+missing chi feeding amcl's motion model), and wall-pin detection.
+- **Wall contact is a SAFETY problem, not a re-plan trigger (user, 2026-10-03).** On
+  the real robot, driving into a wall gives rubber-wheel clatter and unpredictable
+  slip. Pushing on at speed is likely to **flip the robot onto its back
+  ("turtle")**, which it cannot recover from and which likely breaks the hardware
+  mounted on it. So a pin detector must cut the command FAST (an e-stop-like
+  guard below the corrector), and it cannot assume clean "wheels turn, IMU still"
+  signals.
+- amcl config (`nav2_params.yaml`): `update_min_d 0.25`, `update_min_a 0.2`,
+  alpha1-5 0.2, likelihood_field, 500-2000 particles; odom = EKF (chi-biased wheel
+  yaw, see CLAUDE.md). Crude probe: under amcl the believed pose jumps ~3 cm every
+  ~0.12 m of travel (truth configs: almost never). So amcl corrects often, and the
+  update gate alone does not explain the 0.2-0.3 m error. Suspect the odom bias /
+  motion-model noise next.
+- **Real-robot question open:** the user recalls the nav2 quickstart stack worked OK
+  on the real robot. Whether the real localization error is bounded the same way is
+  unknown until there is real data (see the questions asked in chat 2026-10-03).
 
 ## 5. Next, in order
 
