@@ -164,6 +164,16 @@ missing chi feeding amcl's motion model), and wall-pin detection.
   odom from vendor `scout_base`, same EKF). Our amcl block was first launched in #34.
   So job 160-180 bound sim amcl only. The user can get robot access ~Thu 2026-10-08:
   plan a real localization-error measurement for then.
+- **Real-robot protocol (agreed 2026-10-03, to write before Thu):** (1) rosbag of
+  lidar/IMU/odom/TF on the real stack (rtabmap + EKF); reference = offline batch
+  re-map of the same bag; replay with EKF wheel yaw on/off as the A/B test. Test the
+  pipeline on a sim bag first. (2) Tape marks, without stopping ON them: the robot
+  stops anywhere; plumb bobs (or a line laser) from front- and rear-centre chassis
+  points (~0.5 m apart); tape 4 distances to 2 fixed floor marks, giving x, y, yaw
+  (~+-1 deg). 3-4 floor marks per area, measured to each other once; hold ~5 s still,
+  timestamp via a joystick button in the bag. (3) A total station from the surveying
+  department only to fix the marks' coordinates, if it is available. No mocap or
+  total station is available in the lab.
 
 ## 5. Next, in order
 
