@@ -654,6 +654,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
         *(["--no-ekf-wheel-yaw"] if args.no_ekf_wheel_yaw else []),
+        *(["--lidar-odom"] if args.lidar_odom else []),
         *(["--amcl-params", args.amcl_params] if args.amcl_params else []),
         # The comparison's slip comes from tools/spawn_patches.py (seed 0,
         # along-path). The fixture's own near-origin patches must be OFF, or a
@@ -789,6 +790,7 @@ def run_one(args, plan_path: str) -> dict:
         "localization": args.localization,
         "phantom_walls": args.phantom_walls,
         "ekf_wheel_yaw": not args.no_ekf_wheel_yaw,
+        "lidar_odom": args.lidar_odom,
         "amcl_params": args.amcl_params,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm != "ours" else None,
@@ -1045,6 +1047,9 @@ def main() -> int:
                          "(#34); contact is then scored by wall_* row fields")
     ap.add_argument("--no-ekf-wheel-yaw", action="store_true",
                     help="EKF ignores the chi-biased wheel yaw rate (#34)")
+    ap.add_argument("--lidar-odom", action="store_true",
+                    help="fuse rf2o laser odometry in the EKF and drop the "
+                         "wheels' yaw rate and vy=0 (#34: observe turn skid)")
     ap.add_argument("--amcl-params", default=None,
                     help="params file layered over nav2_params.yaml's amcl (#34)")
     ap.add_argument("--nav2-profile", default="compare_static",

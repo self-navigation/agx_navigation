@@ -13,7 +13,13 @@ Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/loc_analysis/`. Ru
 - **amcl tuning cannot close the gap.** All 32 cells of job 180 miss 13–26%, against 9% under truth. EKF wheel yaw has no effect at all (job 170 Cy ≈ C, and p=1.0 in job 180).
 - **Mechanism:** the corrector sees its cross-track error at about **0.4x gain and about 2.5 s lag** under amcl, and only ~5% of it while turning. Under truth it sees 0.95x at 0.1 s. Turn skid is invisible to wheel odometry, and amcl corrects it only slowly.
 - Ruled out: pose latency, the scan-band/bake-band mismatch (real, but it changes ~100 cells), lidar extrinsics, slip patches.
-- **Next (needs the user's OK for VM time):** add a skid-observing odom source to the EKF (rf2o / KISS-ICP lidar odometry), then rerun C vs C+lidar-odom. The comparison candidates for #10/#33 are now on #33.
+- **RUNNING: job 190** (`tools/jobs/190_lidar_odom.sh`, launched 22:48 MSK 2026-10-05, ~1h40, workers 1-3, log `/tmp/lidar190.log`, out `~/compare_lidar/`). It compares C (control) with L (C + rf2o lidar odometry fused into the EKF as a differential pose; the wheels' yaw rate and **vy=0** are dropped) and with LA (L with solid walls). Flag: `lidar_odom:=true` / `--lidar-odom`. rf2o is a submodule in `src/rf2o_laser_odometry`; the covariance relay is `agx_bringup/lidar_odom_relay.py`.
+  - How to read it: run `tools/loc_analysis/gain.py ~/compare_lidar/{C,L}` on the VM, and sign-test L vs C with `sum180.py`.
+  - If L has k near 1 and tau near 0.1 s with miss near 9%, the gap was skid observability: adopt lidar odometry, put it in the paper, and test it on the real robot (#36).
+  - If L does not move: the wheels' vy=0 is not what blinds amcl, so look at amcl's resampling or motion model next.
+  - Note: the VM's /tmp logs vanished between 10-03 and 10-05. The data dirs are what persists.
+- The comparison candidates for #10/#33 are now on #33. The real-robot skid-lag test is #36, deferred because of the deadline.
+- **Paper: the advisor wants a final version on 10-05/06.** A subagent is editing `../paper/draft.tex`: it is adding the full-stack comparison and mechanism section and doing the #19 style pass (wording from `advisor-revision-2026-09-16.tex`). Placeholders `% PENDING lidar-odom result` are waiting for job 190.
 - Paper (`../paper/draft.tex`, Russian): it currently says nothing about Nav2, amcl or wall contact. The survey of phrasing problems is in this session's notes. Write-up waits for the fix result.
 
 ## 1. The goal

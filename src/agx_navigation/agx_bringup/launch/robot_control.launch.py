@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import (
+    OpaqueFunction,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
 )
@@ -70,16 +71,57 @@ def generate_launch_description():
                     "the EKF. It is chi-biased (see ekf_params.yaml); false lets "
                     "the gyro own yaw. Default true = historical behaviour (#34)."))
 
-    def ekf(wheel_yaw: bool):
+    declared_args.append(DeclareLaunchArgument(
+        "lidar_odom", default_value="false",
+        description="fuse rf2o laser odometry (pose, differential) in the EKF "
+                    "and drop the wheels' yaw rate AND their vy. Wheel odometry "
+                    "reports vy=0 by construction, which tells the filter a "
+                    "skidding robot is not moving sideways; under amcl the "
+                    "corrector then saw its cross-track error at ~0.4x gain "
+                    "and ~2.5 s lag (#34). Needs /scan (localization:=amcl)."))
+
+    def ekf_nodes(context):
+        wheel_yaw = LaunchConfiguration("ekf_wheel_yaw").perform(context) == "true"
+        lidar = LaunchConfiguration("lidar_odom").perform(context) == "true"
         overrides = {"use_sim_time": sim}
-        if not wheel_yaw:
+        if not wheel_yaw or lidar:
             overrides["odom0_config"] = [True, True, False,
                                          False, False, False,
-                                         True, True, False,
+                                         True, not lidar, False,
                                          False, False, False,
                                          False, False, False]
-        cond = IfCondition if wheel_yaw else UnlessCondition
-        return Node(
+        nodes = []
+        if lidar:
+            overrides.update({
+                "odom1": "odom_lidar",
+                "odom1_config": [True, True, False,
+                                 False, False, True,
+                                 False, False, False,
+                                 False, False, False,
+                                 False, False, False],
+                "odom1_differential": True,
+                "odom1_relative": False,
+                "odom1_queue_size": 10,
+            })
+            nodes += [
+                Node(package="rf2o_laser_odometry",
+                     executable="rf2o_laser_odometry_node",
+                     name="rf2o_laser_odometry", output="screen",
+                     parameters=[{"laser_scan_topic": Topics.SCAN,
+                                  "odom_topic": "odom_rf2o",
+                                  "publish_tf": False,
+                                  "base_frame_id": "base_link",
+                                  "odom_frame_id": "odom",
+                                  "init_pose_from_topic": "",
+                                  "freq": 10.0,
+                                  "use_sim_time": sim}]),
+                Node(package="agx_bringup", executable="lidar_odom_relay",
+                     name="lidar_odom_relay", output="screen",
+                     parameters=[{"use_sim_time": sim}],
+                     remappings=[("odom_in", "odom_rf2o"),
+                                 ("odom_out", "odom_lidar")]),
+            ]
+        nodes.append(Node(
             package="robot_localization",
             executable="ekf_node",
             name="ekf_filter_node",
@@ -90,8 +132,8 @@ def generate_launch_description():
                 ("imu", Topics.IMU),
                 ("odometry/filtered", Topics.ODOM_FILTERED),
             ],
-            condition=cond(LaunchConfiguration("ekf_wheel_yaw")),
-        )
+        ))
+        return nodes
 
     return LaunchDescription(
         declared_args
@@ -100,7 +142,6 @@ def generate_launch_description():
             sim_control_launch,
             life_control_launch,
             # imu_filter,
-            ekf(True),
-            ekf(False),
+            OpaqueFunction(function=ekf_nodes),
         ]
     )
