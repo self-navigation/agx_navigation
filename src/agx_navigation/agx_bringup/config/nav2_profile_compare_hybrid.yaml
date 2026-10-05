@@ -1,0 +1,69 @@
+# Comparison profile with a kinematically feasible global planner (#33, Type B):
+# compare_static plus Smac Hybrid-A* in place of Smac2D. Shortlist rationale:
+# Smac2D + MPPI plans grid paths a skid-steer cannot follow exactly, so it is
+# the weaker baseline; Hybrid-A* is the config-only fix. Everything else below
+# is compare_static verbatim (its reasons still apply).
+#
+# Why each key moves (2026-09-29, measured on floor_6_v2_00369):
+#  - The default inflation (0.55 m, cost_scaling_factor 2.0) decays so slowly
+#    that most of a floor-6 corridor is high cost. MPPI was probed hop by hop:
+#    it drove 0.5 m/s in open space, then ITSELF commanded ~0.01 m/s once in a
+#    corridor -- smoother and collision monitor passed its commands through --
+#    and the progress checker aborted it 6 times. RPP stopped on "collision
+#    ahead". Inflation now falls off steeply (scaling 8) just outside the
+#    footprint. The radius stays >= the circumscribed radius (0.43 m): at
+#    0.35 Nav2 logged 'inflation radius smaller than circumscribed' ~1200
+#    times and its footprint checks lose their fast path.
+#  - The local voxel layer also marked the depth camera; the stage-1 world is
+#    static and our arm sees no obstacles at all, so lidar only.
+#  - The collision monitor is disabled: our stack has no equivalent safety
+#    layer, and stage 1 compares navigation, not safety envelopes. It comes
+#    back for stage 3 (dynamic obstacles), where it is the point.
+#  - Progress allowance 10 -> 20 s: a skid-steer in-place turn is slow
+#    (real omega = commanded / chi), and turning is not "progress".
+controller_server:
+  ros__parameters:
+    progress_checker:
+      movement_time_allowance: 20.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      inflation_layer:
+        inflation_radius: 0.45
+        cost_scaling_factor: 8.0
+      voxel_layer:
+        observation_sources: scan
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      inflation_layer:
+        inflation_radius: 0.45
+        cost_scaling_factor: 8.0
+
+collision_monitor:
+  ros__parameters:
+    FootprintApproach:
+      enabled: false
+
+planner_server:
+  ros__parameters:
+    GridBased:
+      plugin: "nav2_smac_planner::SmacPlannerHybrid"
+      # Skid-steer turns in place and reverses: Reeds-Shepp, with a small
+      # radius rather than the car-like 0.4 m default.
+      motion_model_for_search: "REEDS_SHEPP"
+      minimum_turning_radius: 0.25
+      angle_quantization_bins: 72
+      allow_unknown: true
+      tolerance: 0.25
+      max_iterations: 1000000
+      max_planning_time: 5.0
+      reverse_penalty: 2.0
+      change_penalty: 0.0
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      smooth_path: true
