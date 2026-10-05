@@ -13,7 +13,11 @@ broad40 x {ours, nav2-dwb, nav2-mppi, nav2-rpp} grid it:
      same plant the soak numbers came from; the fixture's own near-origin
      patches are OFF so exactly one plant exists per run);
   3. sends the goal the way the arm consumes it: /goal_pose for `ours`
-     (vec-pmp offline + TVLQR), the NavigateToPose action for the nav2 arms;
+     (vec-pmp offline + TVLQR), the NavigateToPose action for the nav2 arms,
+     and for the Type-A pmp-* arms the plan npz's OWN path (plan_to_path,
+     ~5 cm spacing, plan headings) via controller_server's FollowPath action
+     -- planner held fixed, only the tracker differs. The nav2 stack is
+     brought up identically (same profile); its Smac planner is just unused;
   4. waits a SIM-time deadline (3x plan duration + 60 s -- a wall-clock
      timeout moves with the realtime factor and is wrong by that factor).
      For `ours` that deadline starts at the FIRST WHEEL COMMAND, not at the
@@ -111,8 +115,42 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
 
-ARMS = ("ours", "nav2-dwb", "nav2-mppi", "nav2-rpp")
-ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp"}
+ARMS = ("ours", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp")
+ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
+                     "pmp-mppi": "mppi", "pmp-rpp": "rpp"}
+# Type-A arms (#10, 2026-10-05): the planner is held FIXED at our PMP plan and
+# only the tracker differs. The plan npz's (x, y, yaw) path is densified and
+# sent straight to Nav2's controller_server via the FollowPath action (no
+# bt_navigator, no Smac call), with the same nav2 profile as the nav2-* arms.
+PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp")
+
+
+def plan_to_path(poses: np.ndarray, ds: float = 0.05) -> np.ndarray:
+    """Resample a plan's (x, y, yaw) rows to ~ds arc-length spacing.
+
+    Pure. Yaw is the PLAN'S heading (unwrapped, linearly interpolated, then
+    wrapped), not the path tangent: a plan that reverses would otherwise get
+    orientations 180 deg off. Zero-length steps (turn-in-place samples) are
+    dropped -- a path carries no time, so they cannot be expressed -- except
+    the final pose, which is always kept so the goal heading is the plan's.
+    Returns an (N, 3) array, N >= 2 whenever the plan moves at all.
+    """
+    poses = np.asarray(poses, dtype=float)
+    xy = poses[:, :2]
+    yaw = np.unwrap(poses[:, 2])
+    seg = np.hypot(*np.diff(xy, axis=0).T)
+    keep = np.concatenate([[True], seg > 1e-6])
+    xy, yaw = xy[keep], yaw[keep]
+    yaw[-1] = np.unwrap(poses[:, 2])[-1]
+    if len(xy) < 2:
+        return np.array([[xy[0, 0], xy[0, 1], poses[-1, 2]]])
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+    n = max(2, int(math.ceil(s[-1] / ds)) + 1)
+    q = np.linspace(0.0, s[-1], n)
+    out = np.column_stack([np.interp(q, s, xy[:, 0]), np.interp(q, s, xy[:, 1]),
+                           np.interp(q, s, yaw)])
+    out[:, 2] = (out[:, 2] + math.pi) % (2 * math.pi) - math.pi
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +374,7 @@ class CompareDriver:
 
     # -- goal dispatch ------------------------------------------------------
     def send_goal(self, arm: str, goal_xy, goal_yaw: float,
-                  timeout_s: float, backstop_s: float) -> dict:
+                  timeout_s: float, backstop_s: float, path=None) -> dict:
         """Send the goal the arm's way; block until terminal or deadline.
 
         The returned dict carries terminal/travel_time/drive_wall; metrics are
@@ -351,32 +389,63 @@ class CompareDriver:
         goal_t = st["sim_t"]
         if arm == "ours":
             out = self._drive_vec_pmp(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
+        elif arm in PMP_PATH_ARMS:
+            out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s)
         else:
             out = self._drive_nav2(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         out["goal_t"] = goal_t
         return out
 
-    def _drive_nav2(self, goal_xy, gyaw, goal_t, timeout_s, backstop_s) -> dict:
+    def _drive_follow_path(self, path, goal_t, timeout_s, backstop_s) -> dict:
+        """Type-A arms: our PMP plan's path straight to controller_server."""
+        from geometry_msgs.msg import PoseStamped
+        from nav2_msgs.action import FollowPath
+
+        goal = FollowPath.Goal()
+        goal.path.header.frame_id = "map"
+        goal.path.header.stamp = self._sim_stamp(goal_t)
+        for x, y, yaw in path:
+            ps = PoseStamped()
+            ps.header = goal.path.header
+            ps.pose.position.x = float(x)
+            ps.pose.position.y = float(y)
+            _, _, qz, qw = _yaw_quat(float(yaw))
+            ps.pose.orientation.z = qz
+            ps.pose.orientation.w = qw
+            goal.path.poses.append(ps)
+        goal.controller_id = "FollowPath"
+        goal.goal_checker_id = "general_goal_checker"
+        if hasattr(goal, "progress_checker_id"):
+            goal.progress_checker_id = "progress_checker"
+        return self._drive_nav2(None, None, goal_t, timeout_s, backstop_s,
+                                action=(FollowPath, "follow_path", goal))
+
+    def _drive_nav2(self, goal_xy, gyaw, goal_t, timeout_s, backstop_s,
+                    action=None) -> dict:
         from nav2_msgs.action import NavigateToPose
         from rclpy.action import ActionClient
 
-        client = ActionClient(self.node, NavigateToPose, "navigate_to_pose")
+        atype, aname, prebuilt = action or (NavigateToPose, "navigate_to_pose", None)
+        client = ActionClient(self.node, atype, aname)
         try:
             if not client.wait_for_server(timeout_sec=30.0):
                 return {"terminal": False,
-                        "error": "navigate_to_pose action server never appeared",
+                        "error": f"{aname} action server never appeared",
                         "stack_terminal": "none", "nav2_error_code": None}
-            goal = NavigateToPose.Goal()
-            goal.pose.header.frame_id = "map"
-            # Stamped with SIM time: the node's own clock is system time, and a
-            # system-time stamp is minutes away from sim time -- a TF lookup at
-            # it would extrapolate or fail.
-            goal.pose.header.stamp = self._sim_stamp(goal_t)
-            goal.pose.pose.position.x = float(goal_xy[0])
-            goal.pose.pose.position.y = float(goal_xy[1])
-            _, _, qz, qw = _yaw_quat(gyaw)
-            goal.pose.pose.orientation.z = qz
-            goal.pose.pose.orientation.w = qw
+            if prebuilt is not None:
+                goal = prebuilt
+            else:
+                goal = NavigateToPose.Goal()
+                goal.pose.header.frame_id = "map"
+                # Stamped with SIM time: the node's own clock is system time, and a
+                # system-time stamp is minutes away from sim time -- a TF lookup at
+                # it would extrapolate or fail.
+                goal.pose.header.stamp = self._sim_stamp(goal_t)
+                goal.pose.pose.position.x = float(goal_xy[0])
+                goal.pose.pose.position.y = float(goal_xy[1])
+                _, _, qz, qw = _yaw_quat(gyaw)
+                goal.pose.pose.orientation.z = qz
+                goal.pose.pose.orientation.w = qw
 
             send_fut = client.send_goal_async(goal)
             if not self.spin_until(lambda: send_fut.done(), 30.0):
@@ -404,7 +473,7 @@ class CompareDriver:
                 code = getattr(res.result, "error_code", None)
                 try:
                     out["nav2_error_code"] = int(code)
-                    out["nav2_error_name"] = _nav2_error_name(int(code))
+                    out["nav2_error_name"] = _nav2_error_name(int(code), atype)
                 except (TypeError, ValueError):
                     out["nav2_error_code"] = None
             elif not out.get("terminal"):
@@ -573,12 +642,13 @@ class CompareDriver:
         return out
 
 
-def _nav2_error_name(code: int) -> str:
-    from nav2_msgs.action import NavigateToPose
-
-    names = [k for k in dir(NavigateToPose.Result)
-             if not k.startswith("_") and isinstance(getattr(NavigateToPose.Result, k), int)
-             and getattr(NavigateToPose.Result, k) == code]
+def _nav2_error_name(code: int, atype=None) -> str:
+    if atype is None:
+        from nav2_msgs.action import NavigateToPose as atype
+    R = atype.Result
+    names = [k for k in dir(R)
+             if not k.startswith("_") and isinstance(getattr(R, k), int)
+             and getattr(R, k) == code]
     return ",".join(names) or f"code-{code}"
 
 
@@ -865,8 +935,11 @@ def run_one(args, plan_path: str) -> dict:
         # Whatever bring-up and terrain left of the cell's wall budget bounds
         # the goal phase (planning + driving) as a whole.
         cell_left = args.cell_wall_cap - (time.monotonic() - t_start)
+        follow = plan_to_path(plan["poses"]) if args.arm in PMP_PATH_ARMS else None
+        if follow is not None:
+            row["follow_path_n"] = int(len(follow))
         res = drv.send_goal(args.arm, plan["goal"], plan["goal_yaw"],
-                            timeout_s=sim_timeout,
+                            timeout_s=sim_timeout, path=follow,
                             backstop_s=max(1.0, min(args.wall_backstop, cell_left)))
         if res.get("goal_t") is None:
             # The goal never left the tool (no /clock, no action server...):
