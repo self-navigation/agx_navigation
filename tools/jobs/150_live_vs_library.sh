@@ -11,17 +11,17 @@
 #   only in the building        -> walls / amcl / ROS timing after all
 #
 # Live plans come from tools/replan_footprint.py --w-fp 0 (34 that solve);
-# upload them to ~/live40/ and the paired list to ~/live_vs_lib.txt first.
+# upload them to ~/run_data/2026-10-02_job150_live-vs-lib/live40/ and the paired list to ~/run_data/2026-10-02_job150_live-vs-lib/live_vs_lib.txt first.
 set -uo pipefail
 
-OUT=$HOME/soak_live_vs_lib.jsonl
+OUT=$HOME/run_data/2026-10-02_job150_live-vs-lib/soak_live_vs_lib.jsonl
 PLANS=$(mktemp /tmp/live_vs_lib.XXXXXX)
-sed "s|__HOME__|$HOME|" "$HOME/live_vs_lib.txt" >"$PLANS"
+sed "s|__HOME__|$HOME|" "$HOME/run_data/2026-10-02_job150_live-vs-lib/live_vs_lib.txt" >"$PLANS"
 
 echo "[lvl] starting at $(date -Is); $(grep -c . "$PLANS") plans; out=$OUT"
 
 tools/parallel_soak.sh \
-    --out "$OUT" --plans "$PLANS" --trace-dir "$HOME/soak_live_vs_lib_traces" \
+    --out "$OUT" --plans "$PLANS" --trace-dir "$HOME/run_data/2026-10-02_job150_live-vs-lib/soak_live_vs_lib_traces" \
     --repeats 5 --workers 1 \
     -- 2.5,2.618
 rc=$?

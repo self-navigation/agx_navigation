@@ -11,8 +11,8 @@
 # and aborts under it.
 
 N="${1:-10}"
-TRAJ="${2:-/home/programmer/pmp_trajectories_v2/floor_6_00042.npz}"
-OUT="${3:-/home/programmer/variance_probe.jsonl}"
+TRAJ="${2:-/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz}"
+OUT="${3:-/home/programmer/run_data/2026-08-02_INVALID_determinism-probes/variance_probe.jsonl}"
 
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash

@@ -27,7 +27,7 @@ set -uo pipefail
 PLANS=$(sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt)
 echo "[gram] starting at $(date -Is)"
 python3 tools/controllability_gramian.py --plans $PLANS \
-    --soak "$HOME/soak_broad_r_at_q25.jsonl" --arm 2.5,2.618 \
-    --out "$HOME/gramian_broad40_q25.csv"
+    --soak "$HOME/run_data/2026-08-18_job100_broad-r-at-q25/soak_broad_r_at_q25.jsonl" --arm 2.5,2.618 \
+    --out "$HOME/run_data/2026-09-23_job105_gramian-broad40/gramian_broad40_q25.csv"
 echo "[gram] finished at $(date -Is) rc=$?"
 exit 0

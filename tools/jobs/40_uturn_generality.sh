@@ -23,19 +23,19 @@
 #                                            rewriting.
 # Either outcome is worth the night; the second is worth more.
 #
-# Depends on 20_generate_v2_library.sh having produced ~/traj_data_v2. If it did
+# Depends on 20_generate_v2_library.sh having produced ~/run_data/2026-08-14_job020_v2-library/traj_data_v2. If it did
 # not, this exits non-zero and the runner moves on to the next job rather than
 # stopping -- an empty library is a reason to skip, never to idle the box.
 #
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-LIB=$HOME/traj_data_v2
-# The plan dir is the eval config's, not a guess: it is ~/pmp_trajectories_v2
-# on the VM, which is easy to confuse with the new ~/traj_data_v2 library.
+LIB=$HOME/run_data/2026-08-14_job020_v2-library/traj_data_v2
+# The plan dir is the eval config's, not a guess: it is ~/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2
+# on the VM, which is easy to confuse with the new ~/run_data/2026-08-14_job020_v2-library/traj_data_v2 library.
 CONTROL=$(python3 -c "import yaml,os;c=yaml.safe_load(open('$PWD/config/eval_trajectories.yaml'));print(os.path.join(os.path.expanduser(c['trajectory_dir']),'floor_6_00031.npz'))")
-OUT=$HOME/soak_uturn_generality.jsonl
-TRACES=$HOME/uturn_generality_traces
+OUT=$HOME/run_data/2026-08-15_job040_uturn-generality/soak_uturn_generality.jsonl
+TRACES=$HOME/run_data/2026-08-15_job040_uturn-generality/uturn_generality_traces
 PICK=4
 
 if [[ ! -d $LIB ]]; then

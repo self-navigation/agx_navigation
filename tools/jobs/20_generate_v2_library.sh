@@ -23,8 +23,8 @@
 set -uo pipefail
 
 MAPS=src/rudn-ordjo-building/maps
-CAND=$HOME/candidates_v2.json
-OUT=$HOME/traj_data_v2
+CAND=$HOME/run_data/2026-08-14_job020_v2-library/candidates_v2.json
+OUT=$HOME/run_data/2026-08-14_job020_v2-library/traj_data_v2
 
 echo "[gen] screening at $(date -Is)"
 python3 tools/sample_eval_trajectories.py \

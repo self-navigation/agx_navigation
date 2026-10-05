@@ -38,7 +38,7 @@ if [ -z "${ROS_VERSION:-}" ]; then
     set -u
 fi
 
-OUT_DIR=${OUT_DIR:-$HOME/compare_factors}
+OUT_DIR=${OUT_DIR:-$HOME/run_data/2026-10-02_job160_stack-factors/compare_factors}
 WORKERS=(${WORKERS:-1 2 3})
 SEEDS=(${SEEDS:-0 1})
 declare -A CFG=(
