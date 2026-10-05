@@ -28,7 +28,7 @@ The two rules encoded here are the ones the bridge learned the hard way
 Usage (on the VM, inside the stack's partition):
 
     tools/with-worker 1 python3 tools/spawn_patches.py \
-        --plan ~/traj_data_v2/floor_6_v2_00369.npz --seed 0
+        --plan ~/run_data/2026-08-14_job020_v2-library/traj_data_v2/floor_6_v2_00369.npz --seed 0
 
 Exit 0 = every patch confirmed present in pose/info. 1 = failure (the caller
 must not start a measured run: a rollout that begins before its ground exists

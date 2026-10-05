@@ -34,7 +34,7 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-OUT=$HOME/soak_seven_three_arms.jsonl
+OUT=$HOME/run_data/2026-09-23_job110_seven-three-arms/soak_seven_three_arms.jsonl
 PLANS=$(mktemp /tmp/seven_plans.XXXXXX)
 python3 -c "
 import yaml, os

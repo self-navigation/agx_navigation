@@ -50,7 +50,7 @@ Pure numpy/scipy. Runs anywhere the plans are; needs no ROS and no Gazebo.
 
 USAGE
   tools/controllability_gramian.py --plans $(cat plans.txt) \\
-      --soak ~/soak_broad_r_at_q25.jsonl --arm 2.5,2.618 --out gramian.csv
+      --soak ~/run_data/2026-08-18_job100_broad-r-at-q25/soak_broad_r_at_q25.jsonl --arm 2.5,2.618 --out gramian.csv
 """
 
 import argparse

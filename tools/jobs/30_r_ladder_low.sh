@@ -22,8 +22,8 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-OUT=$HOME/soak_r_ladder_low.jsonl
-TRACES=$HOME/r_ladder_low_traces
+OUT=$HOME/run_data/2026-08-14_job030_r-ladder-low/soak_r_ladder_low.jsonl
+TRACES=$HOME/run_data/2026-08-14_job030_r-ladder-low/r_ladder_low_traces
 
 echo "[r_low] starting at $(date -Is); out=$OUT traces=$TRACES"
 

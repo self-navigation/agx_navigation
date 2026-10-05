@@ -8,7 +8,7 @@
 # seven, and adopting it directly is exactly the mistake the last three tuning
 # results made. It has to be re-measured on ground it was not fitted to.
 #
-# We cannot know its answer in advance, so this job reads ~/tvlqr_tuned_J.json
+# We cannot know its answer in advance, so this job reads ~/run_data/2026-08-15_job060_tune-on-J/tvlqr_tuned_J.json
 # and validates whatever is in it. That is the only way to queue the check
 # alongside the search rather than a session later.
 #
@@ -29,9 +29,9 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-TUNED=$HOME/tvlqr_tuned_J.json
-OUT=$HOME/soak_validate_J_broad.jsonl
-TRACES=$HOME/validate_J_broad_traces
+TUNED=$HOME/run_data/2026-08-15_job060_tune-on-J/tvlqr_tuned_J.json
+OUT=$HOME/run_data/2026-08-15_job090_validate-J-broad/soak_validate_J_broad.jsonl
+TRACES=$HOME/run_data/2026-08-15_job090_validate-J-broad/validate_J_broad_traces
 PLANS=$(mktemp /tmp/validate_J_plans.XXXXXX)
 sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt >"$PLANS"
 

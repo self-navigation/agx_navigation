@@ -29,7 +29,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--library", default="traj_data_v2")
     ap.add_argument("--count", type=int, default=40)
-    ap.add_argument("--prefix", default="", help="rewrite dirname to this, e.g. $HOME/traj_data_v2")
+    ap.add_argument("--prefix", default="", help="rewrite dirname to this, e.g. $HOME/run_data/2026-08-14_job020_v2-library/traj_data_v2")
     args = ap.parse_args()
 
     plans = sorted(glob.glob(os.path.join(args.library, "*.npz")))

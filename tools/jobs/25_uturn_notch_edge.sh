@@ -15,10 +15,10 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-OUT=$HOME/uturn_edge.jsonl
-TRACES=$HOME/uturn_edge_traces
-# The plan dir is the eval config's, not a guess: it is ~/pmp_trajectories_v2
-# on the VM, which is easy to confuse with the new ~/traj_data_v2 library.
+OUT=$HOME/run_data/2026-08-14_job025_uturn-edge/uturn_edge.jsonl
+TRACES=$HOME/run_data/2026-08-14_job025_uturn-edge/uturn_edge_traces
+# The plan dir is the eval config's, not a guess: it is ~/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2
+# on the VM, which is easy to confuse with the new ~/run_data/2026-08-14_job020_v2-library/traj_data_v2 library.
 PLAN=$(python3 -c "import yaml,os;c=yaml.safe_load(open('$PWD/config/eval_trajectories.yaml'));print(os.path.join(os.path.expanduser(c['trajectory_dir']),'floor_6_00031.npz'))")
 
 if [[ ! -f $PLAN ]]; then

@@ -13,7 +13,7 @@ runs BESIDE a campaign (it never touches the stacks) and records:
                --stale s while its scope is alive: gdb backtraces of every
                gz process in the scope, per-thread state/wchan/CPU, and a
                gz-side vs ROS-side /clock probe, and py-spy dumps of every
-               Python process (needs ~/.pyspy).
+               Python process (needs ~/run_data/2026-10-01_scratch_pyspy/.pyspy).
 
 Run on the VM:  python3 tools/freeze_watch.py --out-dir ~/cmp_v5/seed0 --workers "1 2 3"
 Plot locally:   tools/plot_vitals.py <vitals.csv>
@@ -26,7 +26,7 @@ import subprocess
 import threading
 import time
 
-PYSPY = os.path.expanduser("~/.pyspy/bin/py-spy")  # venv; absent -> skipped
+PYSPY = os.path.expanduser("~/run_data/2026-10-01_scratch_pyspy/.pyspy/bin/py-spy")  # venv; absent -> skipped
 CG_APP = "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
 
 

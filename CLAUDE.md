@@ -595,5 +595,13 @@ prerequisites #13, per-worker queues #12, low-priority ideas #14.
   time on a plant that will not exist forever, so the renderer alone does not
   reproduce the picture. `tools/plot_*.py` keeps the old rule. Everything from
   before 2026-08-13 is in `figures/archive/` with what provenance survives.
+- **Run data lives in ONE tree, one directory per run, each with a README**
+  (2026-10-05, user rule). On the VM that is `~/run_data/`, mirrored to the
+  laptop's gitignored `run_data/` as the backup. Name each directory
+  `YYYY-MM-DD_job<NNN>_<slug>/` and put a `README.md` in it *when the job is
+  launched*: what the run was, the issue, the command/script and config, the
+  plan set, the code commit, and what to conclude from it (fill in the result
+  when read). Job scripts default `OUT_DIR` into that tree; never write data to
+  `~` or `/tmp` and leave it there. Index: [docs/run-data-index.md](docs/run-data-index.md).
 - `acados/` at the repo root is untracked scratch; the Makefile's `ACADOS_*` /
   `t_renderer` bits are vestigial and unset by default.

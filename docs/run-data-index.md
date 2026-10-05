@@ -1,109 +1,84 @@
 # Run-data index
 
-Inventory taken 2026-10-05 (read-only pass). Nothing has been moved yet. The
-proposed move script is [tools/data_tidy_plan.sh](../tools/data_tidy_plan.sh),
-which has **not** been run.
+All run data lives in one tree: `~/run_data/` on the VM, mirrored to the laptop's
+gitignored `run_data/` (rule: CLAUDE.md, Conventions). One directory per run,
+named `YYYY-MM-DD_job<NNN>_<slug>`. Runs from before the job queue use `nojob`.
+The tags `INVALID_`, `UNKNOWN_` and `scratch_` replace the job tag. Every
+directory has a `README.md`.
 
-VM paths are relative to `/home/programmer` (`~`). Local paths are relative to
-the repo root. "Cited by" lists the places that name the path: handover,
-CLAUDE.md, docs/, tools/, the Justfile, figures/*/render.py|README.md, and issues.
+**Migration status (2026-10-05).** The tidy was done by
+[tools/data_tidy_plan.sh](../tools/data_tidy_plan.sh).
+- **VM:** done, `vm` mode. 46 directories and 184 entries were moved, and each old `~/<name>` is a symlink into its run directory. Nothing was deleted.
+- **Laptop:** `rsync -a` from the VM is done.
+- **Not yet done:** the `local` merge, which folds the old loose copies into these directories and leaves symlinks. The paths listed under "old local path" are still real directories until it runs.
+- **Still to move once jobs 190/200 finish (~03:00 2026-10-06):** `~/compare_lidar` and `~/compare_hybrid`.
 
 Classes:
 - **a**: cited by the paper or a committed figure.
 - **b**: cited by the handover, an issue or the docs.
-- **c**: superseded or invalid. Invalid eras: before 2026-08-02 evening, and plant changes on 08-04 and 08-07.
+- **c**: superseded or invalid (before 2026-08-02 evening; plant changes on 08-04 and 08-07).
 - **d**: scratch or smoke.
 - **e**: unknown.
 
-**VM-only** means the cited data has a single copy.
+**L** = laptop-only before the tidy.
 
-Totals: VM home 49 G. About 31 G of that is not experiment data (`ollama-models` 28 G, `ollama` 2.1 G, `torch-cu126` 805 M, `.keras` 341 M). Experiment data on the VM is about 2.6 G, plus the live `compare_lidar`/`compare_hybrid`. Local untracked data is about 0.9 G.
+| run dir (`run_data/...`) | old VM path(s) `~/` | old local path(s) | job | what | cited by | class |
+|---|---|---|---|---|---|---|
+| 2026-07-24_INVALID_rl-p0-p2 | checkpoints, rl_corrector_p*, rl_smoke_test2.zip, rl_tb, train_*.log | | none | SAC RL corrector curriculum p0-p2 | CLAUDE.md Settled, Justfile, plot_checkpoint* | c |
+| 2026-07-25_INVALID_fixture-run-recorder | | run_data/{identity,tvlqr}_* (L) | none | early fixture run_recorder CSVs | plot_run.py docstring | c |
+| 2026-07-29_nojob_plan-library-v1 | pmp_trajectories_v2 | traj_data | none | v1 plan library incl. the seven shapes (input) | figures 08-13/08-15, Justfile, jobs 25/40 | a |
+| 2026-07-29_UNKNOWN_pmp-trajectories | pmp_trajectories | | ? | 416-file plan dir | nothing | e |
+| 2026-07-30_INVALID_sac-1.5M | runs_20260730 | tb_data (L) | none | 1.5M-step SAC run | CLAUDE.md Settled, history | c |
+| 2026-08-01_INVALID_tvlqr-tune | tvlqr_tune*, tvlqr_tuned.json | tune_data/tvlqr_*, tune_v4_progress.log | none | early 7-plan TVLQR tuning | history, figures/archive | c |
+| 2026-08-01_INVALID_three-way-compare | | compare_data, compare_data_new, figures_new (L) | none | identity/TVLQR/RL comparison | history, plot_corrector_summary.py | c |
+| 2026-08-01_INVALID_sweeps | | sweep_data, sweep_clean (L) | none | checkpoint and ground-mu sweeps | history, measurement-rig.md | c |
+| 2026-08-02_INVALID_determinism-probes | reset_*probe*, reset_world_traces, variance_* | tune_data/{reset,variance}_* | none | determinism probes | CLAUDE.md Settled, history | c |
+| 2026-08-12_nojob_jsweep | jsweep.*, jtraces | jtraces | none | J sweep | figures/2026-08-13 | a |
+| 2026-08-12_nojob_uturn-default-vs-tuned | uturn_default/tuned.jsonl, uturn_traces | uturn_traces, soak_data/uturn_{default,tuned} | none | U-turn default vs tuned | figures/2026-08-13 | a |
+| 2026-08-12_nojob_seven-plan-validate | validate_20260812_*, local2d_*, qwall_* | tune_data/ same | none | 7-plan tune validation | history, plot_tune_validation.py | b |
+| 2026-08-13_nojob_soak-ladders | soak_20260813_* | soak_data/soak_20260813_* | none | q ladder, two-point, U-turn subladder | figures/2026-08-13, archive ladder_modes (paper) | a |
+| 2026-08-13_nojob_libsweep | gaincheck*, libsweep*, sweep2.sh | gaincheck, libsweep, soak_data/libsweep.jsonl | none | 51-plan library sweep | CLAUDE.md, history | b |
+| 2026-08-13_nojob_epsilon-scores | | epsilon_data (L) | none | J scores of the trace sets | figures/2026-08-13 | a |
+| 2026-08-14_job010_r-ladder | soak_r_ladder.jsonl, r_ladder_traces | r_ladder_traces, soak_data/ | 10 | r ladder at q=0.276 | figures/2026-08-14 | a |
+| 2026-08-14_job020_v2-library | traj_data_v2, candidates_v2.json | traj_data_v2 | 20 | v2 plan library = broad 40 (input) | many tools, figures 08-15/10-02 | a |
+| 2026-08-14_job025_uturn-edge | uturn_edge.*, uturn_edge_traces | soak_data/uturn_edge.jsonl | 25 | U-turn notch edge traces | jobs/25 | b |
+| 2026-08-14_job030_r-ladder-low | soak_r_ladder_low.jsonl, r_ladder_low_traces | soak_data/ | 30 | low r ladder | figures/2026-08-15 | a |
+| 2026-08-15_job040_uturn-generality | soak_uturn_generality.jsonl, uturn_generality_traces | soak_data/ | 40 | U-turn basin generality | figures/2026-08-15, CLAUDE.md | a |
+| 2026-08-15_job050_broad-gains | broad_eval_plans.txt, soak_broad_gains.jsonl, broad_gains_traces | broad_gains_traces, soak_data/ | 50 | broad gain generality | history, rejoin_phase0.py | b |
+| 2026-08-15_job060_tune-on-J | tvlqr_tune_J*, tvlqr_tuned_J.json, tvlqr_validate_J_adopted.* | | 60 | tune on J | jobs/60, 90 | b |
+| 2026-08-15_job070_broad-q | soak_broad_q.jsonl(+.w*), broad_q_traces | soak_data/ | 70 | broad q ladder | CLAUDE.md gains table | b |
+| 2026-08-15_job080_broad-r | soak_broad_r.jsonl(+.w*), broad_r_traces | soak_data/ | 80 | broad r ladder | CLAUDE.md | b |
+| 2026-08-15_job090_validate-J-broad | soak_validate_J_broad.jsonl(+.w*), validate_J_broad_traces | soak_data/ | 90 | J-tune validation on broad | CLAUDE.md | b |
+| 2026-08-18_job100_broad-r-at-q25 | soak_broad_r_at_q25.jsonl(+.w*) | soak_data/ | 100 | gain adoption run | CLAUDE.md | b |
+| 2026-09-23_job105_gramian-broad40 | gramian_broad40_q25.csv | soak_data/ | 105 | controllability vs J | CLAUDE.md Settled | b |
+| 2026-09-23_job110_seven-three-arms | soak_seven_three_arms.jsonl(+.w*) | soak_data/ | 110 | seven shapes, three arms | CLAUDE.md | b |
+| 2026-09-23_job120_broad40-open-loop | soak_broad_open_loop.jsonl(+.w*) | soak_data/ | 120 | broad 40 open loop | CLAUDE.md | b |
+| 2026-09-23_job130_gramian-joins | gramian_{seven_q25,broad40_identity,broad40_q25_job120}.csv | soak_data/ | 130 | Gramian on jobs 110/120 | jobs/130 | b |
+| 2026-09-28_job140_smoke | compare_smoke.jsonl, compare_smoke2(.log) | | 140 | harness smoke | jobs/140 | d |
+| 2026-09-29_job140_nav2-tuning | | run_data/compare_tune{3,4} (L) | 140 | Nav2 profile tuning | #10 | b |
+| 2026-09-29_INVALID_job140-compare-v1 | compare_broad40(.log) | run_data/compare_seed{0,1}, figures/tmp/cmp_s* | 140 | comparison v1 (amcl heartbeat bug) | figures/2026-09-29, #10 | a/c |
+| 2026-09-29_UNKNOWN_compare-v2 | compare_broad40_v2(.log) | | 140? | 75-file aborted(?) v2 | nothing | e |
+| 2026-09-30_job140_compare-v3 | compare_broad40_v3, cmp_v3_*.log, ram_v3.log | run_data/compare_v3_seed* | 140 | v3, freezes | #32 | b |
+| 2026-09-30_nojob_rejoin-phase0 | rejoin_p0_2000.*, rejoin_rescue.* | run_data/rescue | none | re-join Phase 0 | figures/2026-09-30 (paper), #11 | a |
+| 2026-09-30_UNKNOWN_bias27 | bias27 | run_data/bias27 | ? | identity vs tvlqr, worker 7 | nothing | e |
+| 2026-09-30_scratch_rtf-probe | rtf_probe_* | | | RTF probes | nothing | d |
+| 2026-10-01_job140_compare-v4 | compare_broad40_v4, cmp_v4_*.log | run_data/compare_v4_seed* | 140 | v4, freeze analysis source | #32 | b |
+| 2026-10-01_job140_compare-v5 | compare_broad40_v5, cmp_v5_*.log, freeze_watch_v5.log | run_data/compare_v5 | 140 | v5, live freeze captures | #32 | b |
+| 2026-10-01_scratch_field-probes | fieldprobe*, fp2-7*, one_plan.txt | | | field probes | nothing | d |
+| 2026-10-01_scratch_pyspy | .pyspy, spy_*, build_ex.log | | | py-spy dumps | freeze_watch.py | d |
+| 2026-10-01_scratch_compare-probes | cg28_smoke.jsonl, compare_mp_probe8.jsonl | | | harness probes | nothing | d |
+| 2026-10-02_job140_compare-v6 | compare_broad40_v6, cmp_v6_*.log, freeze_watch_v6.log | | 140 | SHM A/B | #32 | b |
+| 2026-10-02_job140_compare-v7 | compare_broad40_v7, cmp_v7_*.log | run_data/compare_v7_seed*, figures/tmp/v7s* | 140 | v7, first clean comparison | figures/2026-10-02, #34 | a |
+| 2026-10-02_UNKNOWN_sigtrace | sigtrace.bt, sigtrace_v7.log | | ? | bpftrace during v7 | nothing | e |
+| 2026-10-02_job150_live-vs-lib | live40, live_vs_lib.txt, soak_live_vs_lib*(+traces) | soak_data/soak_live_vs_lib.jsonl | 150 | live vs library plans, bare ground | handover, #34 | b |
+| 2026-10-02_job160_stack-factors | compare_factors | run_data/job160 | 160 | stack-factor factorial | figures/2026-10-03, handover | a |
+| 2026-10-03_UNKNOWN_dep-series | dep_series | | ? | departure series(?) | nothing | e |
+| 2026-10-03_job170_loc-factors | compare_loc, compare_loc_smoke | run_data/loc170 | 170 | localization factors | handover, #34 | b |
+| 2026-10-03_job180_amcl-sweep | compare_amcl, compare_amcl_smoke | run_data/amcl180 | 180 | amcl x EKF factorial | handover, #34 | b |
+| *(pending)* 2026-10-05_job190_lidar-odom | compare_lidar | | 190 | rf2o lidar odom in EKF | handover, #34 | live |
+| *(pending)* 2026-10-05_job200_hybrid | compare_hybrid | | 200 | Hybrid-A*+MPPI | #33 | live |
 
-## Live (not inspected; jobs writing now)
-
-| path(s) | job | date | what it is | cited by | class |
-|---|---|---|---|---|---|
-| VM `compare_lidar/` | 190 | 2026-10-05 | lidar-odom (rf2o) EKF arms (#34) | jobs/190 | live |
-| VM `compare_hybrid/` | 200 | 2026-10-05 | hybrid nav2 profile; job script untracked | jobs/200 (untracked) | live |
-| VM `/tmp/smoke200/`, `/tmp/smoke*.log`, `/tmp/smoke1.txt` | 170-200 smoke | 10-0x | smoke runs in /tmp | none | d (live) |
-
-## Comparison campaigns (#10, #32, #34), Sep 29 to Oct 5
-
-| path(s) | job | date | what it is | cited by | class |
-|---|---|---|---|---|---|
-| VM `compare_smoke.jsonl`, `compare_smoke2/`+`.log`, `compare_mp_probe8.jsonl`, `cg28_smoke.jsonl` | 140 smoke | 09-28..10-01 | stage-1 smoke tests and probes (cg28 = #28 cgroup) | jobs/140 (smoke) | d |
-| VM `compare_broad40/` (87M) + `.log`; local `run_data/compare_seed{0,1}/` (69M) | 140 | 09-29 | stage-1 v1. **INVALID**: amcl re-initialized on the map heartbeat | #10, figures/2026-09-29 | a (figure) / c (numbers invalid) |
-| local `run_data/compare_tune{3,4}/` | pre-140 tuning | 09-29 | Nav2 profile tuning, 3 plans | #10 comment (by name) | b |
-| VM `compare_broad40_v2/` + `.log` | 140 rerun | 09-29 | v2, 75 files, apparently aborted | none | e |
-| VM `compare_broad40_v3/`, `cmp_v3_s*.log`; local `run_data/compare_v3_seed{0,1}/` | 140 v3 | 09-30 | v3; freezes make it unquotable | #32 | b |
-| VM `compare_broad40_v4/`, `cmp_v4_s*.log`, `ram_v3.log`; local `run_data/compare_v4_seed{0,1}/` | 140 v4 | 10-01 | v4; the freeze analysis source | #32 (`~/compare_broad40_v4/seed*/`) | b |
-| VM `compare_broad40_v5/` (incl. `freeze_manual/`), `cmp_v5_*.log`, `freeze_watch_v5.log`; local `run_data/compare_v5/` (1 file) | 140 v5 | 10-01 | v5 freeze live captures | #32 (`~/compare_broad40_v5/.../freeze`) | b, **VM-only** |
-| VM `compare_broad40_v6/` (80M), `cmp_v6_*.log`, `freeze_watch_v6.log` | 140 v6 | 10-01..02 | SHM A/B test (negative) | #32 | b, **VM-only** |
-| VM `sigtrace.bt`, `sigtrace_v7.log` | #32 | 10-02 | bpftrace signal trace during v7 | none found | b? (likely #32 follow-up); e |
-| VM `compare_broad40_v7/` (86M), `cmp_v7_*.log`; local `run_data/compare_v7_seed{0,1}/`, `figures/tmp/v7s{0,1}/` | 140 v7 | 10-02 | first complete comparison | figures/2026-10-02, #34 | a |
-| local `figures/tmp/cmp_s{0,1}/` | 140 v1 | 09-29 | `summarize_compare.py` output for v1 | summarize_compare.py (default out) | d |
-| VM `live40/`, `live_vs_lib.txt`, `soak_live_vs_lib.jsonl`(+`.w1`), `soak_live_vs_lib_traces/` (60M); local `soak_data/soak_live_vs_lib.jsonl` | 150 | 10-02 | live-stack plans vs library on the bare-ground soak | handover, #34, jobs/150 | b (traces **VM-only**) |
-| VM `compare_factors/` (45M); local `run_data/job160/` | 160 | 10-02..03 | stack-factor factorial (A-E, truth vs amcl) | figures/2026-10-03, handover | a |
-| VM `dep_series/` (25M) | 160 analysis? | 10-03 | departure series (`tools/departure_series.py` output?) | none by name | e |
-| VM `compare_loc/`, `compare_loc_smoke/`; local `run_data/loc170/` (all_rows only) | 170 | 10-03 | localization factors (Cy, Ay) | handover, #34 | b (tracks **VM-only**); smoke d |
-| VM `compare_amcl/` (304M), `compare_amcl_smoke/`; local `run_data/amcl180/` (all_rows only) | 180 | 10-03 | amcl 2^5 factorial | handover, #34 | b (tracks **VM-only**); smoke d |
-
-## Re-join Phase 0 (#11) and probes, Sep 30 to Oct 1
-
-| path(s) | job | date | what it is | cited by | class |
-|---|---|---|---|---|---|
-| VM `rejoin_p0_2000.jsonl`+`.log` | #11 | 09-30 | 2000-problem Phase 0 run | copy committed as figures/2026-09-30/rejoin_phase0_vm2000.jsonl (paper fig `rejoin_phase0_controlled`) | a |
-| VM `rejoin_rescue.jsonl`+`.log`; local `run_data/rescue/` | #11 | 09-30 | rescue run | tools/rejoin_phase0.py, docs (`rescue`) | b |
-| VM `bias27/`; local `run_data/bias27/` | #27? | 09-30 | identity vs tvlqr rows, w7 tracks | none | e |
-| VM `rtf_probe_camsoff/`, `rtf_probe_{a,b}.log` | #32 era | 09-30 | RTF probes with cameras off | none | d |
-| VM `fieldprobe*`, `fp2..fp7*`, `fieldprobe_plans.txt`, `one_plan.txt` | none | 10-01 | vector-field/planner probes | none | d |
-| VM `.pyspy/` (24M), `spy_planner.txt`, `spy_watch.{sh,log}`, `build_ex.log` | none | 10-01 | py-spy dumps (MultiThreadedExecutor finding) | tools/freeze_watch.py (`spy_`) | d |
-
-## Gain tuning and soak era, Aug 12 to Sep 23 (valid plant, after 08-07)
-
-| path(s) | job | date | what it is | cited by | class |
-|---|---|---|---|---|---|
-| VM `jobq/`, `jobq.sh` | runner | 08-14..09-28 | job queue state + logs | CLAUDE.md, docs/vm-operations.md | b (queue infra, not data) |
-| VM `jsweep.jsonl`, `jsweep.sh`, `jtraces/`; local `jtraces/`, `epsilon_data/` | none (pre-queue) | 08-12..13 | J sweep | figures/2026-08-13, history | a |
-| VM `uturn_default.jsonl`, `uturn_tuned.jsonl`, `uturn_traces/`; local same + `soak_data/uturn_*` | none | 08-12 | U-turn default vs tuned | figures/2026-08-13 | a |
-| VM `soak_20260813_*.jsonl`; local `soak_data/soak_20260813_*` | none | 08-12..13 | ladder / two-point / U-turn subladder | figures/2026-08-13, figures/archive ladder_modes (paper `ladder_modes.png`) | a |
-| VM `validate_20260812_*`, `local2d_20260812.jsonl`, `qwall_20260812.jsonl`; local `tune_data/` copies | none | 08-12 | 7-plan tune validation | history, plot_tune_validation.py | b (Settled: seven-plan search refuted) |
-| VM `gaincheck/`+`.jsonl`, `libsweep/`+`.jsonl`, `sweep2.sh`; local `gaincheck/`, `libsweep/`, `soak_data/libsweep.jsonl` | none | 08-13 | 51-plan library sweep | history, Justfile, CLAUDE.md (51-plan claim) | b |
-| VM `traj_data_v2/`, `candidates_v2.json`; local `traj_data_v2/` | 20 | 08-14 | v2 plan library (the broad 40) | many tools, figures/2026-08-15, 10-02 | a (`candidates_v2.json` **VM-only**) |
-| VM `pmp_trajectories_v2/`; local `traj_data/` | pre-queue | 07-29 | original 7-shape plans (v1 library) | figures/2026-08-13/15, Justfile | a (plans; pre-era date is fine, they are inputs) |
-| VM `pmp_trajectories/` (416 files) | pre-queue | 07-29 | older/larger plan set | Justfile/tools (by prefix) | e (may be superseded by _v2) |
-| VM `soak_r_ladder.jsonl`, `r_ladder_traces/`; local both | 10 | 08-14 | r ladder | figures/2026-08-14 | a |
-| VM `uturn_edge.jsonl`, `uturn_edge_traces/`; local `soak_data/uturn_edge.jsonl` | 25 | 08-14 | U-turn notch edge | jobs/25 | b (traces **VM-only**) |
-| VM `soak_r_ladder_low.jsonl`, `r_ladder_low_traces/`; local jsonl | 30 | 08-14 | low-r ladder | figures/2026-08-15 | a (traces **VM-only**) |
-| VM `soak_uturn_generality.jsonl`, `uturn_generality_traces/`; local jsonl | 40 | 08-14..15 | U-turn generality | figures/2026-08-15, CLAUDE.md Settled | a (traces **VM-only**) |
-| VM `broad_eval_plans.txt`, `soak_broad_gains.jsonl`, `broad_gains_traces/`; local jsonl + `broad_gains_traces/` | 50 | 08-15 | broad gain generality | history, rejoin_phase0.py | b |
-| VM `tvlqr_tune_J.jsonl`, `tvlqr_tuned_J.json`, `tvlqr_validate_J_adopted.json{,l}` | 60 | 08-15 | tune on J | jobs/60, jobs/90 | b, **VM-only** |
-| VM `soak_broad_q.jsonl`(+`.w1-4`), `broad_q_traces/` (176M); local jsonl | 70 | 08-15 | broad q ladder (gains table in CLAUDE.md) | CLAUDE.md, history | b (traces, shards **VM-only**) |
-| VM `soak_broad_r.jsonl`(+`.w*`), `broad_r_traces/`; local jsonl | 80 | 08-15 | broad r ladder | CLAUDE.md table, gramian tool | b (traces **VM-only**) |
-| VM `soak_validate_J_broad.jsonl`(+`.w*`), `validate_J_broad_traces/`; local jsonl | 90 | 08-15 | validation of the J-tuned gains on broad | CLAUDE.md table | b (traces **VM-only**) |
-| VM `soak_broad_r_at_q25.jsonl`(+`.w*`); local jsonl | 100 | 08-18 | adopted-gain decision run | CLAUDE.md (job 100) | b |
-| VM `gramian_*.csv` (4); local `soak_data/gramian_*` | 105, 130 | 09-23 | controllability Gramian | CLAUDE.md Settled | b |
-| VM `soak_seven_three_arms.jsonl`(+`.w*`); local jsonl | 110 | 09-23 | seven plans, three arms | CLAUDE.md, summarize_soak.py | b |
-| VM `soak_broad_open_loop.jsonl`(+`.w*`); local jsonl | 120 | 09-23 | broad 40, open loop | CLAUDE.md | b |
-| VM `soak_20260813_uturn_subladder_partial.jsonl` | none | 08-12 | partial run of the subladder | none | d |
-| VM `.w1..w4` shards (all of the above) | 70-120 | | per-worker shards; merged file exists | none | d (merged copy is canonical) |
-
-## Invalid-era data (before 2026-08-07 plant change)
-
-| path(s) | job | date | what it is | cited by | class |
-|---|---|---|---|---|---|
-| VM `checkpoints/` (179M), `rl_corrector_p*.zip`, `rl_corrector_*_best/`, `rl_smoke_test2.zip`, `rl_tb/`, `train_*.log`; local `tb_data/` | RL p0-p2 | 07-24..29 | SAC checkpoints + TensorBoard | CLAUDE.md (RL Settled), Justfile, plot_* tools | c (kept as evidence for a Settled stub; checkpoints **VM-only**) |
-| VM `runs_20260730/` (916M) | RL 1.5M run | 07-30..31 | 20260730 SAC run | history, CLAUDE.md Settled | c, **VM-only**, largest data dir |
-| VM `tvlqr_tune.jsonl`(+`.pre20260802`), `tvlqr_tune_v2/v3.jsonl`, `tvlqr_tune_v4_newplant.jsonl`, `tvlqr_tuned.json`; local `tune_data/` | none | 08-01..07 | early TVLQR tune | history, figures/archive | c |
-| VM `reset_probe*.jsonl`, `reset_world_probe.jsonl`, `reset_world_traces/`, `variance_*.jsonl` | none | 08-02..04 | determinism probes | history, CLAUDE.md Settled | c |
-| local `compare_data/`, `compare_data_new/`, `figures_new/`, `sweep_clean/`, `sweep_data/`, `reports/` | none | 08-01..07 | three-way comparison, ground-mu sweep, report draft | history, plot_* tools | c |
-
-## Not experiment data
-
-| path(s) | what | class |
-|---|---|---|
-| VM `ollama-models/` (28G), `ollama/` (2.1G), `.ollama/` | LLM runtime/models (08-18) | e (not this project) |
-| VM `torch-cu126/` (805M), `.keras/` (341M) | wheel cache / keras datasets | d |
-| VM `ai-practicum/` (49M) | unrelated project (uv, task3) | e (not this project) |
-| VM `agx_navigation/` (1.5G) | repo checkout; its `run_data/` (888K) and `soak_data/` (2.9M) are small leftovers | infra |
-| local `acados/` (121M), `.kilo/` | untracked scratch (acados is noted in CLAUDE.md) | d |
+Not moved, not run data: `~/agx_navigation`, `~/jobq` + `~/jobq.sh` (queue
+infrastructure), `ollama*`, `torch-cu126`, `.keras`, `ai-practicum` (unrelated
+project), `/tmp` (agx-run logs, smoke*). Local `acados/`, `.kilo/` and
+`reports/` are scratch or docs and were left in place.

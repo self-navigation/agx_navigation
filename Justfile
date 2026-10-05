@@ -358,7 +358,7 @@ fetch-policies dest='policies':
 # out near-straight, 6-9 m, heading the same way (two were the same goal), so
 # "TVLQR beats identity" had only ever been shown for one kind of path. Pick a
 # STRAIGHT, an S-CURVE and a CORNER from this listing before running `compare`.
-classify-plans pattern='/home/programmer/pmp_trajectories_v2/*.npz':
+classify-plans pattern='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/*.npz':
     {{_ssh}} 'cd {{remote}} && python3 tools/classify_plans.py "{{pattern}}"'
 
 # Replay the SAME frozen plan under identity / TVLQR / RL and record the true
@@ -370,7 +370,7 @@ classify-plans pattern='/home/programmer/pmp_trajectories_v2/*.npz':
 # the two control laws.
 #
 # `trajs` is a space-separated list of .npz paths -- quote it.
-compare trajs policy='/home/programmer/rl_corrector_p0.zip' correctors='identity tvlqr rl' terrain='true': sync
+compare trajs policy='/home/programmer/run_data/2026-07-24_INVALID_rl-p0-p2/rl_corrector_p0.zip' correctors='identity tvlqr rl' terrain='true': sync
     {{_ssh}} 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
         && source install/setup.bash \
         && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
@@ -416,7 +416,7 @@ plot-compare src='compare_data' out='figures':
 #                             the task survivable, which the corridor fix now
 #                             does directly, and its 2-5 s episodes are nothing
 #                             like the 200-step plans this is deployed on.
-train-long timesteps='1500000' label=`date +%Y%m%d` recorded='/home/programmer/pmp_trajectories_v2': sync
+train-long timesteps='1500000' label=`date +%Y%m%d` recorded='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:train 2>/dev/null; \
         mkdir -p ~/runs_{{label}}; \
@@ -507,7 +507,7 @@ plot-checkpoints src='sweep_data' out='figures' metric='max_cross':
 # list here: this recipe used to carry its own hard-coded three, which went stale
 # the moment the eval set changed, so the run would have been tuned against a
 # different set than every document described.
-tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl': sync
+tune-tvlqr evals='0' cache='/home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tune.jsonl': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:tune 2>/dev/null; \
         tmux new-window -d -t {{session}} -n tune \
@@ -517,7 +517,7 @@ tune-tvlqr evals='0' cache='/home/programmer/tvlqr_tune.jsonl': sync
          python3 -m agx_planning.tuning.tune_tvlqr \
              --trajectory-config {{remote}}/config/eval_trajectories.yaml \
              --max-evals {{evals}} \
-             --cache {{cache}} --out /home/programmer/tvlqr_tuned.json \
+             --cache {{cache}} --out /home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tuned.json \
              2>&1 | tee /tmp/tune_tvlqr.log"'
     @echo "tuning started in tmux window '{{session}}:tune' -- follow it with:  just tune-log"
     @echo "when it finishes:  just fetch-tune && just plot-tune"
@@ -531,7 +531,7 @@ tune-log:
 # seed, deterministic stepping). Whichever arm spreads wider names the cause --
 # and they want opposite fixes, so this has to be settled before any tuning or
 # corrector comparison means anything. ~25 s per rollout, so n=10 is ~10 min.
-variance-probe n='10' traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.npz': sync
+variance-probe n='10' traj='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz': sync
     {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
         tmux kill-window -t {{session}}:var 2>/dev/null; \
         tmux new-window -d -t {{session}} -n var \
@@ -608,14 +608,14 @@ analyze-variance src="tune_data/variance_probe.jsonl":
 fetch-variance dest="tune_data":
     mkdir -p {{dest}}
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:/home/programmer/variance_probe.jsonl {{dest}}/
+        {{host}}:/home/programmer/run_data/2026-08-02_INVALID_determinism-probes/variance_probe.jsonl {{dest}}/
 
 # Pull the evaluation cache back so the landscape can be drawn locally.
 fetch-tune dest='tune_data':
     mkdir -p {{dest}}
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:/home/programmer/tvlqr_tune.jsonl {{dest}}/
-    -rsync -az -e "ssh {{ssh_opts}}" {{host}}:/home/programmer/tvlqr_tuned.json {{dest}}/
+        {{host}}:/home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tune.jsonl {{dest}}/
+    -rsync -az -e "ssh {{ssh_opts}}" {{host}}:/home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tuned.json {{dest}}/
     @ls -1 {{dest}}
 
 # Draw what the search explored: the gain plane and the convergence curve.
@@ -628,7 +628,7 @@ plot-tune src='tune_data/tvlqr_tune.jsonl' out='figures':
 fetch-trajectories dest='traj_data':
     mkdir -p {{dest}}
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:/home/programmer/pmp_trajectories_v2/ {{dest}}/
+        {{host}}:/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/ {{dest}}/
 
 gallery src='traj_data' out='figures':
     .venv/bin/python tools/plot_trajectory_gallery.py {{src}} --out {{out}}
@@ -637,7 +637,7 @@ gallery src='traj_data' out='figures':
 # at a time and watch WHEN entity changes actually commit. Built to chase the
 # residual patch nondeterminism that batch rollouts cannot show. Attach a GUI
 # with `just gui` and watch on Moonlight while driving this.
-sim-console traj='/home/programmer/pmp_trajectories_v2/floor_6_00042.npz': sync
+sim-console traj='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz': sync
     {{_ssh}} -t 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
         && source install/setup.bash \
         && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \

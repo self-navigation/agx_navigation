@@ -26,7 +26,7 @@ geometry rather than however densely the producer happened to sample it.
 
 OFFLINE TOOL -- numpy only for .npz, nothing else. No ROS.
 
-    python3 tools/classify_plans.py '~/pmp_trajectories_v2/*.npz'
+    python3 tools/classify_plans.py '~/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/*.npz'
     python3 tools/classify_plans.py 'run_data/identity_*_plan.csv'
 """
 

@@ -26,8 +26,8 @@
 set -u
 
 REMOTE=/home/programmer/agx_navigation
-OUT=/home/programmer/soak_r_ladder.jsonl
-TRACES=/home/programmer/r_ladder_traces
+OUT=/home/programmer/run_data/2026-08-14_job010_r-ladder/soak_r_ladder.jsonl
+TRACES=/home/programmer/run_data/2026-08-14_job010_r-ladder/r_ladder_traces
 LOG=/tmp/r_ladder.log
 
 {
@@ -35,7 +35,7 @@ LOG=/tmp/r_ladder.log
     # Wait on the SCRIPT, not on a single rollout: sweep2.sh spawns a fresh
     # variance_probe per trajectory, so watching for "no python running" would
     # fire in the gap between two of them and put two drivers on one sim.
-    while pgrep -u "$(id -u)" -f 'bash /home/programmer/sweep2.sh' >/dev/null; do
+    while pgrep -u "$(id -u)" -f 'bash /home/programmer/run_data/2026-08-13_nojob_libsweep/sweep2.sh' >/dev/null; do
         sleep 30
     done
     echo "[queue] sweep2 done at $(date -Is); starting the r_omega ladder"

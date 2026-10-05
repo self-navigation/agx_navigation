@@ -17,9 +17,9 @@
 # No `set -u`: ROS's setup.bash reads unset variables and aborts under it.
 
 N="${1:-5}"
-TRAJ="${2:-/home/programmer/pmp_trajectories_v2/floor_6_00056.npz}"
-OUT="${3:-/home/programmer/reset_world_probe.jsonl}"
-TRACE="${4:-/home/programmer/reset_world_traces}"
+TRAJ="${2:-/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00056.npz}"
+OUT="${3:-/home/programmer/run_data/2026-08-02_INVALID_determinism-probes/reset_world_probe.jsonl}"
+TRACE="${4:-/home/programmer/run_data/2026-08-02_INVALID_determinism-probes/reset_world_traces}"
 
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash

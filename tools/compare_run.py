@@ -85,12 +85,12 @@ Run ON THE VM, inside the worker's partition:
 
     tools/with-worker 1 python3 tools/compare_run.py \
         --plans <(sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt) \
-        --arm ours --worker 1 --out ~/compare_broad40.w1.jsonl
+        --arm ours --worker 1 --out ~/run_data/<run-dir>/rows.jsonl
 
 or a single cell:
 
     tools/with-worker 1 python3 tools/compare_run.py \
-        --plan $HOME/traj_data_v2/floor_6_v2_00369.npz --arm nav2-dwb --worker 1 \
+        --plan $HOME/run_data/2026-08-14_job020_v2-library/traj_data_v2/floor_6_v2_00369.npz --arm nav2-dwb --worker 1 \
         --out /tmp/smoke.jsonl
 """
 

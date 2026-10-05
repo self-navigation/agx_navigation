@@ -24,13 +24,13 @@ BROAD=$(sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt)
 
 echo "[gram2] starting at $(date -Is)"
 python3 tools/controllability_gramian.py --plans $SEVEN \
-    --soak "$HOME/soak_seven_three_arms.jsonl" --arm 2.5,2.618 \
-    --out "$HOME/gramian_seven_q25.csv"
+    --soak "$HOME/run_data/2026-09-23_job110_seven-three-arms/soak_seven_three_arms.jsonl" --arm 2.5,2.618 \
+    --out "$HOME/run_data/2026-09-23_job130_gramian-joins/gramian_seven_q25.csv"
 python3 tools/controllability_gramian.py --plans $BROAD \
-    --soak "$HOME/soak_broad_open_loop.jsonl" --arm identity \
-    --out "$HOME/gramian_broad40_identity.csv"
+    --soak "$HOME/run_data/2026-09-23_job120_broad40-open-loop/soak_broad_open_loop.jsonl" --arm identity \
+    --out "$HOME/run_data/2026-09-23_job130_gramian-joins/gramian_broad40_identity.csv"
 python3 tools/controllability_gramian.py --plans $BROAD \
-    --soak "$HOME/soak_broad_open_loop.jsonl" --arm 2.5,2.618 \
-    --out "$HOME/gramian_broad40_q25_job120.csv"
+    --soak "$HOME/run_data/2026-09-23_job120_broad40-open-loop/soak_broad_open_loop.jsonl" --arm 2.5,2.618 \
+    --out "$HOME/run_data/2026-09-23_job130_gramian-joins/gramian_broad40_q25_job120.csv"
 echo "[gram2] finished at $(date -Is)"
 exit 0
