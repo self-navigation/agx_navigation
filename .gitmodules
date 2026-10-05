@@ -20,3 +20,7 @@
 [submodule "depend/scikit-fmm"]
 	path = depend/scikit-fmm
 	url = https://github.com/self-navigation/scikit-fmm.git
+[submodule "src/rf2o_laser_odometry"]
+	path = src/rf2o_laser_odometry
+	url = https://github.com/MAPIRlab/rf2o_laser_odometry.git
+	branch = ros2
