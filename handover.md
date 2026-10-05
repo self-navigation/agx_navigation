@@ -18,6 +18,9 @@ Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/loc_analysis/`. Ru
   - If L has k near 1 and tau near 0.1 s with miss near 9%, the gap was skid observability: adopt lidar odometry, put it in the paper, and test it on the real robot (#36).
   - If L does not move: the wheels' vy=0 is not what blinds amcl, so look at amcl's resampling or motion model next.
   - Note: the VM's /tmp logs vanished between 10-03 and 10-05. The data dirs are what persists.
+- **RUNNING: job 200** (`tools/jobs/200_hybrid.sh`, launched 23:08 MSK, workers 4-7, log `/tmp/hybrid200.log`, out `~/compare_hybrid/`, ~3-4 h). It compares Smac Hybrid-A* + MPPI (profile `compare_hybrid`) with Smac2D + MPPI (`compare_static`, the control), under amcl with solid walls, so the conditions match v7. Note that in v7, 84/160 MPPI runs ended at `sim_timeout`, so read timeouts separately from misses.
+- Data inventory: `docs/run-data-index.md`. The move plan `tools/data_tidy_plan.sh` is **not run**; it waits for the user's approval.
+- Advisor tracker: #37. Questions were sent to him at 23:07 (deadline, comparison scope, framing, the τ term, naming TVLQR, the theorem's last sentence).
 - The comparison candidates for #10/#33 are now on #33. The real-robot skid-lag test is #36, deferred because of the deadline.
 - **Paper: the advisor wants a final version on 10-05/06.** A subagent is editing `../paper/draft.tex`: it is adding the full-stack comparison and mechanism section and doing the #19 style pass (wording from `advisor-revision-2026-09-16.tex`). Placeholders `% PENDING lidar-odom result` are waiting for job 190.
 - Paper (`../paper/draft.tex`, Russian): it currently says nothing about Nav2, amcl or wall contact. The survey of phrasing problems is in this session's notes. Write-up waits for the fix result.

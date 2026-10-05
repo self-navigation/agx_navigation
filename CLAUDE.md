@@ -38,6 +38,7 @@ First-party code is in [src/agx_navigation/](src/agx_navigation/):
 | [docs/corrector-design.md](docs/corrector-design.md) | the re-join re-planner design | current reference |
 | [docs/svcm-source.md](docs/svcm-source.md) | full transcription of the advisor's source framework | reference |
 | [docs/corrector-history.md](docs/corrector-history.md) | superseded tables, resolved-bug narratives | archive |
+| [docs/run-data-index.md](docs/run-data-index.md) | every experiment dataset (VM + local): job, date, who cites it, keep/invalid class | current reference |
 
 **Keep `handover.md` current — it outranks anyone's memory of what we are doing.**
 Sessions here are days apart and the user explicitly relies on that file rather

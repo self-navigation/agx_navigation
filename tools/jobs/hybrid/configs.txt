@@ -1,0 +1,4 @@
+# Job 200 (#33 Type B): Smac Hybrid-A* + MPPI vs the v7 Smac2D + MPPI control,
+# amcl, solid walls (= compare v7 conditions). --arm overrides the harness's 'ours'.
+M2 --arm nav2-mppi --localization amcl --nav2-profile compare_static
+MH --arm nav2-mppi --localization amcl --nav2-profile compare_hybrid
