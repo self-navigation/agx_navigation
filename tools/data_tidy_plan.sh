@@ -96,7 +96,7 @@ vm() {
 # file that differs from the VM's is kept beside it as <name>.laptop; then the
 # old path becomes a symlink. Nothing is lost.
 merge() {
-  local old=$1 tgt=$2
+  local old=$1 tgt; tgt=$(realpath -m "$2")
   if [ -L "$old" ]; then echo "done    $old"; return 0; fi
   [ -e "$old" ] || { echo "MISSING $old"; return 0; }
   mkdir -p "$(dirname "$tgt")"
