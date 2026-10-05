@@ -1,0 +1,57 @@
+# Skid-steer comparison profile (Forgejo #10, job 210): compare_static PLUS the
+# minimal MPPI changes that stop it stalling on a skid-steer chassis. Loaded
+# by nav2.launch.py with nav2_profile:=compare_skid, for BOTH nav2 arms (the
+# RPP overlay replaces FollowPath, so for RPP this is compare_static exactly).
+#
+# Why (2026-10-06, measured on floor_6_v2_00369, pmp-mppi, amcl + phantom
+# walls; data in ~/run_data/2026-10-05_job210_pmp-trackers/diag_skid/):
+#  - Under compare_static MPPI drove the first 5.5 m, then sat 35+ s in open
+#    corridor commanding wz ~0.08-0.14 rad/s at v ~0.01-0.04 m/s. The GYRO
+#    read 0.000 rad/s throughout: a skid-steer scrubs and does not rotate at
+#    that rate (it rotates at ~omega/chi only once well above it). The EKF
+#    fuses the chi-biased wheel yaw rate, so /odom integrated the commanded
+#    0.09 rad/s and MPPI believed it was turning; amcl only snapped the
+#    heading back on its sparse updates. Progress checker -> abort.
+#  - With the wheel yaw dropped (--no-ekf-wheel-yaw) the belief was right but
+#    MPPI still parked at the 90-degree turn ("Optimizer fail to compute
+#    path"), commanding |wz| < 0.05: at wz_std 0.3 it almost never samples a
+#    rotation fast enough to pivot the chassis, and the PathAngleCritic that
+#    drives in-place alignment (1.5) was outweighed by PathFollow/PathAlign.
+#  So: wider rotation sampling, and a heavier heading critic. EKF wheel yaw
+#  stays ON (as for arm `ours`, so localization is identical across arms).
+#  Smoke on 00369 with this profile: MPPI makes the turn (stalls ~16 s, then
+#  pivots at wz up to 0.35) and reaches final_err 0.39 m; it then still trips
+#  the progress checker pivoting to the goal yaw at ~0.14 rad/s (sub-scrub).
+#  With --no-ekf-wheel-yaw added it did worse on this plan (2.87 m, n=1).
+#  The residual cause is plant-side: a DiffDrive model has no notion of a
+#  minimum executable yaw rate, so MPPI keeps choosing ones the chassis
+#  scrubs through. Nav2 has no knob for that outside RPP's rotate_to_heading.
+controller_server:
+  ros__parameters:
+    progress_checker:
+      movement_time_allowance: 20.0
+    FollowPath:
+      wz_std: 0.8
+      PathAngleCritic:
+        cost_weight: 5.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      inflation_layer:
+        inflation_radius: 0.45
+        cost_scaling_factor: 8.0
+      voxel_layer:
+        observation_sources: scan
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      inflation_layer:
+        inflation_radius: 0.45
+        cost_scaling_factor: 8.0
+
+collision_monitor:
+  ros__parameters:
+    FootprintApproach:
+      enabled: false

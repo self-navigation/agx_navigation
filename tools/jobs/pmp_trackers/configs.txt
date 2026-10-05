@@ -1,11 +1,12 @@
 # Job 210 (#10 Type A): planner held fixed at OUR PMP plan, only the tracker
 # differs. amcl + phantom walls = the sec:stack main row (job 170/190 C).
 # P = ours (vec-pmp + TVLQR), the in-process control; PM/PR = the plan npz's
-# path sent to controller_server FollowPath (MPPI / RPP), profile compare_static.
+# path sent to controller_server FollowPath (MPPI / RPP), profile compare_skid
+# (2026-10-06: compare_static stalled MPPI on sub-scrub yaw rates; see the profile).
 P  --arm ours --localization amcl --phantom-walls
-PM --arm pmp-mppi --localization amcl --phantom-walls --nav2-profile compare_static
-PR --arm pmp-rpp --localization amcl --phantom-walls --nav2-profile compare_static
+PM --arm pmp-mppi --localization amcl --phantom-walls --nav2-profile compare_skid
+PR --arm pmp-rpp --localization amcl --phantom-walls --nav2-profile compare_skid
 # truth variants, only if budget allows (CONFIGS="PT PMT PRT")
 PT  --arm ours --localization truth --phantom-walls
-PMT --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_static
-PRT --arm pmp-rpp --localization truth --phantom-walls --nav2-profile compare_static
+PMT --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid
+PRT --arm pmp-rpp --localization truth --phantom-walls --nav2-profile compare_skid
