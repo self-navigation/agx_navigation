@@ -67,3 +67,21 @@ figures_new/
 # was reported on one date, they duplicate facts that belong in CLAUDE.md, and
 # they would otherwise rot into a second source of truth that disagrees with it.
 reports/
+
+# old data paths, now symlinks into run_data/ (2026-10-05 tidy)
+/broad_gains_traces
+/compare_data
+/compare_data_new
+/epsilon_data
+/figures_new
+/gaincheck
+/jtraces
+/libsweep
+/r_ladder_traces
+/sweep_clean
+/sweep_data
+/tb_data
+/traj_data
+/traj_data_v2
+/uturn_traces
+/figures/tmp
