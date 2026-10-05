@@ -27,8 +27,8 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-OUT=$HOME/soak_broad_r.jsonl
-TRACES=$HOME/broad_r_traces
+OUT=$HOME/run_data/2026-08-15_job080_broad-r/soak_broad_r.jsonl
+TRACES=$HOME/run_data/2026-08-15_job080_broad-r/broad_r_traces
 PLANS=$(mktemp /tmp/broad_r_plans.XXXXXX)
 sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt >"$PLANS"
 

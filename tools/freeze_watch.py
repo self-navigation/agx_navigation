@@ -23,7 +23,7 @@ import subprocess
 import threading
 import time
 
-PYSPY = os.path.expanduser("~/.pyspy/bin/py-spy")  # venv; absent -> skipped
+PYSPY = os.path.expanduser("~/run_data/2026-10-01_scratch_pyspy/.pyspy/bin/py-spy")  # venv; absent -> skipped
 CG_APP = "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
 
 

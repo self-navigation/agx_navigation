@@ -21,9 +21,9 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-OUT=$HOME/soak_broad_gains.jsonl
-TRACES=$HOME/broad_gains_traces
-PLANS=$HOME/broad_eval_plans.txt
+OUT=$HOME/run_data/2026-08-15_job050_broad-gains/soak_broad_gains.jsonl
+TRACES=$HOME/run_data/2026-08-15_job050_broad-gains/broad_gains_traces
+PLANS=$HOME/run_data/2026-08-15_job050_broad-gains/broad_eval_plans.txt
 
 cat >"$PLANS" <<'PLANEOF'
 __HOME__/traj_data_v2/floor_6_v2_00369.npz

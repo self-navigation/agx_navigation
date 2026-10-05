@@ -7,5 +7,5 @@
 set -uo pipefail
 while pgrep -f "tools/jobs/170_loc_factors.sh" | grep -v $$ >/dev/null; do sleep 60; done
 echo "[180] 170 done, starting $(date -Is)"
-CONFIG_FILE=tools/jobs/amcl_sweep/configs.txt OUT_DIR=${OUT_DIR:-$HOME/compare_amcl} \
+CONFIG_FILE=tools/jobs/amcl_sweep/configs.txt OUT_DIR=${OUT_DIR:-$HOME/run_data/2026-10-03_job180_amcl-sweep/compare_amcl} \
     exec bash tools/jobs/170_loc_factors.sh

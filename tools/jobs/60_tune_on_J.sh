@@ -25,8 +25,8 @@
 # Run by tools/jobq.sh, which has already sourced ROS and cd'd to the repo.
 set -uo pipefail
 
-CACHE=$HOME/tvlqr_tune_J.jsonl
-OUT=$HOME/tvlqr_tuned_J.json
+CACHE=$HOME/run_data/2026-08-15_job060_tune-on-J/tvlqr_tune_J.jsonl
+OUT=$HOME/run_data/2026-08-15_job060_tune-on-J/tvlqr_tuned_J.json
 
 echo "[tuneJ] starting at $(date -Is); cache=$CACHE out=$OUT"
 
@@ -53,7 +53,7 @@ python3 -m agx_planning.tuning.tune_tvlqr \
     --trajectory-config "$PWD/config/eval_trajectories.yaml" \
     --metric j_total --max-evals 1 --repeats 5 \
     --q-cross 0.276 --r-omega 2.618 \
-    --cache "$HOME/tvlqr_validate_J_adopted.jsonl" \
-    --out "$HOME/tvlqr_validate_J_adopted.json"
+    --cache "$HOME/run_data/2026-08-15_job060_tune-on-J/tvlqr_validate_J_adopted.jsonl" \
+    --out "$HOME/run_data/2026-08-15_job060_tune-on-J/tvlqr_validate_J_adopted.json"
 
 echo "[tuneJ] done at $(date -Is)"

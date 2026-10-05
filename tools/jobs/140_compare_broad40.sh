@@ -40,7 +40,7 @@
 # COST. One cell = bring-up (~1-2 min, launch + amcl + lidar boot) + terrain
 # (~5 s) + drive (up to 3x plan duration + 60 s of sim time). Smoke test
 # (2026-09-29, first broad40 plan x 4 arms, one worker): measured wall times
-# in ~/compare_smoke.jsonl and the job report. 160 cells split over 4 workers
+# in ~/run_data/2026-09-28_job140_smoke/compare_smoke.jsonl and the job report. 160 cells split over 4 workers
 # (one arm each) at the smoke-test worst case is an overnight run; use the
 # measured numbers, not this paragraph, when queueing.
 #
@@ -68,7 +68,7 @@ if [ -z "${ROS_VERSION:-}" ]; then
     set -u
 fi
 
-OUT_DIR=${OUT_DIR:-$HOME/compare_broad40}
+OUT_DIR=${OUT_DIR:-$HOME/run_data/2026-09-29_INVALID_job140-compare-v1/compare_broad40}
 ARMS_=${ARMS:-"ours nav2-mppi nav2-rpp"}
 WORKERS_=${WORKERS:-"1 2 3"}
 SEED=${SEED:-0}
