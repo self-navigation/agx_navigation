@@ -6,6 +6,16 @@ claims and is the reference. Open work is tracked in Forgejo issues (list them
 with the `fj` tools). Older versions of this file are in git history
 (`git log -p handover.md`); nothing in them is needed to continue.
 
+## 0. Session 2026-10-05: jobs 170/180 read, #34 mechanism found
+
+Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/loc_analysis/`. Run them on the VM from the repo root; the args are cfg dirs under `~/compare_*`.
+
+- **amcl tuning cannot close the gap.** All 32 cells of job 180 miss 13–26%, against 9% under truth. EKF wheel yaw has no effect at all (job 170 Cy ≈ C, and p=1.0 in job 180).
+- **Mechanism:** the corrector sees its cross-track error at about **0.4x gain and about 2.5 s lag** under amcl, and only ~5% of it while turning. Under truth it sees 0.95x at 0.1 s. Turn skid is invisible to wheel odometry, and amcl corrects it only slowly.
+- Ruled out: pose latency, the scan-band/bake-band mismatch (real, but it changes ~100 cells), lidar extrinsics, slip patches.
+- **Next (needs the user's OK for VM time):** add a skid-observing odom source to the EKF (rf2o / KISS-ICP lidar odometry), then rerun C vs C+lidar-odom. The comparison candidates for #10/#33 are now on #33.
+- Paper (`../paper/draft.tex`, Russian): it currently says nothing about Nav2, amcl or wall contact. The survey of phrasing problems is in this session's notes. Write-up waits for the fix result.
+
 ## 1. The goal
 
 **A paper for MDPI *Mathematics*.** The method is a frozen PMP plan plus a
