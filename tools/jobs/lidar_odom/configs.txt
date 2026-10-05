@@ -1,0 +1,6 @@
+# Job 190 (#34): does a skid-observing odom source fix amcl's lagged cross-track?
+# C = job 170/160 control (amcl, phantom); L = + rf2o lidar odom in the EKF,
+# wheels' yaw rate and vy dropped; LA = L with solid walls (system-level).
+C --localization amcl --phantom-walls
+L --localization amcl --phantom-walls --lidar-odom
+LA --localization amcl --lidar-odom

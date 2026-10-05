@@ -13,6 +13,7 @@
   <depend>rtabmap</depend>
   <depend>rtabmap_slam</depend>
   <depend>pointcloud_to_laserscan</depend>
+  <depend>rf2o_laser_odometry</depend>
   <depend>topic_tools</depend>
   <depend>imu_filter_madgwick</depend>
   <depend>realsense2_camera</depend>
