@@ -28,3 +28,6 @@
 	path = src/agx_navigation/agx_baselines/third_party/vector_pursuit_controller
 	url = https://github.com/blackcoffeerobotics/vector_pursuit_controller
 	branch = jazzy
+[submodule "src/agx_navigation/agx_baselines/third_party/GMPC-Tracking-Control"]
+	path = src/agx_navigation/agx_baselines/third_party/GMPC-Tracking-Control
+	url = https://github.com/Garyandtang/GMPC-Tracking-Control.git

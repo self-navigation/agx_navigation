@@ -11,7 +11,7 @@
 #
 #     tools/fixture_up.sh [--worker N] [--corrector tvlqr] [--patches true]
 #                         [--localization truth] [--tries 3] [--timeout 120]
-#                         [--nav-mode vec-pmp|nav2] [--nav2-controller mppi|dwb|rpp]
+#                         [--nav-mode vec-pmp|nav2|gmpc] [--nav2-controller mppi|dwb|rpp]
 #                         [--nav2-profile compare_static]
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
 #
@@ -27,6 +27,11 @@
 # gated on stack_ready.py --mode nav2 (lifecycle nodes ACTIVE, the
 # navigate_to_pose action server, the /cmd_vel chain), which is a different
 # definition of "up" than the planner trio's.
+#
+# --nav-mode gmpc swaps the ENTRY launch file for agx_baselines' gmpc.launch.py
+# (LAUNCH_PKG/LAUNCH_FILE, a generic Makefile hook), which includes the very
+# same main.launch.py with nav_mode:=none and adds the GMPC follow_path server
+# in place of a nav stack; readiness is stack_ready.py --mode gmpc.
 #
 # Deliberately NOT idempotent-by-skipping: it always tears the partition down
 # first. A half-up stack is the exact state this exists to escape, and
@@ -114,6 +119,11 @@ if [ "$NAV_MODE" = "nav2" ]; then
 fi
 FLOOR_VAR=""
 [ -n "$FLOOR_NUMBER" ] && FLOOR_VAR="FLOOR_NUMBER=$FLOOR_NUMBER"
+LAUNCH_VAR=""
+if [ "$NAV_MODE" = "gmpc" ]; then
+    LAUNCH_VAR="LAUNCH_PKG=agx_baselines LAUNCH_FILE=gmpc.launch.py"
+    NAV_MODE=none
+fi
 
 # CGROUP SCOPE (#28). The stack runs inside a transient `systemd --user` scope
 # named agx-w<N> (agx-w0 = default partition), so that (a) kill_stack.sh can
@@ -136,6 +146,7 @@ fi
 
 READY_MODE=vec-pmp
 [ "$NAV_MODE" = "nav2" ] && READY_MODE=nav2
+[ -n "$LAUNCH_VAR" ] && READY_MODE=gmpc
 # amcl publishes map->odom before it has localized; wait for its pose too.
 AMCL_FLAG=""
 [ "$LOCALIZATION" = "amcl" ] && AMCL_FLAG="--require-amcl"
@@ -162,7 +173,7 @@ for attempt in $(seq 1 "$TRIES"); do
     # tmux windows inherit the tmux SERVER's env, not ours: forward the DDS
     # transport override explicitly (#32 runs an arm with SHM disabled).
     tmux new-window -d -t "$SESSION" -n "$WINDOW" \
-        "cd $WORKSPACE && DISPLAY=:0 ${FASTDDS_BUILTIN_TRANSPORTS:+FASTDDS_BUILTIN_TRANSPORTS=$FASTDDS_BUILTIN_TRANSPORTS} $SCOPE_PREFIX vglrun -d egl0 make fixture $FLOOR_VAR WORKER=$WORKER \
+        "cd $WORKSPACE && DISPLAY=:0 ${FASTDDS_BUILTIN_TRANSPORTS:+FASTDDS_BUILTIN_TRANSPORTS=$FASTDDS_BUILTIN_TRANSPORTS} $SCOPE_PREFIX vglrun -d egl0 make fixture $FLOOR_VAR $LAUNCH_VAR WORKER=$WORKER \
          CORRECTOR=$CORRECTOR LOCALIZATION=$LOCALIZATION FIXTURE_NAV_MODE=$NAV_MODE \
          HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \
          FIXTURE_EXTRA_PARAMS=\"$EXTRA\" 2>&1 | tee $LOG"
