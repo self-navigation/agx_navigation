@@ -366,9 +366,12 @@ def solve(candidates_json, out_dir, occupancy_threshold=65, limit=0, verbose=Tru
         if stack_params:
             for k, v in STACK_PLANNER_PARAMS.items():
                 setattr(cfg, k, v)
+        # decay 1.5 with centring: same solve rate as the stack, measured
+        # 2026-10-07 (figures/2026-10-07/p48_clearance); 2.5 loses 7/40 solves.
         fcfg = (VectorFieldConfig(speed_profile="exponential", inflation_radius=0.5,
-                                  centring=centring) if stack_params
-                else VectorFieldConfig(centring=centring))
+                                  centring=centring,
+                                  speed_decay_rate=1.5 if centring else 2.5)
+                if stack_params else VectorFieldConfig(centring=centring))
 
         def _build_field(data, width, height, resolution, origin, start_xy, goal_xy,
                          occupancy_threshold, planner_cfg):
