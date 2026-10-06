@@ -690,7 +690,10 @@ class WheelCorrectorNode(Node):
         rate = self._sup_scale if self._sup is not None else 1.0
         sample = self._buf.advance(actual_xy, rate=rate)
         if self._sup is not None and had_overlay and not self._buf.overlay_active:
-            self._sup.rebase(self._now_s())
+            # The core runs on the dilated plan clock _sup_t, NOT sim time:
+            # rebasing on sim time made lag hugely negative for the rest of
+            # the run, so the lag trigger never fired again (S1 re-smoke, 00219).
+            self._sup.rebase(self._sup_t)
         if sample is None:
             if self._buf.is_done():
                 self._finish()
