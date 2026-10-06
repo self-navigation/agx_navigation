@@ -142,17 +142,13 @@ ros-deps:
 
 deps: ros-deps .ros_python_deps.stamp
 
-# RL runtime-corrector training stack (SAC). torch is also needed on-robot for
-# policy inference; stable-baselines3[extra] pulls tensorboard + the progress bar
-# train.py uses. Kept out of `deps` so the normal build doesn't drag in torch.
+# RL runtime-corrector training stack (SAC). stable-baselines3[extra] pulls
+# tensorboard + the progress bar train.py uses. NOTE: this is not the only
+# thing that installs torch -- agx_planning's setup.py lists torch and
+# stable-baselines3 in install_requires, so plain `make deps` already pulls
+# the full CUDA wheel stack (~3-4 GB).
 rl-deps:
 	pip install --break-system-packages 'stable-baselines3[extra]' torch gymnasium
-
-$(ACADOS_BIN)/t_renderer:
-	cd $(TERA_RENDERER_ROOT) && \
-		cargo build --release && \
-		mkdir -p $(ACADOS_BIN) && \
-		cp $(TERA_RENDERER_ROOT)/target/release/t_renderer $(ACADOS_BIN)
 
 can-bus:
 	if [ "$(SIM)" != true ] ; then \
@@ -168,7 +164,6 @@ run: build can-bus
 		source install/setup.bash && \
 		$(WORKER_ENV) \
 		$(GPU_PREFIX) \
-		LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:$(ACADOS_LIB) \
 		ros2 launch $(DEBUG_INFIX) \
 		agx_bringup main.launch.py \
 		$(PARAMS) $(EXTRA_PARAMS)
@@ -392,6 +387,6 @@ rviz: build
 		--ros-args --param use_sim_time:=$(SIM)
 
 test:
-	PYTHONPATH=src/agx_navigation/agx_planning $(PYTHON) -m pytest src/agx_navigation/agx_planning/test/unit/ -v
+	PYTHONPATH=src/agx_navigation/agx_planning:src/rudn-ordjo-building $(PYTHON) -m pytest src/agx_navigation/agx_planning/test/unit/ -v
 
 # vim: tabstop=2 softtabstop=2 shiftwidth=2
