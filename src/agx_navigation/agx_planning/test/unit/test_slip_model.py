@@ -95,3 +95,51 @@ def test_bridge_builds_surface_from_terrain():
                                 "profile": "icy"}])
     br.step([1.0, 1.0, 2.0, 2.0], 0.05)
     assert br.last_mu == pytest.approx(0.05)
+
+
+# --- footprint contact mode (iteration 2) ---------------------------------
+
+def test_footprint_uniform_surface_equals_centre():
+    cfg = RLCorrectorConfig()
+    w = [1.0, 1.0, 2.0, 2.0]
+    for mu in (0.3, 0.45, 0.7, 1.0):
+        a = _drive(KinematicBridge(cfg, surface_fn=lambda x, y: mu), w)
+        b = _drive(KinematicBridge(cfg, surface_fn=lambda x, y: mu,
+                                   contact_mode="footprint"), w)
+        for sa, sb in zip(a, b):
+            assert sa.pose == pytest.approx(sb.pose)
+            assert sa.omega == pytest.approx(sb.omega)
+
+
+def test_wheel_mus_follow_heading():
+    # patch covers x > 0 only: at heading 0 the front wheels are on it.
+    sf = lambda x, y: 0.3 if x > 0 else 1.0
+    assert sm.wheel_mus(sf, 0.0, 0.0, 0.0) == [0.3, 1.0, 0.3, 1.0]
+    # turned +90 deg: left wheels (y>0 in body) are now at world x<0.
+    assert sm.wheel_mus(sf, 0.0, 0.0, np.pi / 2) == [1.0, 1.0, 0.3, 0.3]
+
+
+def test_footprint_factors_blend():
+    k, fl, fr = sm.footprint_factors([0.3, 0.3, 1.0, 1.0])
+    assert k == pytest.approx(0.5 * (sm.yaw_gain_of_mu(0.3) + sm.yaw_gain_of_mu(1.0)))
+    assert fl == pytest.approx(sm.LONG_FACTOR_BELOW_KNEE) and fr == 1.0
+    k1, _, _ = sm.footprint_factors([0.3, 1.0, 1.0, 1.0])
+    assert sm.yaw_gain_of_mu(0.3) < k < k1 < sm.yaw_gain_of_mu(1.0)
+
+
+def test_footprint_one_side_on_ice_yaws_toward_it():
+    # straight command, left side on a low-mu strip: left loses traction,
+    # so the right side pushes harder and the robot turns left.
+    cfg = RLCorrectorConfig()
+    sf = lambda x, y: 0.3 if y > 0 else 1.0
+    br = KinematicBridge(cfg, surface_fn=sf, contact_mode="footprint")
+    br.reset((0.0, 0.0, 0.0))
+    st = br.step([2.0, 2.0, 2.0, 2.0], 0.05)
+    _, om_turn_left = cfg.wheels_to_body(0.0, 1.0)
+    assert np.sign(st.omega) == np.sign(om_turn_left)
+    assert br.last_mu == 0.3
+
+
+def test_bad_contact_mode_rejected():
+    with pytest.raises(ValueError):
+        KinematicBridge(RLCorrectorConfig(), contact_mode="wheel")
