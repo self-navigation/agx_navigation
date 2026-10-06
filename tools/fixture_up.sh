@@ -74,6 +74,7 @@ while [ $# -gt 0 ]; do
         --phantom-walls)  PHANTOM_WALLS=true; shift ;;
         --no-ekf-wheel-yaw) EKF_WHEEL_YAW=false; shift ;;
         --lidar-odom) LIDAR_ODOM=true; shift ;;
+        --no-planner) NO_PLANNER=true; shift ;;
         --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -95,6 +96,10 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 [ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
 [ -n "${EKF_WHEEL_YAW:-}" ] && EXTRA="$EXTRA ekf_wheel_yaw:=$EKF_WHEEL_YAW"
 [ -n "${LIDAR_ODOM:-}" ] && EXTRA="$EXTRA lidar_odom:=$LIDAR_ODOM"
+# vec-pmp without pmp_planner (vec_pmp.launch.py's use_server switch): the
+# PlanToGoal server is supplied externally, e.g. tools/library_plan_server.py
+# for compare_run's ours-lib arm.
+[ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA use_server:=true"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must
