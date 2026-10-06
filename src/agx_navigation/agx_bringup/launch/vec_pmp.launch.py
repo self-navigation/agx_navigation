@@ -5,13 +5,13 @@ from launch.actions import (
     IncludeLaunchDescription,
     OpaqueFunction,
 )
-from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import (
     LaunchConfiguration,
     EqualsSubstitution,
     PythonExpression,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import UnlessCondition
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -38,14 +38,13 @@ def _wheel_bias_node(context):
 def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
-            "pmp_mode",
-            default_value="offline",
-            description="Which PMP planner mode to use. Allowed values: online, offline.",
-        ),
-        DeclareLaunchArgument(
             "use_server",
             default_value="false",
-            description="Whether to use a planner on a remote server.",
+            description=(
+                "Run the planner on a remote server (`make server` there) "
+                "instead of locally; the corrector reaches its PlanToGoal "
+                "action over DDS either way."
+            ),
         ),
         DeclareLaunchArgument(
             "corrector",
@@ -84,7 +83,6 @@ def generate_launch_description():
         ),
     ]
 
-    pmp_mode = LaunchConfiguration("pmp_mode")
     use_server = LaunchConfiguration("use_server")
     sim = LaunchConfiguration("sim")
     corrector = LaunchConfiguration("corrector")
@@ -117,13 +115,10 @@ def generate_launch_description():
     )
 
     # Interpreter / corrector between the planner's output and the
-    # JointGroupVelocityController input. Mode follows the planner's pmp_mode:
-    #   online  -- pmp_planner publishes wheel commands on /pmp_planner/wheel_cmd;
-    #              this node relays them (~/wheel_cmd_in -> ~/wheel_cmd_out).
-    #   offline -- pmp_planner is a PlanToGoal action server; this node is the
-    #              action client, sourcing the goal from /goal_pose + TF and
-    #              playing the streamed trajectory back at the planned rate.
-    # _correct() is identity for both today (the runtime-correction seam).
+    # JointGroupVelocityController input. pmp_planner is a PlanToGoal action
+    # server; this node is the action client, sourcing the goal from
+    # /goal_pose + TF and playing the streamed trajectory back at the planned
+    # rate through _correct() (the runtime-correction seam).
     wheel_corrector = Node(
         package="agx_planning",
         executable="runtime_corrector",
@@ -131,7 +126,6 @@ def generate_launch_description():
         name="wheel_corrector",
         parameters=[
             {
-                "mode": pmp_mode,
                 "expected_size": 4,
                 "use_sim_time": sim,
                 # Offline playback: action + fallback sample rate (overridden
@@ -156,7 +150,6 @@ def generate_launch_description():
             }
         ],
         remappings=[
-            ("~/wheel_cmd_in", "/pmp_planner/wheel_cmd"),
             # Through the wheel_bias fault node when one is requested (#27).
             ("~/wheel_cmd_out", PythonExpression([
                 "'/wheel_bias/in' if '", LaunchConfiguration("wheel_bias"),

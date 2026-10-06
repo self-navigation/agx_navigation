@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test online offline nav2 fixture rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test offline nav2 fixture rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
 
 SIM ?= true
 HEADLESS ?= false
@@ -14,7 +14,6 @@ PARAM_VARS := SIM \
 							FLOOR_NUMBER \
 							HEADLESS \
 							NAV_MODE \
-							PMP_MODE \
 							USE_SERVER \
 							CORRECTOR \
 							PLAYBACK_INDEX \
@@ -175,15 +174,12 @@ run: build can-bus
 		$(PARAMS) $(EXTRA_PARAMS)
 
 # Convenience entry points wrapping `run` with the right nav/planner mode.
-# All accept the usual overrides (e.g. `make online SIM=false`).
-#   online  -- vec-pmp stack, planner runs its own control loop (live BVP).
-#   offline -- vec-pmp stack, planner rolls out a full plan; corrector plays it back.
+# All accept the usual overrides (e.g. `make nav2 SIM=false`).
+#   offline -- vec-pmp stack, planner rolls out a full plan; corrector plays it
+#              back. (The only PMP mode since online mode was removed.)
 #   nav2    -- the nav2 navigation stack instead of vec-pmp.
-online:
-	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=online
-
 offline:
-	$(MAKE) run NAV_MODE=vec-pmp PMP_MODE=offline
+	$(MAKE) run NAV_MODE=vec-pmp
 
 nav2:
 	$(MAKE) run NAV_MODE=nav2
@@ -236,7 +232,7 @@ FIXTURE_NAV_MODE ?= vec-pmp
 FIXTURE_EXTRA_PARAMS ?=
 
 fixture:
-	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) PMP_MODE=offline \
+	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) \
 		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
 		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS) sim_cameras:=false $(FIXTURE_EXTRA_PARAMS)"
