@@ -3,7 +3,7 @@
 
     .venv/bin/python figures/2026-10-07/s1_supervisor/render.py
 
-Reads run_data/2026-10-07_s1-supervisor-smoke/{sup,nosup}/ (mirror of the VM's
+Reads run_data/2026-10-07_s1-supervisor-smoke/{sup4,nosup}/ (mirror of the VM's
 ~/run_data, gitignored). Footprint style of figures/2026-09-30 (advisor's
 preference), Russian labels. One row per plan:
   left  -- baked map, plan, waypoints (reach radius), both ground-truth tracks,
@@ -75,7 +75,7 @@ def at(tr, t):
 
 
 def main():
-    sup, nos = rows("sup"), rows("nosup")
+    sup, nos = rows("sup4"), rows("nosup")
     plans = [p for p in sup if p in nos]
     meta = yaml.safe_load(open(MAP + ".yaml"))
     img = np.asarray(Image.open(MAP + ".png").convert("L"))
