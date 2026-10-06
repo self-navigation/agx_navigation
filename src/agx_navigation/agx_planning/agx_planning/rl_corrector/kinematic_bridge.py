@@ -3,18 +3,30 @@
 Integrates the same chassis kinematics the nominals come from, so an identity
 policy on a slip-free bridge tracks the nominal exactly; used by the unit
 tests and as a fast sanity backend. It is not a physics sim.
+
+With surface_fn ((x, y) -> mu) the yaw rate follows slip_model's chi(mu),
+looked up at the robot centre, and forward speed is scaled below the knee.
+The gyro and omega report the actual yaw rate; wheel speeds report the
+command. With surface_from_terrain=True the terrain patches passed to reset()
+build surface_fn for that episode.
 """
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 
+from . import slip_model
 from .bridge import StateReading
 
 
 class KinematicBridge:
-    def __init__(self, cfg, slip: Optional[List[float]] = None) -> None:
+    def __init__(self, cfg, slip: Optional[List[float]] = None,
+                 surface_fn: Optional[Callable[[float, float], float]] = None,
+                 surface_from_terrain: bool = False) -> None:
         self.cfg = cfg
+        self.surface_fn = surface_fn
+        self.surface_from_terrain = surface_from_terrain
+        self.last_mu: Optional[float] = None
         # Per-wheel multiplicative slip [fl, rl, fr, rr]; 1.0 == no slip.
         self.slip = None if slip is None else np.asarray(slip, dtype=float)
         self._x = self._y = self._th = 0.0
@@ -26,6 +38,8 @@ class KinematicBridge:
         # `terrain` may carry per-wheel slip for a quick fake; ignored otherwise.
         if isinstance(terrain, dict) and "slip" in terrain:
             self.slip = np.asarray(terrain["slip"], dtype=float)
+        if self.surface_from_terrain and isinstance(terrain, (list, tuple)):
+            self.surface_fn = slip_model.patches_to_surface_fn(terrain)
         # Synthetic IMU at rest (gyro_z, ax, ay) = 0 -- keeps the obs IMU channels
         # consistent with the GazeboBridge so a kinematic-pretrained policy --loads
         # into a Gazebo fine-tune without the IMU block flipping from dead to live.
@@ -40,6 +54,12 @@ class KinematicBridge:
         wl = 0.5 * (w[0] + w[1])
         wr = 0.5 * (w[2] + w[3])
         v, omega = self.cfg.wheels_to_body(wl, wr)
+        if self.surface_fn is not None:
+            mu = float(self.surface_fn(self._x, self._y))
+            self.last_mu = mu
+            # cfg's omega already carries the nominal chi; undo it, apply chi(mu).
+            omega = omega * self.cfg.slip_chi * slip_model.yaw_gain_of_mu(mu)
+            v = v * slip_model.long_factor_of_mu(mu)
         self._x += v * np.cos(self._th) * dt
         self._y += v * np.sin(self._th) * dt
         self._th += omega * dt
