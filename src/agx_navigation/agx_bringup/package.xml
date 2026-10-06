@@ -10,6 +10,7 @@
   <depend>ros_gz</depend>
   <depend>navigation2</depend>
   <depend>nav2_bringup</depend>
+  <exec_depend>agx_baselines</exec_depend>
   <depend>rtabmap</depend>
   <depend>rtabmap_slam</depend>
   <depend>pointcloud_to_laserscan</depend>
