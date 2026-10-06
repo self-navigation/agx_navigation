@@ -5,12 +5,14 @@ For each plan it brings up a fresh stack in the worker's partition
 (tools/fixture_up.sh: baked map, no SLAM, localization:=amcl, robot spawned at
 the plan start), spawns the along-path slip patches, sends the goal the way the
 arm consumes it (/goal_pose for ours, NavigateToPose for the nav2 arms,
-FollowPath with the plan's own path for the pmp-* arms), waits for a terminal
-event or a sim-time deadline of 3x plan duration + 60 s, and writes one JSONL
-row to --out. For ours the deadline starts at the first wheel command; planning
-is capped by --plan-wall-cap and the whole cell by --cell-wall-cap, both in
-wall time. Scoring uses ground-truth pose from /world/<w>/pose/info, never
-/odom or map->base_link; the map frame is the Gazebo world frame.
+FollowPath with the plan's own path for the pmp-* arms, and for ours-lib the
+same plan served over PlanToGoal by tools/library_plan_server.py), waits for a
+terminal event or a sim-time deadline of 3x plan duration + 60 s, and writes
+one JSONL row to --out. For ours the deadline starts at the first wheel
+command; planning is capped by --plan-wall-cap and the whole cell by
+--cell-wall-cap, both in wall time. Scoring uses ground-truth pose from
+/world/<w>/pose/info, never /odom or map->base_link; the map frame is the
+Gazebo world frame.
 
 Row fields: final_err, outcome (arrived within --tolerance, failed, timeout,
 planner-timeout, planner-failed, stack-failed), stack_terminal, path_length,
@@ -43,7 +45,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
 
-ARMS = ("ours", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp")
+ARMS = ("ours", "ours-lib", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp")
 ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
                      "pmp-mppi": "mppi", "pmp-rpp": "rpp"}
 # Type-A arms (#10, 2026-10-05): the planner is held FIXED at our PMP plan and
@@ -51,6 +53,12 @@ ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
 # sent straight to Nav2's controller_server via the FollowPath action (no
 # bt_navigator, no Smac call), with the same nav2 profile as the nav2-* arms.
 PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp")
+# Our corrector arms (vec-pmp + runtime_corrector). `ours-lib` (#39) is the
+# controllers-only twin of the Type-A arms: pmp_planner is NOT launched
+# (use_server:=true) and tools/library_plan_server.py serves the plan npz's
+# stored trajectory (poses, wheel commands, costates) over PlanToGoal, so the
+# unchanged TVLQR corrector plays back the SAME plan the pmp-* arms follow.
+VEC_PMP_ARMS = ("ours", "ours-lib")
 
 
 def plan_to_path(poses: np.ndarray, ds: float = 0.05) -> np.ndarray:
@@ -315,7 +323,7 @@ class CompareDriver:
                     "stack_terminal": "none", "nav2_error_code": None}
         self.spin(0.3)  # a settle beat so the goal isn't raced by the sub match
         goal_t = st["sim_t"]
-        if arm == "ours":
+        if arm in VEC_PMP_ARMS:
             out = self._drive_vec_pmp(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         elif arm in PMP_PATH_ARMS:
             out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s)
@@ -641,7 +649,7 @@ def wall_contact(track, floor: int) -> dict:
 
 def bring_up_stack(args, arm: str, spawn, log_path: str):
     """Fresh stack via fixture_up.sh. Returns (ok, attempts, detail)."""
-    nav_mode = "vec-pmp" if arm == "ours" else "nav2"
+    nav_mode = "vec-pmp" if arm in VEC_PMP_ARMS else "nav2"
     cmd = [
         "bash", os.path.join(HERE, "fixture_up.sh"),
         "--worker", str(args.worker or ""),
@@ -651,6 +659,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
+        *(["--no-planner"] if arm == "ours-lib" else []),
         *(["--no-ekf-wheel-yaw"] if args.no_ekf_wheel_yaw else []),
         *(["--lidar-odom"] if args.lidar_odom else []),
         *(["--amcl-params", args.amcl_params] if args.amcl_params else []),
@@ -791,7 +800,7 @@ def run_one(args, plan_path: str) -> dict:
         "lidar_odom": args.lidar_odom,
         "amcl_params": args.amcl_params,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
-        "nav2_profile": args.nav2_profile if args.arm != "ours" else None,
+        "nav2_profile": args.nav2_profile if args.arm not in VEC_PMP_ARMS else None,
         "floor": args.floor,
         "world": args.world,
         "start_xy": [float(v) for v in plan["start"]],
@@ -831,6 +840,14 @@ def run_one(args, plan_path: str) -> dict:
         return row
 
     # 3. drive + score --------------------------------------------------------
+    lib_srv = None
+    if args.arm == "ours-lib":
+        lib_status = os.path.join(args.log_dir, f"libsrv_{tag}.json")
+        lib_log = open(os.path.join(args.log_dir, f"libsrv_{tag}.log"), "w")
+        lib_srv = subprocess.Popen(
+            [sys.executable, os.path.join(HERE, "library_plan_server.py"),
+             "--plan", plan_path, "--status", lib_status],
+            stdout=lib_log, stderr=subprocess.STDOUT)
     sim_timeout = 3.0 * plan["duration"] + 60.0
     # The vec-pmp ack window must cover the PIPELINE'S PLANNING LATENCY, not
     # just reaction time: with wait_for_complete (default) the corrector
@@ -973,6 +990,17 @@ def run_one(args, plan_path: str) -> dict:
     finally:
         if drv is not None:
             drv.close()
+        if lib_srv is not None:
+            lib_srv.terminate()
+            try:
+                lib_srv.wait(10)
+            except subprocess.TimeoutExpired:
+                lib_srv.kill()
+            try:
+                with open(lib_status) as fh:
+                    row["libsrv"] = json.load(fh)
+            except (OSError, ValueError):
+                row["libsrv"] = None
         row.update(cgroup_fields(cg_start, cgroup_snapshot(args.worker)))
 
     row["wall_time"] = round(time.monotonic() - t_start, 1)
