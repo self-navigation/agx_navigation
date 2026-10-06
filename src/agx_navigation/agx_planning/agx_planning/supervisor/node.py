@@ -200,7 +200,13 @@ class SupervisorNode(Node):
 
     # ---- inputs -------------------------------------------------------
     def _install(self, poses, times) -> None:
-        self.core.set_plan(poses, times, t_now=self._now())
+        # Wall thresholds relative to the installed plan's own hull clearance
+        # (SupervisorCore docstring; user decision 2026-10-06, #48). For a
+        # full Nav2 stack this is its own Smac2D plan, for a same-plan arm the
+        # PMP plan: each stack is held to the plan it follows.
+        c_plan = (None if self.walls is None else
+                  [self.walls.body_clearance(*p) for p in poses])
+        self.core.set_plan(poses, times, t_now=self._now(), clearance=c_plan)
         self.has_plan = True
         self.goal = tuple(poses[-1])
         self.get_logger().info(
