@@ -183,7 +183,8 @@ class CompareDriver:
 
     def __init__(self, world: str, model: str,
                  goal_tries: int = 3, goal_ack_wait: float = 15.0,
-                 plan_wall_cap: float = 600.0):
+                 plan_wall_cap: float = 600.0, supervised: bool = False,
+                 follow_action: str = "follow_path"):
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -197,6 +198,11 @@ class CompareDriver:
         self.goal_tries = int(goal_tries)
         self.goal_ack_wait = float(goal_ack_wait)
         self.plan_wall_cap = float(plan_wall_cap)
+        # Supervisory layer on a nav2/gmpc stack (#42/#43): publish the
+        # FollowPath plan on /supervisor/plan and take the run's outcome from
+        # the supervisor's own last goal once it has re-planned.
+        self.supervised = bool(supervised)
+        self.follow_action = follow_action
         self._rclpy = rclpy
         rclpy.init()
 
@@ -217,6 +223,9 @@ class CompareDriver:
             # the library plan in plan["poses"]).
             "diag": [],     # (sim_t, [CorrectionDiagnostics.FIELDS...])
             "sup": [],      # (sim_t, ~/supervisor_state) -- supervisor arms (#41)
+            "nsup": [],     # (sim_t, /supervisor/state) -- nav2/gmpc layer (#42)
+            "nsup_retime": [],  # (sim_t, /supervisor/retime index)
+            "nsup_term": None,  # latest /supervisor/terminal JSON (dict)
             "live_plan": None,  # (N, 3) x, y, yaw from the latest Path
             "sentinel": False,
             "n_plan_paths": 0,
@@ -254,6 +263,22 @@ class CompareDriver:
             Float64MultiArray, "/wheel_corrector/supervisor_state",
             lambda m: st["sup"].append((st["sim_t"], list(m.data)))
             if st["sim_t"] is not None else None, 50)
+        from std_msgs.msg import Int32, String
+        latched = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                             reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.node.create_subscription(
+            Float64MultiArray, "/supervisor/state",
+            lambda m: st["nsup"].append((st["sim_t"], list(m.data)))
+            if st["sim_t"] is not None else None, 50)
+        self.node.create_subscription(
+            Int32, "/supervisor/retime",
+            lambda m: st["nsup_retime"].append((st["sim_t"], int(m.data))), 50)
+        self.node.create_subscription(
+            String, "/supervisor/terminal",
+            lambda m: st.__setitem__("nsup_term", json.loads(m.data)), latched)
+        self._sup_plan_pub = (self.node.create_publisher(Path, "/supervisor/plan", latched)
+                              if self.supervised else None)
         self.node.create_subscription(
             Float64MultiArray, "/wheel_velocity_controller/commands",
             lambda m: st["wheel"].append((st["sim_t"], list(m.data)))
@@ -372,8 +397,13 @@ class CompareDriver:
         goal.goal_checker_id = "general_goal_checker"
         if hasattr(goal, "progress_checker_id"):
             goal.progress_checker_id = "progress_checker"
+        if self._sup_plan_pub is not None:
+            # follow_path mode: the supervisor's plan is the EXACT path sent
+            # (same poses and stamps), latched, before the goal goes out.
+            self._sup_plan_pub.publish(goal.path)
+            self.spin(0.5)
         return self._drive_nav2(None, None, goal_t, timeout_s, backstop_s,
-                                action=(FollowPath, "follow_path", goal))
+                                action=(FollowPath, self.follow_action, goal))
 
     def _drive_nav2(self, goal_xy, gyaw, goal_t, timeout_s, backstop_s,
                     action=None) -> dict:
@@ -440,9 +470,37 @@ class CompareDriver:
                     out["cancelled"] = True
                 except Exception:  # noqa: BLE001
                     pass
-            return out
+            return self._supervisor_outcome(out, goal_t, timeout_s, backstop_s)
         finally:
             client.destroy()
+
+    def _supervisor_outcome(self, out, goal_t, timeout_s, backstop_s) -> dict:
+        """After a re-plan the harness's own goal ends (cancelled/pre-empted);
+        the run's outcome is the supervisor's last goal. Wait for it to leave
+        `active`, bounded by the same sim timeout (#43)."""
+        st = self.state
+        term = st.get("nsup_term") or {}
+        if not self.supervised or int(term.get("goals_sent") or 0) <= 0:
+            return out
+        out["harness_terminal"] = out.get("stack_terminal")
+        if not out.get("timed_out") and not out.get("wall_backstop"):
+            o2 = self._wait_terminal(
+                goal_t, timeout_s, max(1.0, backstop_s - out.get("drive_wall", 0.0)),
+                kind="supervisor",
+                extra_pred=lambda: (st.get("nsup_term") or {}).get("goal_status") != "active")
+            for k in ("terminal", "terminal_kind", "travel_time", "timed_out",
+                      "wall_backstop"):
+                if k in o2:
+                    out[k] = o2[k]
+            out["drive_wall"] = out.get("drive_wall", 0.0) + o2.get("drive_wall", 0.0)
+        term = st.get("nsup_term") or {}
+        status = term.get("goal_status")
+        out["stack_terminal"] = f"sup-{status}"
+        if status == "succeeded":
+            out["stack_terminal"] = "nav2-succeeded"
+        out["nav2_error_code"] = term.get("goal_error_code")
+        out["nav2_error_name"] = None
+        return out
 
     def _wait_terminal(self, goal_t, timeout_s, backstop_s, kind, extra_pred=None) -> dict:
         st = self.state
@@ -666,6 +724,12 @@ def wall_contact(track, floor: int) -> dict:
                 wall_episodes=int(np.count_nonzero(np.diff(inside.astype(int)) == 1) + inside[0]))
 
 
+def gmpc_on_nav2(args) -> bool:
+    """pmp-gmpc inside the nav2 bring-up: under the layer, or its no-layer
+    twin (--gmpc-nav2) -- the like-for-like 'without' cell for C1."""
+    return bool(args.supervisor or getattr(args, "gmpc_nav2", False))
+
+
 def bring_up_stack(args, arm: str, spawn, log_path: str):
     """Fresh stack via fixture_up.sh. Returns (ok, attempts, detail)."""
     nav_mode = ARM_TO_NAV_MODE.get(arm, "nav2")
@@ -679,6 +743,11 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
         *(["--supervisor"] if args.supervisor else []),
+        # Same-plan Nav2 arms: the layer follows OUR plan (published on
+        # /supervisor/plan), not bt_navigator's. gmpc.launch.py sets its own.
+        *(["--supervisor-mode", "follow_path"]
+          if args.supervisor and arm in PMP_PATH_ARMS and arm not in TIMED_PATH_ARMS else []),
+        *(["--gmpc-nav2"] if arm == "pmp-gmpc" and gmpc_on_nav2(args) else []),
         *(["--no-planner"] if arm == "ours-lib" else []),
         *(["--no-ekf-wheel-yaw"] if args.no_ekf_wheel_yaw else []),
         *(["--lidar-odom"] if args.lidar_odom else []),
@@ -817,6 +886,7 @@ def run_one(args, plan_path: str) -> dict:
         "localization": args.localization,
         "phantom_walls": args.phantom_walls,
         "supervisor": args.supervisor,
+        "gmpc_nav2": gmpc_on_nav2(args) if args.arm == "pmp-gmpc" else None,
         "ekf_wheel_yaw": not args.no_ekf_wheel_yaw,
         "lidar_odom": args.lidar_odom,
         "amcl_params": args.amcl_params,
@@ -887,7 +957,11 @@ def run_one(args, plan_path: str) -> dict:
         drv = CompareDriver(args.world, args.model,
                             goal_tries=args.goal_tries,
                             goal_ack_wait=plan_scaled_ack,
-                            plan_wall_cap=args.plan_wall_cap)
+                            plan_wall_cap=args.plan_wall_cap,
+                            supervised=args.supervisor and args.arm not in VEC_PMP_ARMS,
+                            follow_action=("follow_path_gmpc"
+                                           if args.arm == "pmp-gmpc" and gmpc_on_nav2(args)
+                                           else "follow_path"))
         if not drv.spin_until(lambda: drv.state["pose"] is not None, 30.0):
             row.update(outcome="stack-failed", stack_up_ok=True,
                        error=f"no ground-truth pose on {drv.topic_pose}",
@@ -954,6 +1028,11 @@ def run_one(args, plan_path: str) -> dict:
                  live_plan=(st["live_plan"] if st["live_plan"] is not None
                             else np.zeros((0, 3))),
                  sup_t=np.array([c[0] for c in st["sup"]], dtype=float),
+                 # nav2/gmpc layer (#42): /supervisor/state and /supervisor/retime.
+                 nsup_t=np.array([c[0] for c in st["nsup"]], dtype=float),
+                 nsup=(np.array([c[1] for c in st["nsup"]], dtype=float)
+                       if st["nsup"] else np.zeros((0, 15))),
+                 nsup_retime=np.array(st["nsup_retime"], dtype=float).reshape(-1, 2),
                  # Decision.as_array() + the node's _SUP_EXTRA counters.
                  sup=(np.array([c[1] for c in st["sup"]], dtype=float)
                       if st["sup"] else np.zeros((0, 19))),
@@ -969,6 +1048,27 @@ def run_one(args, plan_path: str) -> dict:
                  "full_replans"), [int(x) for x in last[13:18]]))
             row["sup_triggers"] = int(sum(1 for _, d in st["sup"] if d[10] > 0.5))
             row["sup_stop_ticks"] = int(sum(1 for _, d in st["sup"] if d[9] > 0.5))
+        if st["nsup"] or st["nsup_term"]:
+            # nav2/gmpc layer (#42). /supervisor/state = Decision.as_array()
+            # (same first 11 fields as the vec-pmp one) + [replans, stops,
+            # replan_in_flight, applied_scale]; /supervisor/terminal = JSON.
+            ns = st["nsup"]
+            term = st["nsup_term"] or {}
+            if ns:
+                last = ns[-1][1]
+                if np.isfinite(last[1]) and np.isfinite(last[2]):
+                    row["sup_waypoints"] = [int(last[1]), int(last[2])]
+                row["sup_triggers"] = int(sum(1 for _, d in ns if d[10] > 0.5))
+                row["sup_stop_ticks"] = int(sum(1 for _, d in ns if d[9] > 0.5))
+                clr = [d[7] for _, d in ns if np.isfinite(d[7])]
+                row["sup_min_clearance"] = round(float(min(clr)), 4) if clr else None
+            row["sup_counts"] = {k: term.get(k) for k in
+                                 ("replans", "stops", "goals_sent", "retimes")}
+            row["sup_goal_status"] = term.get("goal_status")
+            row["sup_last_reason"] = term.get("last_reason")
+            row["sup_n_retime"] = len(st["nsup_retime"])
+            if res.get("harness_terminal") is not None:
+                row["harness_terminal"] = res["harness_terminal"]
         final_err = (math.hypot(end_pose[0] - plan["goal"][0],
                                 end_pose[1] - plan["goal"][1])
                      if end_pose is not None else None)
@@ -1116,7 +1216,11 @@ def main() -> int:
                          "'fl,rl,fr,rr' command scale, e.g. 0.9,0.9,0.9,0.9")
     ap.add_argument("--localization", default="amcl")
     ap.add_argument("--supervisor", action="store_true",
-                    help="enable the supervisory layer (#41; vec-pmp arms only for now)")
+                    help="enable the supervisory layer on any arm (#41 vec-pmp, #42 nav2/gmpc)")
+    ap.add_argument("--gmpc-nav2", action="store_true",
+                    help="pmp-gmpc without the layer but inside the same nav2 bring-up "
+                         "the layer needs (gmpc_nav2:=true) -- C1's like-for-like 'off' cell. "
+                         "Default off keeps job 221's nav_mode:=none GMPC stack.")
     ap.add_argument("--phantom-walls", action="store_true",
                     help="walls visible to the lidar but without collision "
                          "(#34); contact is then scored by wall_* row fields")
