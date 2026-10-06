@@ -1,10 +1,10 @@
-LT  ours (ū)        n= 80 miss=13/80 (16%) med_fe=0.127 ours_closer=0/0 p=nan med_t=24.7 med_E=2746 wall=67
+LT  поправка ū      n= 80 miss=13/80 (16%) med_fe=0.127 ours_closer=0/0 p=nan med_t=24.7 med_E=2746 wall=67
 MT  MPPI            n= 80 miss=38/80 (48%) med_fe=0.328 ours_closer=59/80 p=2.5e-05 med_t=66.5 med_E=7119 wall=17
 RT  RPP             n= 79 miss=21/79 (27%) med_fe=0.322 ours_closer=69/79 p=5.5e-12 med_t=67.1 med_E=2320 wall=54
 GT  Graceful        n= 80 miss=76/80 (95%) med_fe=9.308 ours_closer=77/80 p=1.4e-19 med_t=22.4 med_E=634 wall=2
 VT  Vector Pursuit  n= 79 miss=19/79 (24%) med_fe=0.273 ours_closer=63/79 p=9.4e-08 med_t=74.7 med_E=9807 wall=63
 KT  GMPC            n= 79 miss=76/79 (96%) med_fe=10.974 ours_closer=77/79 p=1e-20 med_t=6.0 med_E=31949 wall=43
-LA  ours (ū)        n= 80 miss=20/80 (25%) med_fe=0.384 ours_closer=0/0 p=nan med_t=24.7 med_E=3297 wall=63
+LA  поправка ū      n= 80 miss=20/80 (25%) med_fe=0.384 ours_closer=0/0 p=nan med_t=24.7 med_E=3297 wall=63
 MA  MPPI            n= 77 miss=45/77 (58%) med_fe=1.329 ours_closer=52/77 p=0.0028 med_t=69.0 med_E=6527 wall=9
 RA  RPP             n= 79 miss=30/79 (38%) med_fe=0.446 ours_closer=46/79 p=0.18 med_t=67.6 med_E=2970 wall=69
 GA  Graceful        n= 79 miss=77/79 (97%) med_fe=10.864 ours_closer=78/79 p=2.6e-22 med_t=17.7 med_E=487 wall=1
