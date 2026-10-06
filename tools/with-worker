@@ -35,7 +35,7 @@ set -uo pipefail
 
 usage() {
     echo "usage: $(basename "$0") <worker-id|''> <command> [args...]" >&2
-    echo "  worker-id: integer 1-9, or empty for the default (unnamespaced) sim" >&2
+    echo "  worker-id: integer 1-14, or empty for the default (unnamespaced) sim" >&2
     exit 2
 }
 
@@ -49,17 +49,22 @@ if [ -z "$worker" ]; then
 fi
 
 case "$worker" in
-    [1-9]) ;;
+    [1-9]|1[0-4]) ;;
     *)
-        echo "with-worker: worker id must be 1-9 (got '$worker')" >&2
+        echo "with-worker: worker id must be 1-14 (got '$worker')" >&2
         echo "with-worker: the cap is deliberate -- see tools/with-worker" >&2
         exit 2
         ;;
 esac
 
+# THE CAP IS RAM, NOT THE ID SPACE (raised 9 -> 14 on 2026-10-06). One sim plus
+# its stack takes ~1.5 GB; 9 sims used 14 of the VM's 31 GB. 14 leaves headroom
+# for builds. The VM's RAM cannot grow: GPU passthrough pins all of it on the
+# host, and oversizing it wedged the host on 2026-09-29. Watch RTF (#32) above 9.
+#
 # ROS_DOMAIN_ID is bounded in practice: domains above ~101 push DDS's port
 # calculation into the ephemeral range, where it collides with whatever the OS
-# hands out. Base 40 keeps workers 1-9 at 41-49, clear of the default 0 that
+# hands out. Base 40 keeps workers 1-14 at 41-54, clear of the default 0 that
 # every existing run and every hand-typed `ros2 topic echo` uses.
 export ROS_DOMAIN_ID=$((40 + worker))
 export GZ_PARTITION="agx${worker}"

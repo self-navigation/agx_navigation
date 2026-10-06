@@ -54,8 +54,8 @@ endif
 #   make rl-train WORKER=1 ...             # trainer that talks to THAT sim
 WORKER ?=
 ifneq ($(strip $(WORKER)),)
-ifeq ($(filter 1 2 3 4 5 6 7 8 9,$(strip $(WORKER))),)
-$(error WORKER must be an integer 1-9 (got '$(WORKER)'); leave it unset for the default sim)
+ifeq ($(filter 1 2 3 4 5 6 7 8 9 10 11 12 13 14,$(strip $(WORKER))),)
+$(error WORKER must be an integer 1-14 (got '$(WORKER)'); leave it unset for the default sim)
 endif
 WORKER_ENV := GZ_PARTITION=agx$(strip $(WORKER)) ROS_DOMAIN_ID=$(shell expr 40 + $(strip $(WORKER))) AGX_WORKER=$(strip $(WORKER))
 else
