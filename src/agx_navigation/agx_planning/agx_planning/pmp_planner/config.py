@@ -20,12 +20,12 @@ class PlannerConfig:
     """
 
     # --- Operating mode ---
-    # "online":  per-tick BVP solve + wheel-command publication at
-    #            control_rate Hz on the JointGroupVelocityController topic.
-    # "offline": worker-thread rollout-by-concatenation; chunks streamed
-    #            as PlanToGoal action feedback for an interpreter/executor.
-    #            See the node module docstring for full semantics.
-    mode: str = "online"
+    # Only "offline" exists: rollout-by-concatenation in a child process,
+    # chunks streamed as PlanToGoal action feedback to the runtime
+    # corrector. The "online" per-tick mode was removed 2026-10-06 (see
+    # the node module docstring); the field stays so callers passing
+    # mode="offline" keep working.
+    mode: str = "offline"
 
     # --- Horizon ---
     # N: number of mesh nodes for the BVP initial guess (the adaptive
@@ -36,8 +36,8 @@ class PlannerConfig:
     #    sharp fields.
     # T_horizon: prediction window [s]. The BVP optimises over this entire
     #    window; only the t=0 command is applied (receding horizon).
-    # control_rate: timer frequency [Hz] for online mode and sample rate
-    #    for offline chunks. Warm-start solves are typically < 30 ms.
+    # control_rate: sample rate [Hz] of the rolled-out chunks (and the
+    #    solver's first-sample lookahead).
     N: int = 21
     T_horizon: float = 2.5
     control_rate: float = 10.0
@@ -232,7 +232,7 @@ class PlannerConfig:
     bvp_verbose: int = 0
     reuse_previous_solution: bool = True
 
-    # --- Offline-mode parameters (ignored when mode == "online") ---
+    # --- Rollout parameters ---
     # dt_segment: committed arc length per BVP solve [s]. Each solve
     #    optimises over the full T_horizon, but only the first dt_segment
     #    seconds are published and the sim state is advanced by that amount.

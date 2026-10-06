@@ -15,14 +15,8 @@ def generate_launch_description():
             default_value="false",
             description="Run in Gazebo sim (spawns the robot and uses sim time).",
         ),
-        DeclareLaunchArgument(
-            "pmp_mode",
-            default_value="offline",
-            description="Which PMP planner mode to use. Allowed values: online, offline.",
-        ),
     ]
 
-    pmp_mode = LaunchConfiguration("pmp_mode")
     sim = LaunchConfiguration("sim")
 
     # Values are the calibrated/tuned numbers; the PlannerConfig default is
@@ -35,13 +29,9 @@ def generate_launch_description():
         parameters=[
             {
                 # --- Node-level ---
-                "mode": pmp_mode,
                 "use_sim_time": sim,
                 "diag_log_path": "",
-                # Route online output through wheel_corrector instead of
-                # straight to /wheel_velocity_controller/commands.
-                "wheel_cmd_topic": "/pmp_planner/wheel_cmd",
-                # Online-mode BVP/publish rate [Hz].
+                # Sample rate of the rolled-out chunks [Hz].
                 "control_rate": 10.0,
 
                 # --- Horizon / collocation (tuned values) ---

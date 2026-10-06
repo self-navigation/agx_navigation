@@ -1,9 +1,8 @@
 """Wheel-command interpreter and corrector in front of the wheel controller.
 
-Turns the planner's output into four-wheel velocity setpoints. In "online"
-mode it relays wheel commands published by the planner. In "offline" mode it
-is the PlanToGoal action client: it takes the target from /goal_pose and the
-start from TF, buffers the streamed chunks (trajectory_buffer) and plays the
+The only writer of the controller's command topic. It is the PlanToGoal
+action client: it takes the target from /goal_pose and the start from TF,
+buffers the streamed chunks (trajectory_buffer) and plays the per-side wheel
 setpoints out at the planned sample rate. Every command goes through
 _emit() -> _correct(), currently the identity [w_l, w_r] -> [w_l, w_l, w_r,
 w_r]. The controller latches its last command, so every terminal path
@@ -61,9 +60,9 @@ class WheelCorrectorNode(Node):
     def __init__(self) -> None:
         super().__init__("wheel_corrector")
 
-        # online: relay a wheel-command topic. offline: drive the planner's
-        # PlanToGoal action and play the result back.
-        self.declare_parameter("mode", "online")
+        # Only "offline" exists: drive the planner's PlanToGoal action and
+        # play the result back (the online relay was removed 2026-10-06).
+        self.declare_parameter("mode", "offline")
         # Number of wheel setpoints the controller expects.
         self.declare_parameter("expected_size", 4)
         # Frames for TF lookups (offline goal start pose + debug state text).
@@ -106,9 +105,10 @@ class WheelCorrectorNode(Node):
         self.declare_parameter("playback_max_lead", 10)
 
         self._mode = str(self.get_parameter("mode").value).lower()
-        if self._mode not in ("online", "offline"):
+        if self._mode != "offline":
             raise ValueError(
-                f"mode must be 'online' or 'offline', got {self._mode!r}"
+                f"mode must be 'offline' (online relay removed 2026-10-06), "
+                f"got {self._mode!r}"
             )
         self._expected_size = int(self.get_parameter("expected_size").value)
         self._planning_frame = str(self.get_parameter("planning_frame").value)
@@ -150,10 +150,7 @@ class WheelCorrectorNode(Node):
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        if self._mode == "online":
-            self._init_online(cmd_qos)
-        else:
-            self._init_offline()
+        self._init_offline()
 
         self._init_corrector()
 
@@ -166,12 +163,6 @@ class WheelCorrectorNode(Node):
         )
 
     # ----------------------- Mode setup ------------------------------------
-
-    def _init_online(self, cmd_qos: QoSProfile) -> None:
-        #   ~/wheel_cmd_in  <- planner wheel-command topic
-        self._sub = self.create_subscription(
-            Float64MultiArray, "~/wheel_cmd_in", self._on_cmd, cmd_qos
-        )
 
     def _init_offline(self) -> None:
         self._goal_xyth: Optional[Tuple[float, float, float]] = None
@@ -353,7 +344,7 @@ class WheelCorrectorNode(Node):
         """Map a planned wheel-pair command to a four-wheel setpoint.
 
         With no policy loaded -- or whenever the inputs to build a valid
-        observation are missing (online relay has no planned/actual pose) -- this
+        observation are missing (no planned/actual pose yet) -- this
         is the identity: each side's planned setpoint is duplicated across that
         side's two physical wheels ->
           [front_left, rear_left, front_right, rear_right] = [l, l, r, r].
@@ -414,8 +405,7 @@ class WheelCorrectorNode(Node):
         controller. On hardware the middle value -- the corrected (v, omega) --
         is what would be published directly, with no wheel mapping at all.
 
-        Fails safe to the identity whenever the pose pair is missing (the online
-        relay has no planned pose until the planner supplies one) or anything
+        Fails safe to the identity whenever the pose pair is missing or anything
         raises, so an unusable correction can never inject motion.
         """
         if planned_pose is None or actual_pose is None:
@@ -484,23 +474,6 @@ class WheelCorrectorNode(Node):
         msg = Float64MultiArray()
         msg.data = [0.0, 0.0, 0.0, 0.0]
         self._pub.publish(msg)
-
-    # ----------------------- Online relay ----------------------------------
-
-    def _on_cmd(self, msg: Float64MultiArray) -> None:
-        data = list(msg.data)
-        if len(data) >= 4:
-            left, right = data[0], data[2]
-        elif len(data) == 2:
-            left, right = data[0], data[1]
-        else:
-            self.get_logger().warn(
-                "expected %d (or 2) wheel setpoints, got %d -- dropping"
-                % (self._expected_size, len(data)),
-                throttle_duration_sec=2.0,
-            )
-            return
-        self._emit(left, right)
 
     # ----------------------- Offline goal / action ------------------------
 
