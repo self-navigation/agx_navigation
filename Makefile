@@ -88,9 +88,11 @@ all: build
 
 build: deps .build.stamp
 
+# colcon does not descend into a package's directory, so the baselines'
+# vendored submodules (agx_baselines/third_party/*) need their own base path.
 .build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
-		colcon build --base-paths src
+		colcon build --base-paths src src/agx_navigation/agx_baselines/third_party
 	touch $@
 
 clean:
