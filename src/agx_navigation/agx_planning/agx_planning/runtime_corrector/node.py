@@ -47,6 +47,7 @@ from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
 from agx_planning.runtime_corrector import tvlqr as tvlqr_mod
 from agx_planning.supervisor.core import SupervisorConfig, SupervisorCore
+from agx_planning.supervisor.recovery import backoff_and_face
 from agx_planning.supervisor.walls import SignedWallDistance, rejoin_clear
 from agx_planning.utils import declare_and_load_dataclass
 
@@ -869,6 +870,7 @@ class WheelCorrectorNode(Node):
         self._rejoin_solver = None
         self._rejoin_not_before = -math.inf
         self._rejoin_retries = 0
+        self._recoveries = 0
         if self._sup_cfg.rejoin:
             try:
                 # Lazy: scipy + the shooting solver only when re-joins are on.
@@ -940,10 +942,9 @@ class WheelCorrectorNode(Node):
         if d.stop:
             wl = wr = 0.0  # the wheels are being held
         x0 = np.array([pose[0], pose[1], pose[2], wl, wr])
-        tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt,
-                                      self._sup_cfg.rejoin_t_min)
+        tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt, self._rejoin_t_min())
         self._rejoin_meta = dict(t0=now, tgt=tgt, k0=d.k_star, c0=clearance,
-                                 reason=d.reason, held=bool(d.stop))
+                                 reason=d.reason, held=bool(d.stop), x0=x0)
         self._rejoin_future = self._rejoin_pool.submit(
             self._rejoin_solver.solve, x0, tgt, d.k_star)
 
@@ -989,6 +990,7 @@ class WheelCorrectorNode(Node):
         self._buf.splice(samples[skip:], meta["tgt"] + 1)
         self._overlay_c0 = meta["c0"]
         self._sup_counts["rejoin_ok"] += 1
+        self._rejoin_retries = 0
         self.get_logger().info("re-join spliced: %d samples, resume at %d (T_w %.1f s,"
                                " %.0f ms)" % (len(samples) - skip, meta["tgt"] + 1,
                                               self._rejoin_solver.last.get("T_w", 0.0),
@@ -1012,6 +1014,7 @@ class WheelCorrectorNode(Node):
                 return
             self._rejoin_not_before = self._now_s() + self._sup_cfg.rejoin_retry_s
             self._sup.latched = False
+            self._try_recovery()
             self.get_logger().warn("supervisor: %s -> holding, re-join retry %d/%d" % (
                 why, self._rejoin_retries, self._sup_cfg.rejoin_max_retries))
             return
@@ -1029,6 +1032,38 @@ class WheelCorrectorNode(Node):
         self._buf.clear()
         self._playing = False
         self._send_action_goal()
+
+    def _rejoin_t_min(self) -> float:
+        c = self._sup_cfg
+        return min(c.rejoin_t_min + self._rejoin_retries * c.rejoin_t_step,
+                   max(c.rejoin_t_max, c.rejoin_t_min))
+
+    def _try_recovery(self) -> bool:
+        """Splice a back-off-and-face motion (supervisor/recovery.py) after a
+        held re-join failed or was blocked. The plan cursor does not move, so
+        playback resumes where it was held; the off-plan/lag trigger then asks
+        for a re-join from the new, clear pose."""
+        meta = self._rejoin_meta or {}
+        if (self._recoveries >= self._sup_cfg.recovery_max or self._sup_swd is None
+                or not meta.get("held") or meta.get("x0") is None):
+            return False
+        dt = self._buf.active_dt
+        tgt = self._sup.rejoin_target(self._sup.k_star, dt, self._rejoin_t_min())
+        kin = self._rl_cfg
+        samples = backoff_and_face(
+            meta["x0"][:3], self._sup.poses[tgt, :2], self._sup_swd.body_clearance,
+            lambda v, w: tvlqr_mod.twist_to_wheels(v, w, kin), dt)
+        if samples is None:
+            self.get_logger().warn("supervisor: no clear back-off-and-face motion")
+            return False
+        self._recoveries += 1
+        self._buf.splice(samples, self._buf.cursor)
+        self._overlay_c0 = meta["c0"]
+        self.get_logger().warn("supervisor: recovery %d/%d, back off and face plan "
+                               "index %d (%d samples)" % (
+                                   self._recoveries, self._sup_cfg.recovery_max, tgt,
+                                   len(samples)))
+        return True
 
     def _sup_finish(self, traj_id: int) -> None:
         if self._sup is None:

@@ -58,6 +58,14 @@ class SupervisorConfig:
     full_replan: bool = True
     rejoin_retry_s: float = 1.0
     rejoin_max_retries: int = 10
+    # Each consecutive failed/blocked re-join lengthens the next one's
+    # window by this much (a farther target), capped at rejoin_t_max. The
+    # same problem from the same held state fails identically (00219).
+    rejoin_t_step: float = 1.0
+    rejoin_t_max: float = 8.0
+    # Back off and turn to face the target (recovery.py) when a held re-join
+    # fails or is blocked; at most this many per goal (0 = off).
+    recovery_max: int = 3
 
 
 @dataclass
