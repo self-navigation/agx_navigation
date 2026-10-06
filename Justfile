@@ -164,7 +164,7 @@ kill-sim partition='all':
 # robot and MEASURES the response needs 1x -- at 33x the IMU publishes at ~3 kHz
 # and a normal subscriber drops almost all of it. See `just remote-chi`.
 #
-# `worker` (1-9) puts the sim in its own Gazebo partition and DDS domain, so
+# `worker` (1-14) puts the sim in its own Gazebo partition and DDS domain, so
 # several can run at once -- `just remote-sim rl_corrector.world 1`. The tmux
 # window and logfile are suffixed to match, since two sims writing /tmp/rl-sim.log
 # would interleave into something unreadable. Leave it empty for the single
@@ -216,7 +216,7 @@ remote-train target='p1' worker='': sync
 #   just remote-fixture tvlqr true amcl    # localize off the lidar instead of
 #                                          # ground truth (slower: needs sensors)
 #
-# `worker` (1-9) runs the fixture in its own partition + DDS domain, so two can
+# `worker` (1-14) runs the fixture in its own partition + DDS domain, so two can
 # run at once. Both GUIs land on the same X display and Moonlight streams the
 # whole desktop, so you genuinely can watch them side by side -- which is the
 # cheapest way to see two correctors, or two initial conditions, diverge on the
