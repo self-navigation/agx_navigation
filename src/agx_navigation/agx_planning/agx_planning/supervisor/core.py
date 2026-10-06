@@ -9,6 +9,9 @@ so a time-indexed follower can jump its clock. A local re-plan is triggered,
 once per segment, when lag >= trigger_ratio * prev_lag and lag * v_seg >
 reach_radius.
 
+Reason "offplan" fires when the cross-track distance at k* exceeds offplan_dist
+(0 disables it).
+
 Walls: speed is scaled by clip((d - stop_at) / (slow_at - stop_at), 0, 1) on
 the signed hull clearance d (walls.py). At stop_at the robot stops and a
 re-plan is requested ("wall"); inside the slow band a re-plan is requested
@@ -39,6 +42,7 @@ class SupervisorConfig:
     contact_dist: float = 0.03      # [m] always stop at or below this clearance
     min_band: float = 0.05          # [m] smallest slow band above stop_at
     trigger_ratio: float = 2.0      # lag must at least double the previous segment's
+    offplan_dist: float = 0.5       # [m] cross-track error that requests a re-join; 0 = off
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
     min_seg_speed: float = 0.05     # [m/s] floor for v_seg (turn-in-place segments)
@@ -252,6 +256,10 @@ class SupervisorCore:
                 trigger, reason = True, "lag"
             elif scale < 1.0:
                 trigger, reason = True, "near_wall"
+            elif cfg.offplan_dist > 0 and math.hypot(
+                    self.poses[self.k_star, 0] - x,
+                    self.poses[self.k_star, 1] - y) > cfg.offplan_dist:
+                trigger, reason = True, "offplan"
             if trigger:
                 self.latched = True
                 self.replans += 1

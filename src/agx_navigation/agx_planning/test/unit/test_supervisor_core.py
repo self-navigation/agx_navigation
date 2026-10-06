@@ -249,3 +249,18 @@ def test_buffer_cancel_overlay_returns_to_the_plan_cursor():
     buf.cancel_overlay()
     assert not buf.overlay_active
     assert buf.advance().pose[0] == pytest.approx(0.2)
+
+
+def test_offplan_trigger_fires_on_schedule_once_per_segment():
+    # On schedule along x but 0.6 m to the side: lag never grows, the
+    # cross-track error does (S1 re-smoke, 00219).
+    sup = SupervisorCore()
+    poses, t = straight()
+    sup.set_plan(poses, t)
+    reasons = [sup.update(poses[k, 0], 0.6, 0.0, t[k]).reason for k in range(5)]
+    assert reasons[0] == "offplan" and reasons[1:] == [""] * 4
+    # 0.4 m off does not fire; offplan_dist=0 disables it.
+    for y, cfg in ((0.4, SupervisorConfig()), (0.6, SupervisorConfig(offplan_dist=0.0))):
+        s = SupervisorCore(cfg)
+        s.set_plan(poses, t)
+        assert not any(s.update(poses[k, 0], y, 0.0, t[k]).trigger for k in range(5))
