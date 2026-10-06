@@ -32,6 +32,7 @@ compared, at which gains, on which plant — so none of it was usable for a writ
 | date | what it establishes |
 | --- | --- |
 | [2026-10-06](2026-10-06/) | job 220: ours ties Smac2D+MPPI on arrival at ~3x the speed and ~5x less control; beats RPP; Nav2 stalls at narrow-corridor turns |
+| [2026-10-07](2026-10-07/) | #40 supervisory-layer work: s4_slip = slip model χ(μ) + G2 check vs Gazebo (direction 9/10, final error ×2 only 6/10: FAIL, iteration 2 pending) |
 | [2026-09-30](2026-09-30/) | re-join solver Phase 0: min-effort re-join solves ~99% at `T_w >= 3 s`; short windows fail for physical reasons |
 | [2026-09-29](2026-09-29/) | INVALID (amcl reset): Nav2 comparison pipeline preview, not a result |
 | [2026-08-15](2026-08-15/) | `r_omega` matters below 1.0 after all; the U-turn `q_cross` basin is one plan's, not the shape's |
