@@ -117,14 +117,17 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
 
-ARMS = ("ours", "ours-lib", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp")
+ARMS = ("ours", "ours-lib", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp",
+        "nav2-graceful", "pmp-graceful", "nav2-vpp", "pmp-vpp")
 ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
-                     "pmp-mppi": "mppi", "pmp-rpp": "rpp"}
+                     "pmp-mppi": "mppi", "pmp-rpp": "rpp",
+                     "nav2-graceful": "graceful", "pmp-graceful": "graceful",
+                     "nav2-vpp": "vpp", "pmp-vpp": "vpp"}
 # Type-A arms (#10, 2026-10-05): the planner is held FIXED at our PMP plan and
 # only the tracker differs. The plan npz's (x, y, yaw) path is densified and
 # sent straight to Nav2's controller_server via the FollowPath action (no
 # bt_navigator, no Smac call), with the same nav2 profile as the nav2-* arms.
-PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp")
+PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp", "pmp-graceful", "pmp-vpp")
 # Our corrector arms (vec-pmp + runtime_corrector). `ours-lib` (#39) is the
 # controllers-only twin of the Type-A arms: pmp_planner is NOT launched
 # (use_server:=true) and tools/library_plan_server.py serves the plan npz's

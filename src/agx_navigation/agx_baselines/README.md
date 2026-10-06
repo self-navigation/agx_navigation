@@ -8,8 +8,14 @@ this is the wrong package; see `agx_bringup` and `agx_planning`.
 | path | what |
 | --- | --- |
 | `config/nav2_controller_<name>.yaml` | controller_server overlay selecting a Nav2 local controller (`nav2_controller:=<name>`; `mppi` is the base `nav2_params.yaml` and has no overlay). `nav2.launch.py` discovers controllers from these files, so adding one needs no launch edit. |
+| `third_party/` | vendored upstream controllers as submodules, built by `make build` (extra colcon base path, since colcon does not descend into a package): `vector_pursuit_controller` (blackcoffeerobotics, branch `jazzy` @ 3e6c7b7, Apache-2.0) |
 | `config/nav2_profile_<name>.yaml` | comparison profile loaded after `nav2_params.yaml` for every Nav2 node (`nav2_profile:=<name>`) |
 
 Profiles: `compare_static` (stage-1 baseline), `compare_skid` (compare_static
 + MPPI wz_std 0.8 / PathAngleCritic 5 so MPPI turns a skid-steer, job 210),
 `compare_hybrid` (Smac Hybrid-A* global planner, job 200).
+
+Controllers: `dwb`, `rpp`, `graceful` (nav2_graceful_controller, apt), `vpp`
+(Vector Pursuit, `third_party/`), plus the base `mppi`. All share RPP's
+limits (0.5 m/s, 1.5 rad/s, forward-only); each overlay documents its
+skid-steer in-place-rotation setting.
