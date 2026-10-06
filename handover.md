@@ -6,7 +6,26 @@ claims and is the reference. Open work is tracked in Forgejo issues (list them
 with the `fj` tools). Older versions of this file are in git history
 (`git log -p handover.md`); nothing in them is needed to continue.
 
-## 0a. Session 2026-10-06 (night, 03:40-05:05 MSK) — paused, resume here
+## 0b. Session 2026-10-06 (day, from 10:56 MSK) — resume here
+
+**Running on the VM:**
+- **Job 221 = job 220 part 2** (controllers only, every arm on the SAME library plan, phantom walls; #10/#33 Type A). Launched 11:22 MSK, workers 1-12, frozen checkout `~/agx_navigation_job221` (commit 7e0c96f), log `/tmp/job221.log`, out `~/run_data/2026-10-06_job221_controllers/` (README there). 12 configs = {ours-lib, pmp-mppi, pmp-rpp, pmp-graceful, pmp-vpp, pmp-gmpc} x {truth (`*T`), amcl (`*A`)}, seeds 0 1, 960 runs, ETA ~5.5 h (about 17:00 MSK). Done when the log says `[fac] finished`.
+  - Read: `python3 tools/summarize_arms.py all_rows.jsonl LT` (truth block) and `... LA` (amcl block), and pair only within the same localization. Truth = the corrector claim, amcl = the system claim. Then render figures like `figures/2026-10-06/` and write the controllers paragraph in sec:stack. The user wants the advisor to see it all.
+  - The first launch (08:03 UTC) was ABORTED, data in `~/run_data/2026-10-06_scratch_job221-aborted/`. There were three bugs, all fixed in 7e0c96f. (1) Under truth the fixture ran without the lidar, so Nav2's collision_monitor stopped the robot ("invalid source"). Now `make fixture` turns sensors on for nav2, and static_map launches pointcloud_to_laserscan for amcl OR nav2. (2) The GMPC submodule was never checked out in the laptop clone, so the frozen checkout had no sources. Once checked out, its `scout_description` clashed in colcon, so the Makefile now builds only `third_party/vector_pursuit_controller`. (3) compare_run labelled "terminal + no motion" as planner-failed even for library-plan arms. Those are now scored as `failed`.
+  - Smoke after the fixes (`~/run_data/2026-10-06_scratch_job221-smoke2/`, 00369, truth, n=1): pmp-gmpc arrived 0.45 m; pmp-mppi drove and failed 3.6 m (MPPI's known skid-steer stall, see compare_skid).
+
+**Done today:**
+- Job 220 part 1 read. Under amcl with solid walls, paired final_err vs ours: Smac2D+MPPI tie (ours closer 36/70, p=0.9); Hybrid-A*+MPPI borderline worse (43/71, p=0.1); RPP worse (51/72, p=5e-4). Miss P_0.5: ours 62% (45/72), M2 56%, MH 77%, R2 82%. Ours is 3x faster and spends 4.8x less control than M2 (69/70, 68/70). Wall contact: ours 52/72 runs, M2 22/77, MH 10/79. Ours had 8/80 planner failures (#39).
+- **Scoring rule changed (2026-10-06):** `summarize_arms.py` now SCORES timeouts (the robot ends where it stopped). Only planner-/stack-failed runs are excluded. Earlier numbers in this file (job 210 etc.) were computed without timeouts.
+- Paper (`../paper` 185e249): sec:stack's comparison paragraphs now use job 220 (v7 is gone). The #39 planner failures are counted as excluded and explained in Limitations (`sec:limits`). Style follows the advisor rules: short sentences, no `;:—`, no lists.
+- Figures: `figures/2026-10-06/` (paired final_err, cost ratios, tracks; README there). The tracks show Nav2 stalling at narrow-corridor turns (00219) and only MPPI making a door turn (00061).
+- Killed the stuck ours-lib smoke loop (it had waited ~5 h on worker 9, held by an orphan) and 5 orphan sims (workers 9, 11-14). The one ours-lib smoke that ran arrived 0.32 m on 00047 (the live-planner-fails plan).
+- Lesson: `pkill -f <pattern>` inside `ssh '...'` kills the ssh's own bash. Use the `[x]yz` bracket trick or explicit PIDs.
+
+**Next, in order:** read job 221 (above) and write the controllers paragraph plus figures. Then items 3-5 of the list below (cleanup equivalence, deferred refactor, #38 and the cover note).
+
+## 0a. Session 2026-10-06 (night) — superseded by 0b; kept for the history
+
 
 **Running on the VM (nothing needs babysitting):**
 - **Job 220 part 1** (full stacks, amcl, SOLID walls; #10/#33 Type B), workers 1-8, frozen checkout `~/agx_navigation_job220` (commit 1a80fa7), log `/tmp/job220.log`, out `~/run_data/2026-10-06_job220_fullstack/` (README there). Arms: O ours, M2 Smac2D+MPPI, MH Hybrid-A*+MPPI, R2 Smac2D+RPP; Nav2 arms use `compare_skid`. Slower than estimated: ETA about 07:00 MSK; the MPPI arms are slowest. Read: `python3 tools/summarize_arms.py all_rows.jsonl O`. Also report on the common set (ours planner-fails ~5/40, #39). Compare per-run wall times against job 210 to see whether 9-14 concurrent sims slowed it (#32).
