@@ -6,11 +6,13 @@ buffers the streamed chunks (trajectory_buffer) and plays the per-side wheel
 setpoints out at the planned sample rate. Every command goes through
 _emit() -> _correct(), currently the identity [w_l, w_r] -> [w_l, w_l, w_r,
 w_r]. The controller latches its last command, so every terminal path
-publishes an explicit zero.
+publishes an explicit zero. With supervisor.enabled, each playback tick first
+asks SupervisorCore for re-timing, a wall speed scale, a stop or a re-join.
 """
 
 import math
 import signal
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -23,8 +25,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 
 from builtin_interfaces.msg import Duration as BuiltinDuration
 from geometry_msgs.msg import Point, PoseStamped
-from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import Imu
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Float64MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import (
@@ -44,6 +46,8 @@ from agx_planning.rl_corrector.config import RLCorrectorConfig
 from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
 from agx_planning.runtime_corrector import tvlqr as tvlqr_mod
+from agx_planning.supervisor.core import SupervisorConfig, SupervisorCore
+from agx_planning.supervisor.walls import SignedWallDistance, rejoin_clear
 from agx_planning.utils import declare_and_load_dataclass
 
 from .trajectory_buffer import TrajectoryBuffer
@@ -145,6 +149,8 @@ class WheelCorrectorNode(Node):
         self._pub = self.create_publisher(Float64MultiArray, "~/wheel_cmd_out", cmd_qos)
 
         self._last_cmd_time: Optional[rclpy.time.Time] = None
+        # Supervisor wall speed scale, applied to every outgoing command.
+        self._sup_scale = 1.0
 
         # TF is needed offline (goal start pose) and for the debug state anchor.
         self._tf_buffer = Buffer()
@@ -153,6 +159,8 @@ class WheelCorrectorNode(Node):
         self._init_offline()
 
         self._init_corrector()
+
+        self._init_supervisor()
 
         if self._publish_debug:
             self._init_debug()
@@ -328,6 +336,8 @@ class WheelCorrectorNode(Node):
         """Run one (left, right) wheel-pair command through _correct() and
         publish the resulting four-wheel setpoint."""
         wheels = self._correct(left, right, planned_pose, actual_pose, costates)
+        if self._sup_scale != 1.0:
+            wheels = [w * self._sup_scale for w in wheels]
         msg = Float64MultiArray()
         msg.data = [float(w) for w in wheels]
         self._pub.publish(msg)
@@ -486,6 +496,10 @@ class WheelCorrectorNode(Node):
         q = msg.pose.orientation
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
         self._goal_xyth = (pos.x, pos.y, yaw)
+        self._sup_full_replans_goal = 0
+        if self._sup is not None:
+            self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:]}
+            self._sup.replans = self._sup.stops = 0
         self.get_logger().info(
             "New goal: (%.2f, %.2f), yaw=%.2f" % (pos.x, pos.y, yaw)
         )
@@ -639,8 +653,14 @@ class WheelCorrectorNode(Node):
                 return
             self._playing = True
             self._play_started = self.get_clock().now()
+            self._sup_start()
 
         pose = self._robot_pose()
+
+        # Supervisory layer (#41): may re-time or splice the buffer, and holds
+        # the wheels at zero on a wall stop (the cursor does not advance then).
+        if self._sup is not None and self._playing and self._supervise(pose):
+            return
 
         # Progress indexing has no natural end -- the cursor only moves when the
         # robot does -- so bound it by the planned duration. Time indexing needs
@@ -666,7 +686,10 @@ class WheelCorrectorNode(Node):
         if self._playback_index == "progress" and pose is not None:
             actual_xy = (pose[0], pose[1])
 
+        had_overlay = self._buf.overlay_active
         sample = self._buf.advance(actual_xy)
+        if self._sup is not None and had_overlay and not self._buf.overlay_active:
+            self._sup.rebase(self._now_s())
         if sample is None:
             if self._buf.is_done():
                 self._finish()
@@ -707,6 +730,7 @@ class WheelCorrectorNode(Node):
         """
         success = self._buf.result_success
         traj_id = self._buf.active_traj_id
+        self._sup_finish(traj_id)
         self._publish_zero()
         self._buf.clear()
         if self._goal_xyth is not None:
@@ -721,6 +745,256 @@ class WheelCorrectorNode(Node):
         sentinel.header.stamp = self.get_clock().now().to_msg()
         sentinel.header.frame_id = ""
         self._goal_pub.publish(sentinel)
+
+    # ----------------------- Supervisory layer (#41) ------------------------
+
+    def _init_supervisor(self) -> None:
+        """The stack-independent supervisor (agx_planning/supervisor), wired in.
+
+        Off by default (``supervisor.enabled``), and then nothing here runs.
+        When on, every playback tick asks SupervisorCore for a Decision:
+
+        * waypoint reached -> the time cursor is re-timed to the robot's
+          progress index (TrajectoryBuffer.retime);
+        * hull clearance under ``slow_dist`` -> every command is scaled down;
+          at ``stop_dist`` the wheels are held at zero and the cursor waits;
+        * trigger (lag doubled and over the robot radius, or a wall) -> a PMP
+          re-join to the next waypoint is solved OFF the executor thread
+          (a failed solve takes 1-6 s), gated by wall clearance along it
+          (the re-join cost ignores walls) and spliced into the buffer
+          (TrajectoryBuffer.splice), where the corrector tracks it;
+        * a wall stop whose re-join fails, or is blocked by the gate, falls
+          back to a full PlanToGoal from the current pose (tier 3), at most
+          ``_MAX_FULL_REPLANS`` times per goal before the goal is abandoned.
+
+        Clearance is computed at the BELIEVED pose against ``/map``, so the
+        layer uses only what a real robot would have. ``~/supervisor_state``
+        carries Decision.as_array() followed by the adapter counters, in the
+        order of _SUP_EXTRA (append-only).
+        """
+        self._sup_cfg = declare_and_load_dataclass(
+            self, SupervisorConfig(), prefix="supervisor.")
+        self._sup: Optional[SupervisorCore] = None
+        if not self._sup_cfg.enabled:
+            return
+        if not self._wait_for_complete:
+            self.get_logger().error(
+                "supervisor needs wait_for_complete=true (it indexes the whole "
+                "plan); supervisor DISABLED.")
+            return
+        self._sup = SupervisorCore(self._sup_cfg)
+        self._sup_swd: Optional[SignedWallDistance] = None
+        self._sup_map_stamp = -1e9
+        self._wheel_speeds: Optional[Tuple[float, float]] = None
+        self._rejoin_solver = None
+        self._rejoin_pool = ThreadPoolExecutor(max_workers=1)
+        self._rejoin_future = None
+        self._rejoin_meta: dict = {}
+        self._overlay_c0 = math.inf
+        self._sup_full_replans_goal = 0
+        self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:]}
+        map_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
+        self.create_subscription(JointState, "/joint_states", self._on_joint_states, 10)
+        self._sup_pub = self.create_publisher(Float64MultiArray, "~/supervisor_state", 10)
+        c = self._sup_cfg
+        self.get_logger().info(
+            "supervisor ACTIVE (waypoint %.0f%%, reach %.2f m, slow %.2f m, stop "
+            "%.2f m, trigger x%.1f, rejoin=%s)" % (
+                100 * c.waypoint_frac, c.reach_radius, c.slow_dist, c.stop_dist,
+                c.trigger_ratio, c.rejoin))
+
+    _SUP_EXTRA = ("overlay", "pending", "rejoin_ok", "rejoin_fail", "rejoin_blocked",
+                  "rejoin_stale", "full_replans")
+    _MAX_FULL_REPLANS = 3
+
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        # SLAM republishes the map about once a second; the EDT is not free.
+        now = self._now_s()
+        if self._sup_swd is not None and now - self._sup_map_stamp < 5.0:
+            return
+        info = msg.info
+        self._sup_swd = SignedWallDistance.from_occupancy(
+            msg.data, info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y)
+        self._sup_map_stamp = now
+
+    def _on_joint_states(self, msg: JointState) -> None:
+        v = dict(zip(msg.name, msg.velocity))
+        try:
+            self._wheel_speeds = (
+                0.5 * (v["front_left_wheel"] + v["rear_left_wheel"]),
+                0.5 * (v["front_right_wheel"] + v["rear_right_wheel"]),
+            )
+        except KeyError:
+            pass
+
+    def _sup_start(self) -> None:
+        """Playback begins: hand the plan to the core and build the re-join solver."""
+        if self._sup is None:
+            return
+        dt = self._buf.active_dt
+        poses = self._buf.plan_poses()
+        self._sup.set_plan(poses, [i * dt for i in range(len(poses))], self._now_s())
+        self._sup_scale = 1.0
+        self._rejoin_future = None
+        self._rejoin_solver = None
+        if self._sup_cfg.rejoin:
+            try:
+                # Lazy: scipy + the shooting solver only when re-joins are on.
+                from agx_planning.pmp_planner.rejoin_service import RejoinSolver
+                self._rejoin_solver = RejoinSolver(
+                    self._buf.plan_samples(), dt=dt, T_w_min=self._sup_cfg.rejoin_t_min,
+                    max_nodes=self._sup_cfg.rejoin_max_nodes or None)
+            except Exception as exc:  # noqa: BLE001 - re-join is optional
+                self.get_logger().error("re-join solver unavailable (%s); triggers "
+                                        "will only stop or replan." % exc)
+        self.get_logger().info("supervisor: %d waypoints over %d samples"
+                               % (self._sup.n_waypoints, len(poses)))
+
+    def _supervise(self, pose) -> bool:
+        """One supervisor step. True = the wheels are held this tick."""
+        now = self._now_s()
+        self._poll_rejoin(now)
+        if self._buf.active_traj_id < 0:  # a tier-3 replan or abandon cleared it
+            return True
+        if pose is None:
+            self._sup_scale = 1.0
+            return False
+        clearance = (self._sup_swd.body_clearance(*pose)
+                     if self._sup_swd is not None else math.inf)
+        d = self._sup.update(pose[0], pose[1], pose[2], now, clearance=clearance)
+        overlay = self._buf.overlay_active
+        if d.retime_index is not None and self._playback_index == "time":
+            self._buf.retime(d.retime_index)
+        stop = d.stop
+        # A re-join that passed the wall gate may start inside stop_dist (it
+        # was solved from a robot stopped at a wall). Let it back away; stop
+        # only if it takes the body closer than where it started.
+        if stop and overlay and clearance >= self._overlay_c0 - 0.02:
+            stop = False
+        self._sup_scale = 1.0 if (overlay and not stop) else d.speed_scale
+        if d.trigger and not overlay and self._rejoin_future is None:
+            self._request_rejoin(pose, d, clearance, now)
+        self._publish_sup_state(d)
+        if stop:
+            self._publish_zero()
+            return True
+        return False
+
+    def _request_rejoin(self, pose, d, clearance: float, now: float) -> None:
+        self.get_logger().info(
+            "supervisor trigger (%s): k*=%d wp %d/%d lag %.2f s (prev %.2f) "
+            "clearance %.2f m" % (d.reason, d.k_star, d.waypoint, d.n_waypoints,
+                                  d.lag_s, d.prev_lag_s, clearance))
+        if self._rejoin_solver is None:
+            if d.reason == "wall":
+                self._full_replan("wall stop, no re-join solver")
+            return
+        if self._wheel_speeds is not None:
+            wl, wr = self._wheel_speeds
+        else:
+            # No /joint_states yet: the plan's commanded speeds are the best guess.
+            s = self._buf.plan_samples()[min(d.k_star, self._buf.n_samples - 1)]
+            wl, wr = s.left, s.right
+        if d.stop:
+            wl = wr = 0.0  # the wheels are being held
+        x0 = np.array([pose[0], pose[1], pose[2], wl, wr])
+        tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt,
+                                      self._sup_cfg.rejoin_t_min)
+        self._rejoin_meta = dict(t0=now, tgt=tgt, c0=clearance, reason=d.reason,
+                                 held=bool(d.stop))
+        self._rejoin_future = self._rejoin_pool.submit(
+            self._rejoin_solver.solve, x0, tgt, d.k_star)
+
+    def _poll_rejoin(self, now: float) -> None:
+        f = self._rejoin_future
+        if f is None or not f.done():
+            return
+        self._rejoin_future = None
+        meta = self._rejoin_meta
+        try:
+            samples = f.result()
+        except Exception:  # noqa: BLE001
+            samples = None
+        age = now - meta["t0"]
+        wall = meta["reason"] == "wall"
+        if samples is None:
+            self._sup_counts["rejoin_fail"] += 1
+            self.get_logger().warn("re-join failed after %.2f s (%s)" % (
+                age, self._rejoin_solver.last.get("status")))
+            if wall:
+                self._full_replan("wall stop, re-join failed")
+            return
+        if age > self._sup_cfg.rejoin_max_age and not meta["held"]:
+            self._sup_counts["rejoin_stale"] += 1
+            self._sup.latched = False  # let the next tick ask again
+            return
+        if self._sup_swd is not None and not rejoin_clear(
+                samples, self._sup_swd, meta["c0"], self._sup_cfg.stop_dist):
+            self._sup_counts["rejoin_blocked"] += 1
+            self.get_logger().warn("re-join blocked by wall clearance")
+            if wall:
+                self._full_replan("wall stop, re-join blocked")
+            return
+        # A moving robot is `age` further along than x0: drop the samples it
+        # has already lived through. A held robot has not moved.
+        skip = 0 if meta["held"] else min(int(age / self._buf.active_dt),
+                                          len(samples) - 1)
+        self._buf.splice(samples[skip:], meta["tgt"] + 1)
+        self._overlay_c0 = meta["c0"]
+        self._sup_counts["rejoin_ok"] += 1
+        self.get_logger().info("re-join spliced: %d samples, resume at %d (T_w %.1f s,"
+                               " %.0f ms)" % (len(samples) - skip, meta["tgt"] + 1,
+                                              self._rejoin_solver.last.get("T_w", 0.0),
+                                              self._rejoin_solver.last.get("solve_ms", 0.0)))
+
+    def _full_replan(self, why: str) -> None:
+        """Tier 3: drop the plan and request a new one from the current pose."""
+        self._publish_zero()
+        self._sup_counts["full_replans"] += 1
+        self._sup_full_replans_goal += 1
+        self._rejoin_future = None
+        if self._sup_full_replans_goal > self._MAX_FULL_REPLANS:
+            self.get_logger().error("supervisor: %s, and %d full replans already; "
+                                    "abandoning the goal." % (why, self._MAX_FULL_REPLANS))
+            self._finish()
+            return
+        self.get_logger().warn("supervisor: %s -> full replan (%d/%d)" % (
+            why, self._sup_full_replans_goal, self._MAX_FULL_REPLANS))
+        self._sup_finish(self._buf.active_traj_id)
+        self._buf.clear()
+        self._playing = False
+        self._send_action_goal()
+
+    def _sup_finish(self, traj_id: int) -> None:
+        if self._sup is None:
+            return
+        self._rejoin_future = None
+        self._sup_scale = 1.0
+        if not len(self._sup.poses):
+            return
+        c = self._sup_counts
+        self.get_logger().info(
+            "supervisor summary traj %d: waypoints %d/%d, triggers %d, wall stops %d, "
+            "re-joins ok %d fail %d blocked %d stale %d, full replans %d" % (
+                traj_id, self._sup.next_wp, self._sup.n_waypoints, self._sup.replans,
+                self._sup.stops, c["rejoin_ok"], c["rejoin_fail"], c["rejoin_blocked"],
+                c["rejoin_stale"], c["full_replans"]))
+
+    def _publish_sup_state(self, d) -> None:
+        msg = Float64MultiArray()
+        extra = [float(self._buf.overlay_active), float(self._rejoin_future is not None)]
+        extra += [float(self._sup_counts[k]) for k in self._SUP_EXTRA[2:]]
+        msg.data = d.as_array() + extra
+        self._sup_pub.publish(msg)
 
     # ----------------------- Pose lookup -----------------------------------
 

@@ -17,6 +17,7 @@ PARAM_VARS := SIM \
 							USE_SERVER \
 							CORRECTOR \
 							PLAYBACK_INDEX \
+							SUPERVISOR \
 							LOCALIZATION \
 							SURFACE_PATCHES \
 							PORT_NAME

@@ -35,6 +35,11 @@ class SupervisorConfig:
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
     min_seg_speed: float = 0.05     # [m/s] floor for v_seg (turn-in-place segments)
+    # Adapter-side (runtime corrector): the PMP re-join answering a trigger.
+    rejoin: bool = True             # False = trigger is logged only (and walls still stop)
+    rejoin_max_age: float = 0.5     # [s] discard a re-join that arrives later than this
+    rejoin_max_nodes: int = 3000    # solve_bvp mesh cap; bounds the 1-6 s failure case
+    rejoin_t_min: float = 3.0       # [s] T_w floor (Phase 0: 99% solved at >= 3 s)
 
 
 @dataclass
@@ -119,6 +124,31 @@ class SupervisorCore:
     @property
     def done(self) -> bool:
         return self.next_wp >= self.n_waypoints
+
+    def rebase(self, t: float) -> None:
+        """Start a fresh segment at the robot's current progress.
+
+        Called when a re-join overlay ends: the overlay's duration was set by
+        the re-join window, not by the plan's schedule, so charging it as lag
+        would re-trigger at once. ``prev_lag`` is kept, so the ratio rule still
+        compares against the last segment the robot drove on the plan.
+        """
+        self.t_seg_start = float(t)
+        self.k_seg_start = self.k_star
+        self.latched = False
+
+    def rejoin_target(self, k_now: int, dt: float, t_min: float) -> int:
+        """Plan index a re-join should land on (plan decision Q4).
+
+        Point N+1 is the next waypoint after the robot's progress. When it is
+        closer than ``t_min`` of plan time, the target moves on to the next
+        waypoint, and past the last one it is the plan's final sample.
+        """
+        need = k_now + int(math.ceil(t_min / dt - 1e-9))
+        for w in self.wp_index:
+            if w > k_now and w >= need:
+                return w
+        return len(self.poses) - 1
 
     # ---- update -------------------------------------------------------
     def _progress(self, x: float, y: float) -> int:

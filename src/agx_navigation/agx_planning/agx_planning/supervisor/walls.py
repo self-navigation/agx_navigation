@@ -62,6 +62,17 @@ class SignedWallDistance:
         return cls.from_wall_mask(img == 0, meta["resolution"], meta["origin"][0],
                                   meta["origin"][1])
 
+    @classmethod
+    def from_occupancy(cls, data, width: int, height: int, resolution: float,
+                       origin_x: float, origin_y: float) -> "SignedWallDistance":
+        """From an OccupancyGrid's fields (row-major, row 0 at origin y).
+
+        Occupied (>= 50) counts as wall, unknown (-1) as free, matching the
+        baked-PNG convention above. Assumes an unrotated map origin.
+        """
+        grid = np.asarray(data, dtype=np.int16).reshape(height, width)
+        return cls.from_wall_mask(grid >= 50, resolution, origin_x, origin_y)
+
     def point_clearance(self, x: float, y: float) -> float:
         col = int(np.clip((x - self.origin_x) / self.resolution, 0, self.dist.shape[1] - 1))
         row = int(np.clip((y - self.origin_y) / self.resolution, 0, self.dist.shape[0] - 1))
@@ -75,3 +86,19 @@ class SignedWallDistance:
         col = np.clip(((qx - self.origin_x) / self.resolution).astype(int), 0, self.dist.shape[1] - 1)
         row = np.clip(((qy - self.origin_y) / self.resolution).astype(int), 0, self.dist.shape[0] - 1)
         return float(self.dist[row, col].min())
+
+
+def rejoin_clear(samples, swd: "SignedWallDistance", c_start: float,
+                 stop_dist: float, margin: float = 0.01) -> bool:
+    """Whether a re-join may be spliced in, by hull clearance along it.
+
+    The re-join's effort cost knows nothing about walls (figures/2026-10-07/
+    s5_rejoin), so the supervisor gates it here. Every sample must keep at
+    least ``min(stop_dist, c_start) - margin``: a re-join may not take the
+    body closer to a wall than the stop distance, or than it already is when
+    it starts inside that distance (a robot stopped at a wall must be allowed
+    to back away). The last sample must be clear of the stop distance.
+    """
+    floor = min(stop_dist, c_start) - margin
+    cs = [swd.body_clearance(*s.pose) for s in samples]
+    return bool(cs) and min(cs) >= floor and cs[-1] > stop_dist
