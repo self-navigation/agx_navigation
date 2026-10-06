@@ -1,0 +1,31 @@
+# C1 (#47, #40): every arm with and without the supervisory layer, same library
+# plan (planner held fixed, as job 221), phantom walls, truth AND amcl.
+# Name: <arm letter><T|A truth/amcl><S|N supervisor on/off>.
+# Graceful kept (user, 2026-10-06): job 221 stalls ~24% along the plan against a
+# wall (patience exceeded); suspected collision-check refusal on wall-hugging plans.
+# GMPC "off" = --gmpc-nav2: same nav2 bring-up minus the layer (like for like with S).
+# NOT the job 221 GMPC stack (nav_mode none).
+LTN --arm ours-lib      --localization truth --phantom-walls
+LTS --arm ours-lib      --localization truth --phantom-walls --supervisor
+MTN --arm pmp-mppi      --localization truth --phantom-walls --nav2-profile compare_skid
+MTS --arm pmp-mppi      --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+RTN --arm pmp-rpp       --localization truth --phantom-walls --nav2-profile compare_skid
+RTS --arm pmp-rpp       --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+VTN --arm pmp-vpp       --localization truth --phantom-walls --nav2-profile compare_skid
+VTS --arm pmp-vpp       --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+GTN --arm pmp-graceful  --localization truth --phantom-walls --nav2-profile compare_skid
+GTS --arm pmp-graceful  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+KTN --arm pmp-gmpc      --localization truth --phantom-walls --nav2-profile compare_skid --gmpc-nav2
+KTS --arm pmp-gmpc      --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+LAN --arm ours-lib      --localization amcl  --phantom-walls
+LAS --arm ours-lib      --localization amcl  --phantom-walls --supervisor
+MAN --arm pmp-mppi      --localization amcl  --phantom-walls --nav2-profile compare_skid
+MAS --arm pmp-mppi      --localization amcl  --phantom-walls --nav2-profile compare_skid --supervisor
+RAN --arm pmp-rpp       --localization amcl  --phantom-walls --nav2-profile compare_skid
+RAS --arm pmp-rpp       --localization amcl  --phantom-walls --nav2-profile compare_skid --supervisor
+VAN --arm pmp-vpp       --localization amcl  --phantom-walls --nav2-profile compare_skid
+VAS --arm pmp-vpp       --localization amcl  --phantom-walls --nav2-profile compare_skid --supervisor
+GAN --arm pmp-graceful  --localization amcl  --phantom-walls --nav2-profile compare_skid
+GAS --arm pmp-graceful  --localization amcl  --phantom-walls --nav2-profile compare_skid --supervisor
+KAN --arm pmp-gmpc      --localization amcl  --phantom-walls --nav2-profile compare_skid --gmpc-nav2
+KAS --arm pmp-gmpc      --localization amcl  --phantom-walls --nav2-profile compare_skid --supervisor
