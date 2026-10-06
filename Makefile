@@ -161,13 +161,19 @@ can-bus:
 		fi \
 	fi
 
+# Entry launch file. Generic hook: a package may wrap main.launch.py in its own
+# launch file (same PARAMS, same env) without main gaining a branch for it --
+# e.g. agx_baselines/launch/gmpc.launch.py for a comparison arm.
+LAUNCH_PKG ?= agx_bringup
+LAUNCH_FILE ?= main.launch.py
+
 run: build can-bus
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(WORKER_ENV) \
 		$(GPU_PREFIX) \
 		ros2 launch $(DEBUG_INFIX) \
-		agx_bringup main.launch.py \
+		$(LAUNCH_PKG) $(LAUNCH_FILE) \
 		$(PARAMS) $(EXTRA_PARAMS)
 
 # Convenience entry points wrapping `run` with the right nav/planner mode.
@@ -230,6 +236,7 @@ FIXTURE_EXTRA_PARAMS ?=
 
 fixture:
 	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) \
+		LAUNCH_PKG=$(LAUNCH_PKG) LAUNCH_FILE=$(LAUNCH_FILE) \
 		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
 		EXTRA_PARAMS="sim_sensors:=$(FIXTURE_SENSORS) sim_cameras:=false $(FIXTURE_EXTRA_PARAMS)"
