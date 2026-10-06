@@ -43,7 +43,6 @@ setup(
                 "vector_field",
                 "pmp_planner",
                 "runtime_corrector",
-                "calibrator",
                 "slip_ident",
                 "run_recorder",
             ]

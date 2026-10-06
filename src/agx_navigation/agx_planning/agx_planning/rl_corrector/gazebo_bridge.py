@@ -1103,7 +1103,7 @@ class GazeboBridge:
         # Do NOT re-issue on a missing name. With the world paused the create
         # blocks for the whole ack timeout and returns FALSE, yet the entity is
         # created anyway and shows up some ticks later (measured 2026-08-02,
-        # tuning/spawn_diag.py). So a "missing" patch is almost always a patch
+        # tuning/archive/spawn_diag.py). So a "missing" patch is almost always a patch
         # in flight -- and re-creating it then genuinely fails, because by that
         # point the name exists. The retry that seemed obvious made it worse.
         #

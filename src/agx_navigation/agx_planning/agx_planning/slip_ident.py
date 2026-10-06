@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Identify skid-steer slip (chi) and the command gains, in sim OR on the robot.
 
-Companion to calibrator.py, which identifies the chassis step response
+Companion to calibrator.py (archived 2026-10-06 in archive/), which identifies the chassis step response
 (chassis_gain_*, chassis_tau_*, the BVP bounds) by comparing COMMANDS against
 /odom. That comparison has a blind spot this script exists to cover.
 

@@ -1,0 +1,15 @@
+# Archived Justfile recipes (2026-10-06). NOT loaded by `just`; kept for
+# reference only. They use variables (host, remote, _ssh, ssh_opts, ...)
+# defined in Justfile, and tools that now live under tools/archive/ or the
+# */archive/ directories in agx_planning. Copy a recipe back into Justfile
+# (and fix its tool path) to revive it.
+
+# Interactive single-step console against the running sim: step one physics tick
+# at a time and watch WHEN entity changes actually commit. Built to chase the
+# residual patch nondeterminism that batch rollouts cannot show. Attach a GUI
+# with `just gui` and watch on Moonlight while driving this.
+sim-console traj='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz': sync
+    {{_ssh}} -t 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
+        && source install/setup.bash \
+        && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
+        python3 src/agx_navigation/agx_planning/agx_planning/tuning/archive/sim_console.py --trajectory {{traj}}'

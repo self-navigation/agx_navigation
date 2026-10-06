@@ -211,7 +211,7 @@ a subsample stride and a cycle length are not independent, and a trace file is a
 parses, scores, and looks like a measurement. (`variance_probe` was never
 affected — it traces every rollout.)
 
-`tuning/trace_dump.py` prints selected rows of one trace, for when a run is bad
+`tuning/archive/trace_dump.py` (archived 2026-10-06; run it by path) prints selected rows of one trace, for when a run is bad
 in isolation rather than merely different from another.
 
 ## The patch friction values are still unvalidated against reality
@@ -305,7 +305,7 @@ wheel fix. The spread across radii improved (0.0299 → 0.0072), so a single
 
 **Yes, chi is measurable by driving the real robot, and this is the intended use
 of `slip_ident`.** It references the **gyro**, which owes nothing to the wheels,
-so nothing about the method is sim-specific. `calibrator.py` cannot substitute:
+so nothing about the method is sim-specific. `calibrator.py` (archived) cannot substitute:
 it compares commands against `/odom`, and both sides share the missing slip term.
 
 Two things to get right on hardware:
