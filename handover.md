@@ -6,6 +6,15 @@ claims and is the reference. Open work is tracked in Forgejo issues (list them
 with the `fj` tools). Older versions of this file are in git history
 (`git log -p handover.md`); nothing in them is needed to continue.
 
+## 0a. Session 2026-10-06 (night, 03:40- MSK)
+
+- **RUNNING: job 220 part 1** (full stacks, amcl, solid walls; #10/#33 Type B). Frozen checkout `~/agx_navigation_job220`; workers 1-8; log `/tmp/job220.log`; out `~/run_data/2026-10-06_job220_fullstack/` (README there). Arms: O ours, M2 Smac2D+MPPI, MH Hybrid-A*+MPPI, R2 Smac2D+RPP; every Nav2 arm uses `compare_skid`. Started 04:14 MSK, ETA about 05:40. Read with `tools/summarize_arms.py all_rows.jsonl O`. Also report on the common set, since ours planner-fails about 5/40 (#39).
+- **Job 210 compared different plans:** Nav2 arms followed the LIBRARY plan, ours a LIVE re-solve with stack settings. It is not a controllers-only comparison. An agent is adding `ours-lib` (our corrector on the library plan) for job 220 part 2 (controllers only, library plan, truth + amcl: ours-lib, pmp-mppi, pmp-rpp, pmp-graceful, pmp-vpp, maybe pmp-gmpc).
+- **Live planner failures (#39):** stack cost weights (L_brake/w_v_barrier/w_v_terminal) make the TPBVP too stiff for cold-start solve_bvp; the library used defaults. Proposed fix: continuation on those weights.
+- **Comparison configs moved to the new package `agx_baselines`** (18be0b4). nav2.launch.py discovers controllers from its files; `nav2_profile` takes a comma list. Agents in worktrees are adding Graceful/Vector Pursuit (Opus), GMPC (Fable) there; each uses its own VM checkout and worker 9 only.
+- Job 200 superseded (MPPI stall); data moved to run_data. typeA checkout deleted. VM pip/uv caches cleared (disk was 93%; ollama-models is 28G and not ours).
+- Analysis scripts committed: `tools/believed_gain.py`, `tools/summarize_arms.py`.
+
 ## 0. Session 2026-10-05: jobs 170/180 read, #34 mechanism found
 
 Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/loc_analysis/`. Run them on the VM from the repo root; the args are cfg dirs under `~/compare_*`.
