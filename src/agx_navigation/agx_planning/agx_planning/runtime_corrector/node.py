@@ -336,8 +336,6 @@ class WheelCorrectorNode(Node):
         """Run one (left, right) wheel-pair command through _correct() and
         publish the resulting four-wheel setpoint."""
         wheels = self._correct(left, right, planned_pose, actual_pose, costates)
-        if self._sup_scale != 1.0:
-            wheels = [w * self._sup_scale for w in wheels]
         msg = Float64MultiArray()
         msg.data = [float(w) for w in wheels]
         self._pub.publish(msg)
@@ -498,7 +496,7 @@ class WheelCorrectorNode(Node):
         self._goal_xyth = (pos.x, pos.y, yaw)
         self._sup_full_replans_goal = 0
         if self._sup is not None:
-            self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:]}
+            self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
             self._sup.replans = self._sup.stops = 0
         self.get_logger().info(
             "New goal: (%.2f, %.2f), yaw=%.2f" % (pos.x, pos.y, yaw)
@@ -687,7 +685,10 @@ class WheelCorrectorNode(Node):
             actual_xy = (pose[0], pose[1])
 
         had_overlay = self._buf.overlay_active
-        sample = self._buf.advance(actual_xy)
+        # The supervisor's wall slow-down dilates the plan clock by the same
+        # factor it scales the commands by (TrajectoryBuffer.advance).
+        rate = self._sup_scale if self._sup is not None else 1.0
+        sample = self._buf.advance(actual_xy, rate=rate)
         if self._sup is not None and had_overlay and not self._buf.overlay_active:
             self._sup.rebase(self._now_s())
         if sample is None:
@@ -704,7 +705,8 @@ class WheelCorrectorNode(Node):
             return
 
         self._ref_pose = sample.pose
-        self._emit(sample.left, sample.right, sample.pose, pose, sample.costates)
+        s = self._sup_scale
+        self._emit(sample.left * s, sample.right * s, sample.pose, pose, sample.costates)
 
         # Last sample of the last chunk just went out and the result is in.
         if self._buf.is_done():
@@ -756,8 +758,10 @@ class WheelCorrectorNode(Node):
 
         * waypoint reached -> the time cursor is re-timed to the robot's
           progress index (TrajectoryBuffer.retime);
-        * hull clearance under ``slow_dist`` -> every command is scaled down;
-          at ``stop_dist`` the wheels are held at zero and the cursor waits;
+        * hull clearance under the core's slow threshold (relative to the
+          plan's own clearance, SupervisorCore docstring) -> commands AND the
+          plan clock are scaled down together; at the stop threshold the
+          wheels are held at zero and the cursor waits;
         * trigger (lag doubled and over the robot radius, or a wall) -> a PMP
           re-join to the next waypoint is solved OFF the executor thread
           (a failed solve takes 1-6 s), gated by wall clearance along it
@@ -792,7 +796,7 @@ class WheelCorrectorNode(Node):
         self._rejoin_meta: dict = {}
         self._overlay_c0 = math.inf
         self._sup_full_replans_goal = 0
-        self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:]}
+        self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -809,7 +813,7 @@ class WheelCorrectorNode(Node):
                 c.trigger_ratio, c.rejoin))
 
     _SUP_EXTRA = ("overlay", "pending", "rejoin_ok", "rejoin_fail", "rejoin_blocked",
-                  "rejoin_stale", "full_replans")
+                  "rejoin_stale", "full_replans", "plan_clearance")
     _MAX_FULL_REPLANS = 3
 
     def _now_s(self) -> float:
@@ -842,8 +846,20 @@ class WheelCorrectorNode(Node):
             return
         dt = self._buf.active_dt
         poses = self._buf.plan_poses()
-        self._sup.set_plan(poses, [i * dt for i in range(len(poses))], self._now_s())
+        # Plan clock for the core: advances by dt * speed scale per tick, the
+        # same dilation the buffer's cursor gets, so a wall slow-down is not
+        # charged as lag.
+        self._sup_t = 0.0
+        self._sup_last_now = self._now_s()
+        c_plan = None
+        if self._sup_swd is not None:
+            c_plan = [self._sup_swd.body_clearance(*p) for p in poses]
+        self._sup.set_plan(poses, [i * dt for i in range(len(poses))], 0.0,
+                           clearance=c_plan)
         self._sup_scale = 1.0
+        if c_plan is None:
+            self.get_logger().warn("supervisor: no /map yet; ABSOLUTE wall "
+                                   "thresholds for this plan")
         self._rejoin_future = None
         self._rejoin_solver = None
         if self._sup_cfg.rejoin:
@@ -870,12 +886,15 @@ class WheelCorrectorNode(Node):
             return False
         clearance = (self._sup_swd.body_clearance(*pose)
                      if self._sup_swd is not None else math.inf)
-        d = self._sup.update(pose[0], pose[1], pose[2], now, clearance=clearance)
+        # Dilated plan clock (see _sup_start), using last tick's scale.
+        self._sup_t += (now - self._sup_last_now) * self._sup_scale
+        self._sup_last_now = now
+        d = self._sup.update(pose[0], pose[1], pose[2], self._sup_t, clearance=clearance)
         overlay = self._buf.overlay_active
         if d.retime_index is not None and self._playback_index == "time":
             self._buf.retime(d.retime_index)
         stop = d.stop
-        # A re-join that passed the wall gate may start inside stop_dist (it
+        # A re-join that passed the wall gate may start inside stop_at (it
         # was solved from a robot stopped at a wall). Let it back away; stop
         # only if it takes the body closer than where it started.
         if stop and overlay and clearance >= self._overlay_c0 - 0.02:
@@ -909,8 +928,8 @@ class WheelCorrectorNode(Node):
         x0 = np.array([pose[0], pose[1], pose[2], wl, wr])
         tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt,
                                       self._sup_cfg.rejoin_t_min)
-        self._rejoin_meta = dict(t0=now, tgt=tgt, c0=clearance, reason=d.reason,
-                                 held=bool(d.stop))
+        self._rejoin_meta = dict(t0=now, tgt=tgt, k0=d.k_star, c0=clearance,
+                                 reason=d.reason, held=bool(d.stop))
         self._rejoin_future = self._rejoin_pool.submit(
             self._rejoin_solver.solve, x0, tgt, d.k_star)
 
@@ -937,8 +956,13 @@ class WheelCorrectorNode(Node):
             self._sup_counts["rejoin_stale"] += 1
             self._sup.latched = False  # let the next tick ask again
             return
+        # Per-sample stop thresholds: the plan-relative stop_at at the plan
+        # index each re-join sample stands in for (linear over k0..tgt).
+        n = len(samples)
+        ks = np.linspace(meta["k0"], meta["tgt"], n).round().astype(int)
+        stops = [self._sup.wall_thresholds(int(k))[1] for k in ks]
         if self._sup_swd is not None and not rejoin_clear(
-                samples, self._sup_swd, meta["c0"], self._sup_cfg.stop_dist):
+                samples, self._sup_swd, meta["c0"], stops):
             self._sup_counts["rejoin_blocked"] += 1
             self.get_logger().warn("re-join blocked by wall clearance")
             if wall:
@@ -992,7 +1016,9 @@ class WheelCorrectorNode(Node):
     def _publish_sup_state(self, d) -> None:
         msg = Float64MultiArray()
         extra = [float(self._buf.overlay_active), float(self._rejoin_future is not None)]
-        extra += [float(self._sup_counts[k]) for k in self._SUP_EXTRA[2:]]
+        extra += [float(self._sup_counts[k]) for k in self._SUP_EXTRA[2:-1]]
+        extra.append(float(self._sup.c_plan[min(d.k_star, len(self._sup.c_plan) - 1)])
+                     if self._sup.c_plan is not None else math.inf)
         msg.data = d.as_array() + extra
         self._sup_pub.publish(msg)
 

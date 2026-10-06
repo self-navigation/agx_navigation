@@ -89,16 +89,21 @@ class SignedWallDistance:
 
 
 def rejoin_clear(samples, swd: "SignedWallDistance", c_start: float,
-                 stop_dist: float, margin: float = 0.01) -> bool:
+                 stop_dist, margin: float = 0.01) -> bool:
     """Whether a re-join may be spliced in, by hull clearance along it.
 
     The re-join's effort cost knows nothing about walls (figures/2026-10-07/
-    s5_rejoin), so the supervisor gates it here. Every sample must keep at
-    least ``min(stop_dist, c_start) - margin``: a re-join may not take the
-    body closer to a wall than the stop distance, or than it already is when
-    it starts inside that distance (a robot stopped at a wall must be allowed
-    to back away). The last sample must be clear of the stop distance.
+    s5_rejoin), so the supervisor gates it here. ``stop_dist`` is a scalar or
+    one stop threshold per sample (the core's plan-relative ``stop_at`` at the
+    plan index nearest each sample). Every sample must keep at least
+    ``min(stop_i, c_start) - margin``: a re-join may not take the body inside
+    the stop threshold, or closer than it already is when it starts inside it
+    (a robot stopped at a wall must be allowed to back away). The last sample
+    must be clear of its stop threshold.
     """
-    floor = min(stop_dist, c_start) - margin
-    cs = [swd.body_clearance(*s.pose) for s in samples]
-    return bool(cs) and min(cs) >= floor and cs[-1] > stop_dist
+    n = len(samples)
+    if not n:
+        return False
+    stops = np.broadcast_to(np.asarray(stop_dist, dtype=float), (n,))
+    cs = np.array([swd.body_clearance(*s.pose) for s in samples])
+    return bool(np.all(cs >= np.minimum(stops, c_start) - margin) and cs[-1] > stops[-1])

@@ -9,10 +9,13 @@ so a time-indexed follower can jump its clock. A local re-plan is triggered,
 once per segment, when lag >= trigger_ratio * prev_lag and lag * v_seg >
 reach_radius.
 
-Walls: speed is scaled by clip((d - stop_dist) / (slow_dist - stop_dist), 0, 1)
-on the signed hull clearance d (walls.py). At stop_dist the robot stops and a
-re-plan is requested ("wall"); inside the slow band a re-plan is requested once
-per segment ("near_wall").
+Walls: speed is scaled by clip((d - stop_at) / (slow_at - stop_at), 0, 1) on
+the signed hull clearance d (walls.py). At stop_at the robot stops and a
+re-plan is requested ("wall"); inside the slow band a re-plan is requested
+once per segment ("near_wall"). When set_plan gets the plan's own clearance
+c_plan, the thresholds follow it:
+    slow_at = max(min(slow_dist, c_plan - slow_margin), stop_at + min_band)
+    stop_at = max(contact_dist, min(stop_dist, c_plan - stop_margin))
 """
 
 from __future__ import annotations
@@ -29,8 +32,12 @@ class SupervisorConfig:
     enabled: bool = False
     waypoint_frac: float = 0.05     # waypoint every 5% of route arc length
     reach_radius: float = 0.35      # [m] robot radius; also the trigger's distance floor
-    slow_dist: float = 0.5          # [m] hull clearance where slowing starts
-    stop_dist: float = 0.15         # [m] hull clearance where the robot stops
+    slow_dist: float = 0.5          # [m] hull clearance where slowing starts (cap)
+    stop_dist: float = 0.15         # [m] hull clearance where the robot stops (cap)
+    slow_margin: float = 0.05       # [m] relative: slow when this much closer than the plan
+    stop_margin: float = 0.15       # [m] relative: stop when this much closer than the plan
+    contact_dist: float = 0.03      # [m] always stop at or below this clearance
+    min_band: float = 0.05          # [m] smallest slow band above stop_at
     trigger_ratio: float = 2.0      # lag must at least double the previous segment's
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
@@ -75,12 +82,15 @@ class SupervisorCore:
         self._stopped = False
 
     # ---- plan ---------------------------------------------------------
-    def set_plan(self, poses, times=None, t_now: float = 0.0) -> None:
+    def set_plan(self, poses, times=None, t_now: float = 0.0,
+                 clearance=None) -> None:
         """Install a plan: (N,3) poses (x, y, yaw), optional (N,) times [s].
 
         Without times the plan is an arc-length path (as Nav2 FollowPath
         receives) and ``cruise_speed`` supplies the time law. Resets all
-        per-plan state; call it again after every re-plan.
+        per-plan state; call it again after every re-plan. ``clearance`` is
+        the plan's own (N,) hull clearance; given, the wall thresholds are
+        relative to it (module docstring).
         """
         p = np.asarray(poses, dtype=float).reshape(-1, 3)
         if len(p) == 0:
@@ -95,6 +105,10 @@ class SupervisorCore:
                 raise ValueError("times and poses differ in length")
             self.t_plan = t - t[0]
         self.poses = p
+        self.c_plan = (None if clearance is None
+                       else np.asarray(clearance, dtype=float).reshape(-1))
+        if self.c_plan is not None and len(self.c_plan) != len(p):
+            raise ValueError("clearance and poses differ in length")
         total = self.s[-1]
         n = max(1, int(round(1.0 / self.cfg.waypoint_frac)))
         if total <= 0:
@@ -151,6 +165,16 @@ class SupervisorCore:
         return len(self.poses) - 1
 
     # ---- update -------------------------------------------------------
+    def wall_thresholds(self, k: int):
+        """(slow_at, stop_at) at plan index k; see the module docstring."""
+        cfg = self.cfg
+        if self.c_plan is None:
+            return cfg.slow_dist, cfg.stop_dist
+        cp = float(self.c_plan[min(k, len(self.c_plan) - 1)])
+        stop_at = max(cfg.contact_dist, min(cfg.stop_dist, cp - cfg.stop_margin))
+        slow_at = max(min(cfg.slow_dist, cp - cfg.slow_margin), stop_at + cfg.min_band)
+        return slow_at, stop_at
+
     def _progress(self, x: float, y: float) -> int:
         lo = self.k_star
         hi = min(len(self.poses), lo + self.cfg.window + 1)
@@ -200,9 +224,10 @@ class SupervisorCore:
         lag_m = max(lag, 0.0) * self._seg_speed()
 
         # Walls.
-        span = max(cfg.slow_dist - cfg.stop_dist, 1e-9)
-        scale = float(np.clip((clearance - cfg.stop_dist) / span, 0.0, 1.0)) if math.isfinite(clearance) else 1.0
-        stop = math.isfinite(clearance) and clearance <= cfg.stop_dist
+        slow_at, stop_at = self.wall_thresholds(self.k_star)
+        span = max(slow_at - stop_at, 1e-9)
+        scale = float(np.clip((clearance - stop_at) / span, 0.0, 1.0)) if math.isfinite(clearance) else 1.0
+        stop = math.isfinite(clearance) and clearance <= stop_at
 
         trigger, reason = False, ""
         if stop:
