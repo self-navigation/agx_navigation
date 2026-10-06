@@ -25,10 +25,8 @@ def generate_launch_description():
     pmp_mode = LaunchConfiguration("pmp_mode")
     sim = LaunchConfiguration("sim")
 
-    # Values are your previously calibrated/tuned numbers where the field
-    # carried over; the PlannerConfig default is noted in-line where they
-    # differ so the reconciliation is auditable. New wheel-space fields use
-    # config defaults except where your calibration implies otherwise.
+    # Values are the calibrated/tuned numbers; the PlannerConfig default is
+    # noted in-line where they differ so the reconciliation is auditable.
     pmp_planner = Node(
         package="agx_planning",
         executable="pmp_planner",
@@ -39,17 +37,14 @@ def generate_launch_description():
                 # --- Node-level ---
                 "mode": pmp_mode,
                 "use_sim_time": sim,
-                "diag_log_path": "/tmp/pmp.csv",
+                "diag_log_path": "",
                 # Route online output through wheel_corrector instead of
                 # straight to /wheel_velocity_controller/commands.
                 "wheel_cmd_topic": "/pmp_planner/wheel_cmd",
-                # Not present in the PlannerConfig you sent; if your NodeConfig
-                # still declares it this keeps prior behaviour, else ignored.
-                "enable_confidence_weighting": False,
                 # Online-mode BVP/publish rate [Hz].
                 "control_rate": 10.0,
 
-                # --- Horizon / collocation (your tuned values) ---
+                # --- Horizon / collocation (tuned values) ---
                 "T_horizon": 2.5,        # default 2.5
                 "N": 40,                 # default 21
                 "bvp_max_nodes": 3000,   # default 2000
@@ -59,7 +54,7 @@ def generate_launch_description():
                 "v_max": 0.448,          # default 0.5
                 "omega_max": 1.049,      # default 1.5
 
-                # --- Running-cost weights (your tuned values) ---
+                # --- Running-cost weights (tuned values) ---
                 "w_h": 10.0,             # default 5.0
                 "w_v": 3.0,              # default 0.5
                 "w_brake": 200.0,        # was misspelled w_break before; default 200

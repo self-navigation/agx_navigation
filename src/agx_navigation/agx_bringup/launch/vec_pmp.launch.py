@@ -48,11 +48,6 @@ def generate_launch_description():
             description="Whether to use a planner on a remote server.",
         ),
         DeclareLaunchArgument(
-            "do_corrections",
-            default_value="true",
-            description="Whether to do runtime corrections of the trajectory.",
-        ),
-        DeclareLaunchArgument(
             "corrector",
             default_value="identity",
             description=(
@@ -92,7 +87,6 @@ def generate_launch_description():
     pmp_mode = LaunchConfiguration("pmp_mode")
     use_server = LaunchConfiguration("use_server")
     sim = LaunchConfiguration("sim")
-    do_corrections = LaunchConfiguration("do_corrections")
     corrector = LaunchConfiguration("corrector")
     playback_index = LaunchConfiguration("playback_index")
 
