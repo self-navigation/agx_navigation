@@ -1,0 +1,6 @@
+# Job 220 part 1 (#10, #33 Type B): full stacks, amcl, solid walls (system claim).
+# Every Nav2 arm uses compare_skid (MPPI fix from job 210; RPP: = compare_static).
+O  --localization amcl
+M2 --arm nav2-mppi --localization amcl --nav2-profile compare_skid
+MH --arm nav2-mppi --localization amcl --nav2-profile compare_skid,compare_hybrid
+R2 --arm nav2-rpp --localization amcl --nav2-profile compare_skid
