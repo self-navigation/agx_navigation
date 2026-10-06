@@ -673,6 +673,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
+        *(["--supervisor"] if args.supervisor else []),
         *(["--no-planner"] if arm == "ours-lib" else []),
         *(["--no-ekf-wheel-yaw"] if args.no_ekf_wheel_yaw else []),
         *(["--lidar-odom"] if args.lidar_odom else []),
@@ -810,6 +811,7 @@ def run_one(args, plan_path: str) -> dict:
         "wheel_bias": args.wheel_bias or None,
         "localization": args.localization,
         "phantom_walls": args.phantom_walls,
+        "supervisor": args.supervisor,
         "ekf_wheel_yaw": not args.no_ekf_wheel_yaw,
         "lidar_odom": args.lidar_odom,
         "amcl_params": args.amcl_params,
@@ -1095,6 +1097,8 @@ def main() -> int:
                     help="sim-only actuator fault for the vec-pmp arm (#27): "
                          "'fl,rl,fr,rr' command scale, e.g. 0.9,0.9,0.9,0.9")
     ap.add_argument("--localization", default="amcl")
+    ap.add_argument("--supervisor", action="store_true",
+                    help="enable the supervisory layer (#41; vec-pmp arms only for now)")
     ap.add_argument("--phantom-walls", action="store_true",
                     help="walls visible to the lidar but without collision "
                          "(#34); contact is then scored by wall_* row fields")

@@ -14,6 +14,7 @@
 #                         [--nav-mode vec-pmp|nav2|gmpc] [--nav2-controller mppi|dwb|rpp]
 #                         [--nav2-profile compare_static]
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
+#                         [--supervisor]
 #
 # Exit 0 means the stack is up AND every required readiness check passed, so a
 # caller may go straight to publishing a goal. Exit 1 means every attempt
@@ -81,6 +82,7 @@ while [ $# -gt 0 ]; do
         --lidar-odom) LIDAR_ODOM=true; shift ;;
         --no-planner) NO_PLANNER=true; shift ;;
         --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
+        --supervisor)     SUPERVISOR_=true; shift ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -106,6 +108,8 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 # for compare_run's ours-lib arm.
 [ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA use_server:=true"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
+# Supervisory layer (#41). vec-pmp only for now; S2 (#42) adds the other stacks.
+[ -n "${SUPERVISOR_:-}" ] && EXTRA="$EXTRA supervisor:=true"
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must
 # be OFF to keep one plant per run); true is the launch default and is simply
