@@ -14,6 +14,8 @@ Public API
   field_result_to_grid -- build a VectorFieldGrid directly from a result,
                           bypassing the Float32MultiArray round-trip; use
                           this when the generator and planner share a process
+  local_half_width    -- passage half-width per cell (largest wall-free disk)
+  normalized_clearance -- EDT / min(half-width, cap); drives cfg.centring
 
 Internal helpers (not part of the public API):
   build_speed_field, solve_eikonal, field_from_T, _gaussian_with_nan
@@ -44,6 +46,30 @@ class VectorFieldConfig:
     speed_profile: str = "linear"
     # Decay rate for the exponential profile only; ignored otherwise.
     speed_decay_rate: float = 2.5
+
+    # Doorway-preserving centring (#48). Default OFF, so existing fields and
+    # plans are unchanged. When on, the profile above is driven by the
+    # NORMALISED clearance n = EDT / min(half_width, centring_cap) instead
+    # of EDT / inflation_radius, where half_width is the radius of the
+    # largest wall-free disk containing the cell (see `local_half_width`).
+    # n = 1 on the centreline of ANY passage, so a doorway centre is as fast
+    # as a corridor centre and no doorway closes, while every passage still
+    # pulls the path to its middle. inflation_radius is unused when on.
+    # Measured 2026-10-07 on the broad 40 (figures/2026-10-07/p48_clearance):
+    # with speed_profile="exponential" use speed_decay_rate=1.5 -- same solve
+    # rate as the stack (34/40), hull time under 0.15 m 4.8% -> 0.4%, no
+    # overlaps. The default 2.5 centres harder but loses 7 solves.
+    # centring_cap [m]: spaces wider than 2 * cap are treated as 2 * cap wide,
+    #    so open rooms push the path ~cap off a wall instead of to the room's
+    #    middle. Plays the role inflation_radius plays without centring.
+    # centring_smooth [m]: NaN-aware Gaussian blur of n over free cells. The
+    #    half-width is piecewise constant (it jumps where a corridor opens
+    #    into a room), and a step in v puts a kink in grad T that the BVP
+    #    meshes to exhaustion. 0 disables. Measured: smoothing LOSES (it
+    #    lifts n next to walls, and did not recover solves); leave at 0.
+    centring: bool = False
+    centring_cap: float = 0.8  # [m]
+    centring_smooth: float = 0.0  # [m]
 
     # Smooth T before differentiating. This regularises FMM ridges, where
     # the central-difference gradient otherwise averages two opposing sides
@@ -221,22 +247,83 @@ def grid_to_world(
     )
 
 
+def local_half_width(
+    edt_free: np.ndarray,
+    resolution: float,
+    cap: float,
+) -> np.ndarray:
+    """Local passage half-width [m], capped at ``cap`` (#48).
+
+    The radius of the largest wall-free disk that contains the cell (the
+    "local thickness"). In a corridor or a doorway this is half its width at
+    every cell across it; next to a wall of a wide room it is >= cap. A disk
+    is wall-free by construction, so the measure never leaks across a wall
+    (a nearest-medial-axis lookup does, into the unknown interior of a thin
+    baked wall). Computed level by level: at radius r, the disks of every
+    centre with EDT >= r cover the cells within r of such a centre. Cells
+    in walls get 0.
+    """
+    free = edt_free > 0.0
+    hw = np.where(free, np.minimum(edt_free, cap), 0.0)
+    n_levels = int(np.floor(cap / resolution + 1e-9))
+    for k in range(1, n_levels + 1):
+        r = k * resolution
+        centres = edt_free >= r - 1e-9
+        if not centres.any():
+            break
+        covered = free & (distance_transform_edt(~centres) * resolution <= r + 1e-9)
+        hw[covered] = np.maximum(hw[covered], r)
+    return hw
+
+
+def normalized_clearance(
+    edt_free: np.ndarray,
+    half_width: np.ndarray,
+    cap: float,
+) -> np.ndarray:
+    """EDT / min(half_width, cap), clipped to [0, 1] (#48).
+
+    1 on the centreline of any passage up to 2 * cap wide, and at >= cap
+    from a wall in wider spaces; 0 at a wall.
+    """
+    denom = np.minimum(half_width, cap)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        n = np.where(denom > 0.0, edt_free / denom, 0.0)
+    return np.clip(n, 0.0, 1.0)
+
+
 def build_speed_field(
     edt_free: np.ndarray,
     obstacle_mask: np.ndarray,
     cfg: VectorFieldConfig,
+    resolution: Optional[float] = None,
 ) -> np.ndarray:
-    """Map EDT distance to wave speed v(x) for the eikonal solve."""
+    """Map EDT distance to wave speed v(x) for the eikonal solve.
+
+    With cfg.centring the profile's argument is the normalised clearance
+    (needs ``resolution``); otherwise EDT / inflation_radius.
+    """
     R = cfg.inflation_radius
     v = np.full_like(edt_free, cfg.speed_v_max, dtype=np.float64)
-    if R <= 0.0:
-        return v
-
-    near = ~obstacle_mask & (edt_free < R)
+    if cfg.centring:
+        if resolution is None:
+            raise ValueError("centring needs the grid resolution")
+        hw = local_half_width(edt_free, resolution, cfg.centring_cap)
+        n_all = normalized_clearance(edt_free, hw, cfg.centring_cap)
+        if cfg.centring_smooth > 0.0:
+            n_all = _gaussian_with_nan(np.where(obstacle_mask, np.nan, n_all),
+                                       cfg.centring_smooth / resolution)
+            n_all = np.where(obstacle_mask, 0.0, np.clip(n_all, 0.0, 1.0))
+        near = ~obstacle_mask & (n_all < 1.0)
+        norm = n_all[near]
+    else:
+        if R <= 0.0:
+            return v
+        near = ~obstacle_mask & (edt_free < R)
+        norm = edt_free[near] / R  # 0 at wall, 1 at boundary
     if not near.any():
         return v
 
-    norm = edt_free[near] / R  # 0 at wall, 1 at boundary
     if cfg.speed_profile == "exponential":
         v[near] = np.clip(
             cfg.speed_v_max * np.exp(-cfg.speed_decay_rate * (1.0 - norm)),
@@ -442,7 +529,7 @@ def compute_field(
         )
 
     edt_free = distance_transform_edt(~obstacle_mask) * resolution
-    speed = build_speed_field(edt_free, obstacle_mask, cfg)
+    speed = build_speed_field(edt_free, obstacle_mask, cfg, resolution)
     tt = solve_eikonal(
         obstacle_mask,
         speed,
