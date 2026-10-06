@@ -325,8 +325,16 @@ def validate(plans_glob, verbose=True):
 # ------------------------------------------------------------------- main
 
 
-def solve(candidates_json, out_dir, occupancy_threshold=65, limit=0, verbose=True):
+def solve(candidates_json, out_dir, occupancy_threshold=65, limit=0, verbose=True,
+          stack_params=False, centring=False):
     """PMP-solve screened candidates and label the SOLVED plans.
+
+    Default: the recipe that built traj_data_v2 (dataclass defaults, linear
+    speed profile, unknown = obstacle). That is NOT what the live stack runs
+    (#39, #48): ``stack_params`` uses the stack's planner overrides and
+    vector_field launch params (bench_pmp_rollout.STACK_PLANNER_PARAMS,
+    exponential profile, unknown = free), and ``centring`` adds the
+    doorway-preserving centring of the FM2 speed profile (#48).
 
     The shape label comes from here, not from the screen: a cheap route predicts
     turning at corr ~+0.30 (see `screen_score`), so the only trustworthy shape is
@@ -341,7 +349,6 @@ def solve(candidates_json, out_dir, occupancy_threshold=65, limit=0, verbose=Tru
     from agx_planning.pmp_planner import PlannerConfig, PMPShootingSolver
     from agx_planning.pmp_planner.rollout import rollout_generator
     from agx_planning.utils import GeneratorReturnCatcher
-    from agx_planning.rl_corrector.generate_trajectories import _build_field
     from rudn_ordjo_building.map_publisher import load_occupancy_grid
 
     with open(candidates_json) as fh:
@@ -352,6 +359,37 @@ def solve(candidates_json, out_dir, occupancy_threshold=65, limit=0, verbose=Tru
 
     maps = {}
     cfg = PlannerConfig(mode="offline")
+    if stack_params or centring:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from bench_pmp_rollout import STACK_PLANNER_PARAMS
+        from agx_planning.vector_field import VectorFieldConfig, VectorFieldGrid, compute_field
+        if stack_params:
+            for k, v in STACK_PLANNER_PARAMS.items():
+                setattr(cfg, k, v)
+        # decay 1.5 with centring: same solve rate as the stack, measured
+        # 2026-10-07 (figures/2026-10-07/p48_clearance); 2.5 loses 7/40 solves.
+        fcfg = (VectorFieldConfig(speed_profile="exponential", inflation_radius=0.5,
+                                  centring=centring,
+                                  speed_decay_rate=1.5 if centring else 2.5)
+                if stack_params else VectorFieldConfig(centring=centring))
+
+        def _build_field(data, width, height, resolution, origin, start_xy, goal_xy,
+                         occupancy_threshold, planner_cfg):
+            arr = np.asarray(data, dtype=np.int8).reshape(height, width)
+            cell = lambda p: (int((p[0] - origin[0]) / resolution),  # noqa: E731
+                              int((p[1] - origin[1]) / resolution))
+            gc, sc = cell(goal_xy), cell(start_xy)
+            out = compute_field(arr, gc[0], gc[1], resolution, origin[0], origin[1], fcfg,
+                                sc[0], sc[1], occupancy_threshold, allow_unknown=stack_params)
+            if out is None:
+                return None
+            grid = VectorFieldGrid()
+            grid.update(out[0].travel_time, origin[0], origin[1], resolution,
+                        field_eps=planner_cfg.field_eps, wall_dist=out[0].wall_dist,
+                        wall_sigma=planner_cfg.fp_smooth_sigma)
+            return grid
+    else:
+        from agx_planning.rl_corrector.generate_trajectories import _build_field
     written, failed = 0, 0
     for idx, c in enumerate(cands):
         my = c["map_yaml"]
@@ -446,10 +484,16 @@ def main():
     ap.add_argument("--out-dir", default="traj_data_v2",
                     help="where --solve writes .npz plans")
     ap.add_argument("--limit", type=int, default=0, help="cap --solve at N")
+    ap.add_argument("--stack-params", action="store_true",
+                    help="--solve with the live stack's planner/field params, not the "
+                         "dataclass defaults traj_data_v2 was built with (#39, #48)")
+    ap.add_argument("--centring", action="store_true",
+                    help="--solve with the doorway-preserving FM2 centring (#48)")
     args = ap.parse_args()
 
     if args.solve:
-        solve(args.solve, args.out_dir, args.occupancy_threshold, args.limit)
+        solve(args.solve, args.out_dir, args.occupancy_threshold, args.limit,
+              stack_params=args.stack_params, centring=args.centring)
         return
 
     if args.validate:
