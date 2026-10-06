@@ -91,6 +91,17 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "plan_centring",
+            default_value="false",
+            description=(
+                "FM2 doorway-preserving centring (#48/#49): the speed profile "
+                "follows clearance / local passage half-width, so plans keep "
+                "to the middle of corridors without closing doors. true also "
+                "sets speed_decay_rate 1.5, the measured setting (field.py). "
+                "Untested in Gazebo as of 2026-10-06."
+            ),
+        ),
+        DeclareLaunchArgument(
             "wheel_bias",
             default_value="",
             description=(
@@ -121,6 +132,15 @@ def generate_launch_description():
                 "speed_profile": "exponential",
                 "inflation_radius": 0.5,
                 "smooth_T_before_grad": False,
+                "centring": ParameterValue(
+                    EqualsSubstitution(LaunchConfiguration("plan_centring"), "true"),
+                    value_type=bool,
+                ),
+                "speed_decay_rate": ParameterValue(
+                    PythonExpression(["1.5 if '", LaunchConfiguration("plan_centring"),
+                                      "' == 'true' else 2.5"]),
+                    value_type=float,
+                ),
                 "use_sim_time": sim,
             }
         ],
