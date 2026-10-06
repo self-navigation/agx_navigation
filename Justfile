@@ -320,12 +320,6 @@ screenshot out='/tmp/agx-screen.png':
 
 # ---------------------------------------------------------------- observability
 
-# TensorBoard on the server, tunnelled to http://localhost:6006 locally.
-tb:
-    @echo "http://localhost:6006  (Ctrl-C to close the tunnel)"
-    ssh {{ssh_opts}} -L 6006:localhost:6006 {{host}} \
-        'cd {{remote}} && python3 -m tensorboard.main --logdir runs --port 6006'
-
 # GPU / memory / process snapshot.
 remote-status:
     {{_ssh}} 'nvidia-smi; free -h; \
@@ -342,24 +336,7 @@ fetch-runs dest='run_data':
         {{host}}:/tmp/runs/ {{dest}}/
     @ls -1 {{dest}} | tail -20
 
-# POLICY_OUT defaults to ~/rl_corrector_policy, phases to ~/rl_corrector_pN.
-# Pull trained policies back from the server's $HOME.
-fetch-policies dest='policies':
-    mkdir -p {{dest}}
-    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:'/home/programmer/rl_corrector_*' {{dest}}/
-
 # ------------------------------------------------- corrector comparison
-
-# Rank recorded PMP trajectories by SHAPE, so a comparison can be run on
-# genuinely different paths rather than the same archetype three times.
-#
-# This is not busywork. Every goal used in the 2026-07-25 TVLQR validation came
-# out near-straight, 6-9 m, heading the same way (two were the same goal), so
-# "TVLQR beats identity" had only ever been shown for one kind of path. Pick a
-# STRAIGHT, an S-CURVE and a CORNER from this listing before running `compare`.
-classify-plans pattern='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/*.npz':
-    {{_ssh}} 'cd {{remote}} && python3 tools/classify_plans.py "{{pattern}}"'
 
 # Replay the SAME frozen plan under identity / TVLQR / RL and record the true
 # path each drove. Needs `just remote-sim` up (GazeboBridge talks to it).
@@ -387,13 +364,6 @@ fetch-compare dest='compare_data':
     rsync -az --delete --info=stats1 -e "ssh {{ssh_opts}}" \
         {{host}}:/tmp/compare/ {{dest}}/
     @ls -1 {{dest}}
-
-# Draw each corrector's true path on top of the others, one figure per
-# trajectory. Offline/matplotlib, same rule as plot_run.py -- venv, not ROS.
-plot-compare src='compare_data' out='figures':
-    .venv/bin/python tools/plot_compare.py {{src}} --out {{out}} \
-        || python3 tools/plot_compare.py {{src}} --out {{out}}
-    @ls -1 {{out}}
 
 # ------------------------------------------------- dated training runs
 
@@ -429,62 +399,7 @@ train-long timesteps='1500000' label=`date +%Y%m%d` recorded='/home/programmer/r
                         --start-offset 0.25 --ground-friction\" \
             2>&1 | tee /tmp/train_{{label}}.log"'
     @echo "training '{{label}}' started -- log: /tmp/train_{{label}}.log"
-    @echo "watch it with:  just watch-train {{label}}   (opens on the server desktop)"
-
-# Open a terminal ON THE SERVER'S DESKTOP (reach it with Moonlight) showing the
-# live training output. Detached from this ssh, so closing the connection leaves
-# it up.
-#
-# Attaches to the tmux window READ-ONLY (-r) rather than tailing the log file:
-# the tqdm progress bar redraws with carriage returns, which `tail -f` renders
-# as a wall of repeated lines instead of a moving bar. The tmux window is the
-# real terminal, so it shows the bar as intended. -r means a stray keystroke on
-# the desktop cannot kill the run.
-watch-train label=`date +%Y%m%d`:
-    -{{_ssh}} 'DISPLAY=:0 setsid nohup xfce4-terminal \
-        --title="training {{label}}" \
-        --command="tmux attach -t {{session}}:train -r" \
-        </dev/null >/dev/null 2>&1 &'
-    @echo "terminal opened on the server desktop for run '{{label}}'"
-
-# Replay the shape-comparison over the checkpoints of a run, so the RL leg can
-# be seen improving (or not) rather than judged on one arbitrary snapshot.
-# Baselines are re-measured per checkpoint dir but are checkpoint-independent;
-# plot_checkpoints.py keeps the first of each.
-#
-# `stride` subsamples: training checkpoints stay FREQUENT (they are the crash
-# recovery for a multi-hour run, and the VM has been stopped mid-run before), so
-# a 1.5M-step run leaves ~300 of them -- far more than a sweep wants to replay at
-# ~9 Gazebo episodes each. stride=10 replays every 10th.
-compare-checkpoints trajs label=`date +%Y%m%d` correctors='identity tvlqr rl' stride='10':
-    {{_ssh}} 'set -e; cd {{remote}}; \
-        source /opt/ros/jazzy/setup.bash; source install/setup.bash; \
-        i=0; \
-        for ck in $(ls -1v ~/runs_{{label}}/checkpoints/*.zip 2>/dev/null); do \
-            i=$((i+1)); \
-            [ $(( (i-1) % {{stride}} )) -ne 0 ] && continue; \
-            step=$(echo "$ck" | grep -oE "[0-9]+_steps" | grep -oE "^[0-9]+"); \
-            [ -z "$step" ] && continue; \
-            outdir=/tmp/sweep_{{label}}/step_$(printf "%09d" "$step"); \
-            echo "=== $ck -> $outdir"; \
-            PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
-            python3 -m agx_planning.rl_corrector.compare_correctors \
-                --trajectories {{trajs}} --correctors {{correctors}} \
-                --policy "$ck" --bridge gazebo --terrain \
-                --out-dir "$outdir" || echo "  (failed, skipping)"; \
-        done'
-    @echo "sweep done -- pull it with:  just fetch-sweep {{label}}"
-
-fetch-sweep label=`date +%Y%m%d` dest='sweep_data':
-    mkdir -p {{dest}}
-    rsync -az --delete --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:/tmp/sweep_{{label}}/ {{dest}}/
-    @ls -1 {{dest}} | head
-
-# Draw RL error vs training step per trajectory, with identity/TVLQR baselines.
-plot-checkpoints src='sweep_data' out='figures' metric='max_cross':
-    .venv/bin/python tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}} \
-        || python3 tools/plot_checkpoints.py {{src}} --out {{out}} --metric {{metric}}
+    @echo "watch it with:  just -f Justfile.archive watch-train {{label}}   (archived recipe)"
 
 # ------------------------------------------------- TVLQR gain tuning
 
@@ -520,27 +435,7 @@ tune-tvlqr evals='0' cache='/home/programmer/run_data/2026-08-01_INVALID_tvlqr-t
              --cache {{cache}} --out /home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tuned.json \
              2>&1 | tee /tmp/tune_tvlqr.log"'
     @echo "tuning started in tmux window '{{session}}:tune' -- follow it with:  just tune-log"
-    @echo "when it finishes:  just fetch-tune && just plot-tune"
-
-tune-log:
-    -{{_ssh}} 'tail -40 /tmp/tune_tvlqr.log'
-
-# Separate the run-to-run variance into within-process drift vs. per-process
-# noise: drive ONE trajectory n times inside a single process, then n times in n
-# fresh processes, with everything else held fixed (same gains, same terrain
-# seed, deterministic stepping). Whichever arm spreads wider names the cause --
-# and they want opposite fixes, so this has to be settled before any tuning or
-# corrector comparison means anything. ~25 s per rollout, so n=10 is ~10 min.
-variance-probe n='10' traj='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz': sync
-    {{_ssh}} 'tmux has-session -t {{session}} 2>/dev/null || tmux new-session -d -s {{session}} -n scratch; \
-        tmux kill-window -t {{session}}:var 2>/dev/null; \
-        tmux new-window -d -t {{session}} -n var \
-        "cd {{remote}} && bash {{remote}}/tools/run_variance_probe.sh {{n}} {{traj}} \
-         2>&1 | tee /tmp/variance_probe.log; sleep 86400"'
-    @echo "started in tmux window '{{session}}:var' -- follow with:  just variance-log"
-
-variance-log:
-    -{{_ssh}} 'tail -40 /tmp/variance_probe.log'
+    @echo "when it finishes:  just fetch-tune  (plot-tune is in Justfile.archive)"
 
 # Leave this running on idle machine time. It accumulates RAW per-rollout
 # results forever and never optimizes anything -- see the long docstring in
@@ -602,14 +497,6 @@ fetch-soak dest='tune_data':
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
         {{host}}:/home/programmer/soak.jsonl {{dest}}/
 
-analyze-variance src="tune_data/variance_probe.jsonl":
-    python3 tools/analyze_variance.py {{src}}
-
-fetch-variance dest="tune_data":
-    mkdir -p {{dest}}
-    rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
-        {{host}}:/home/programmer/run_data/2026-08-02_INVALID_determinism-probes/variance_probe.jsonl {{dest}}/
-
 # Pull the evaluation cache back so the landscape can be drawn locally.
 fetch-tune dest='tune_data':
     mkdir -p {{dest}}
@@ -618,20 +505,12 @@ fetch-tune dest='tune_data':
     -rsync -az -e "ssh {{ssh_opts}}" {{host}}:/home/programmer/run_data/2026-08-01_INVALID_tvlqr-tune/tvlqr_tuned.json {{dest}}/
     @ls -1 {{dest}}
 
-# Draw what the search explored: the gain plane and the convergence curve.
-plot-tune src='tune_data/tvlqr_tune.jsonl' out='figures':
-    .venv/bin/python tools/plot_tune_landscape.py {{src}} --out {{out}} \
-        || python3 tools/plot_tune_landscape.py {{src}} --out {{out}}
-
 # Contact sheet of every recorded plan, for picking evaluation trajectories by
 # eye (the IDs then go in config/eval_trajectories.yaml).
 fetch-trajectories dest='traj_data':
     mkdir -p {{dest}}
     rsync -az --info=stats1 -e "ssh {{ssh_opts}}" \
         {{host}}:/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/ {{dest}}/
-
-gallery src='traj_data' out='figures':
-    .venv/bin/python tools/plot_trajectory_gallery.py {{src}} --out {{out}}
 
 # ---------------------------------------------------------------------------
 # Job queue -- serialize long runs on the VM's single sim
