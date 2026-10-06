@@ -14,7 +14,13 @@
 #                         [--nav-mode vec-pmp|nav2|gmpc] [--nav2-controller mppi|dwb|rpp]
 #                         [--nav2-profile compare_static]
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
-#                         [--supervisor]
+#                         [--supervisor] [--supervisor-mode navigate|follow_path]
+#                         [--gmpc-nav2]
+#
+# --supervisor (#41/#42/#43) turns the supervisory layer on for every nav mode;
+# readiness then also requires it (stack_ready --supervisor). In gmpc mode it
+# (and --gmpc-nav2, the same nav2 bring-up WITHOUT the layer) runs GMPC under
+# nav_mode nav2 with action follow_path_gmpc, readiness --mode gmpc-nav2.
 #
 # Exit 0 means the stack is up AND every required readiness check passed, so a
 # caller may go straight to publishing a goal. Exit 1 means every attempt
@@ -83,6 +89,8 @@ while [ $# -gt 0 ]; do
         --no-planner) NO_PLANNER=true; shift ;;
         --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
         --supervisor)     SUPERVISOR_=true; shift ;;
+        --supervisor-mode) SUPERVISOR_MODE=$2; shift 2 ;;
+        --gmpc-nav2)      GMPC_NAV2_=true; shift ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -108,8 +116,14 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 # for compare_run's ours-lib arm.
 [ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA use_server:=true"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
-# Supervisory layer (#41). vec-pmp only for now; S2 (#42) adds the other stacks.
-[ -n "${SUPERVISOR_:-}" ] && EXTRA="$EXTRA supervisor:=true"
+# Supervisory layer (#41 vec-pmp, #42 nav2/gmpc). supervisor_mode is nav2-only
+# (follow_path for the same-plan arms); gmpc.launch.py sets its own.
+READY_FLAGS=""
+if [ -n "${SUPERVISOR_:-}" ]; then
+    EXTRA="$EXTRA supervisor:=true"
+    READY_FLAGS="--supervisor"
+    [ -n "${SUPERVISOR_MODE:-}" ] && EXTRA="$EXTRA supervisor_mode:=$SUPERVISOR_MODE"
+fi
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must
 # be OFF to keep one plant per run); true is the launch default and is simply
@@ -127,6 +141,13 @@ LAUNCH_VAR=""
 if [ "$NAV_MODE" = "gmpc" ]; then
     LAUNCH_VAR="LAUNCH_PKG=agx_baselines LAUNCH_FILE=gmpc.launch.py"
     NAV_MODE=none
+    # Under the layer (or its no-layer twin) GMPC runs inside the nav2 bring-up,
+    # which needs the same nav2 profile as the other arms.
+    if [ -n "${SUPERVISOR_:-}" ] || [ -n "${GMPC_NAV2_:-}" ]; then
+        GMPC_NAV2_=true
+        [ -z "${SUPERVISOR_:-}" ] && EXTRA="$EXTRA gmpc_nav2:=true"
+        [ -n "$NAV2_PROFILE" ] && EXTRA="$EXTRA nav2_profile:=$NAV2_PROFILE"
+    fi
 fi
 
 # CGROUP SCOPE (#28). The stack runs inside a transient `systemd --user` scope
@@ -151,6 +172,7 @@ fi
 READY_MODE=vec-pmp
 [ "$NAV_MODE" = "nav2" ] && READY_MODE=nav2
 [ -n "$LAUNCH_VAR" ] && READY_MODE=gmpc
+[ -n "$LAUNCH_VAR" ] && [ -n "${GMPC_NAV2_:-}" ] && READY_MODE=gmpc-nav2
 # amcl publishes map->odom before it has localized; wait for its pose too.
 AMCL_FLAG=""
 [ "$LOCALIZATION" = "amcl" ] && AMCL_FLAG="--require-amcl"
@@ -184,7 +206,7 @@ for attempt in $(seq 1 "$TRIES"); do
 
     # The probe must run in the stack's own partition and domain, or it will
     # correctly report an empty graph and we would restart a healthy stack.
-    if tools/with-worker "$WORKER" python3 tools/stack_ready.py --mode "$READY_MODE" $AMCL_FLAG --wait "$TIMEOUT" --settle 3; then
+    if tools/with-worker "$WORKER" python3 tools/stack_ready.py --mode "$READY_MODE" $READY_FLAGS $AMCL_FLAG --wait "$TIMEOUT" --settle 3; then
         if [ -n "$SCOPE_PREFIX" ]; then
             if systemctl --user is-active --quiet "$SCOPE_UNIT"; then
                 echo "[fixture-up] scope $SCOPE_UNIT active"
