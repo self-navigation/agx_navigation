@@ -4,11 +4,12 @@ Integrates the same chassis kinematics the nominals come from, so an identity
 policy on a slip-free bridge tracks the nominal exactly; used by the unit
 tests and as a fast sanity backend. It is not a physics sim.
 
-With surface_fn ((x, y) -> mu) the yaw rate follows slip_model's chi(mu),
-looked up at the robot centre, and forward speed is scaled below the knee.
-The gyro and omega report the actual yaw rate; wheel speeds report the
-command. With surface_from_terrain=True the terrain patches passed to reset()
-build surface_fn for that episode.
+With surface_fn ((x, y) -> mu) the yaw rate follows slip_model's chi(mu) and
+forward speed is scaled below the knee. contact_mode="centre" looks mu up at
+the robot centre; "footprint" looks it up under each wheel. The gyro and omega
+report the actual yaw rate; wheel speeds report the command. With
+surface_from_terrain=True the terrain patches passed to reset() build
+surface_fn for that episode.
 """
 
 from typing import Callable, List, Optional
@@ -22,8 +23,12 @@ from .bridge import StateReading
 class KinematicBridge:
     def __init__(self, cfg, slip: Optional[List[float]] = None,
                  surface_fn: Optional[Callable[[float, float], float]] = None,
-                 surface_from_terrain: bool = False) -> None:
+                 surface_from_terrain: bool = False,
+                 contact_mode: str = "centre") -> None:
+        if contact_mode not in slip_model.CONTACT_MODES:
+            raise ValueError(f"contact_mode must be one of {slip_model.CONTACT_MODES}")
         self.cfg = cfg
+        self.contact_mode = contact_mode
         self.surface_fn = surface_fn
         self.surface_from_terrain = surface_from_terrain
         self.last_mu: Optional[float] = None
@@ -53,8 +58,18 @@ class KinematicBridge:
         # Per-side effective speed = mean of that side's two wheels.
         wl = 0.5 * (w[0] + w[1])
         wr = 0.5 * (w[2] + w[3])
-        v, omega = self.cfg.wheels_to_body(wl, wr)
-        if self.surface_fn is not None:
+        if self.surface_fn is not None and self.contact_mode == "footprint":
+            mus = slip_model.wheel_mus(self.surface_fn, self._x, self._y, self._th)
+            self.last_mu = min(mus)
+            k, f_l, f_r = slip_model.footprint_factors(mus)
+            v, omega = self.cfg.wheels_to_body(wl * f_l, wr * f_r)
+            # The centre model scales v only; dividing omega by the mean side
+            # factor keeps a uniform surface identical to it, so only the
+            # left/right ASYMMETRY of traction adds yaw.
+            omega = omega * self.cfg.slip_chi * k / (0.5 * (f_l + f_r))
+        else:
+            v, omega = self.cfg.wheels_to_body(wl, wr)
+        if self.surface_fn is not None and self.contact_mode == "centre":
             mu = float(self.surface_fn(self._x, self._y))
             self.last_mu = mu
             # cfg's omega already carries the nominal chi; undo it, apply chi(mu).

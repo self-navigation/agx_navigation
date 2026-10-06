@@ -5,8 +5,10 @@ a table measured with slip_ident on wheel mu2 = 0.45. Above the knee
 (mu >= 0.5) chi is interpolated between rows; at or below it the robot barely
 steers and forward speed is scaled by LONG_FACTOR_BELOW_KNEE, an assumed
 value. Between the two the yaw gain is interpolated. patches_to_surface_fn
-turns terrain patch dicts into (x, y) -> mu, treating the robot as a point;
-overlapping patches take the lowest mu and bare ground is GROUND_MU.
+turns terrain patch dicts into (x, y) -> mu; overlapping patches take the
+lowest mu and bare ground is GROUND_MU. Contact mode "centre" uses mu at the
+robot centre; "footprint" averages the yaw gain over the four wheels and
+scales each side's speed by its own wheels' factor.
 """
 
 from typing import Callable, Iterable, Optional
@@ -30,6 +32,13 @@ KNEE_MU = 0.45          # wheel mu2; at or below it the robot cannot steer
 STEER_MU_MIN = 0.50     # lowest measured mu of the steering branch
 LONG_FACTOR_BELOW_KNEE = 0.9   # ASSUMPTION (not measured), see docstring
 GROUND_MU = 1.0         # rl_corrector.world ground <mu>
+# Wheel contact geometry, scout_mini.xacro (track also in pmp_planner/config.py).
+WHEELBASE = 0.463951
+TRACK = 0.416503
+# Body-frame wheel offsets, controller order [fl, rl, fr, rr].
+WHEEL_OFFSETS = ((+WHEELBASE / 2, +TRACK / 2), (-WHEELBASE / 2, +TRACK / 2),
+                 (+WHEELBASE / 2, -TRACK / 2), (-WHEELBASE / 2, -TRACK / 2))
+CONTACT_MODES = ("centre", "footprint")
 
 _MU = np.array([r[0] for r in CHI_TABLE])
 _GAIN = np.array([r[2] for r in CHI_TABLE])
@@ -55,6 +64,26 @@ def long_factor_of_mu(mu: float) -> float:
 
 def is_below_knee(mu: float) -> bool:
     return float(mu) <= KNEE_MU
+
+
+def wheel_mus(surface_fn: Callable[[float, float], float],
+              x: float, y: float, th: float) -> list:
+    """mu under each wheel contact, order [fl, rl, fr, rr]."""
+    c, s = np.cos(th), np.sin(th)
+    return [float(surface_fn(x + c * ox - s * oy, y + s * ox + c * oy))
+            for ox, oy in WHEEL_OFFSETS]
+
+
+def footprint_factors(mus) -> tuple:
+    """(yaw_gain, left_long, right_long) from the 4 wheel mus [fl, rl, fr, rr].
+
+    yaw_gain = mean of the per-wheel k(mu); each side's longitudinal factor is
+    the mean of its two wheels' long factors. All four equal -> identical to the
+    centre model at that mu."""
+    k = float(np.mean([yaw_gain_of_mu(m) for m in mus]))
+    fl = 0.5 * (long_factor_of_mu(mus[0]) + long_factor_of_mu(mus[1]))
+    fr = 0.5 * (long_factor_of_mu(mus[2]) + long_factor_of_mu(mus[3]))
+    return k, fl, fr
 
 
 def _profile_mu(profile_name: str) -> float:
