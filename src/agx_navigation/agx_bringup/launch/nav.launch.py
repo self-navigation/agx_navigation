@@ -20,14 +20,24 @@ def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
             "nav_mode",
-            default_value="nav2",
-            description="Which nav stack to use. Allowed values: nav2, vec-pmp.",
+            default_value=CUSTOM_NAV_MODE,
+            description=(
+                "Which nav stack to use. Allowed values: vec-pmp (default, "
+                "ours), nav2 (the baseline; `make nav2`)."
+            ),
         ),
         DeclareLaunchArgument(
             "frontier",
-            default_value="true",
+            # Defaults to true only under nav2: frontier_explorer sends its
+            # goals through Nav2's NavigateToPose action (and echoes them on
+            # /exploration_goal, not /goal_pose), so under vec-pmp it would
+            # find no action server and only spam warnings.
+            default_value=EqualsSubstitution(
+                LaunchConfiguration("nav_mode"), NAV2_NAV_MODE),
             description=(
-                "Launch frontier_explorer. Default true: on the real robot, in "
+                "Launch frontier_explorer. Default: true under nav_mode:=nav2, "
+                "false under vec-pmp (it drives Nav2's NavigateToPose action, "
+                "which only nav2 provides). On the real robot, in "
                 "SLAM mode, exploration is part of the deployment. Anything "
                 "with a goal of its own (the fixture, the comparison harness) "
                 "must pass frontier:=false -- a node that publishes goals on "
