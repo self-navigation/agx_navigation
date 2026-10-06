@@ -22,11 +22,15 @@ from scipy.stats import binomtest
 HERE = os.path.dirname(os.path.abspath(__file__))
 WS = os.path.abspath(os.path.join(HERE, "..", ".."))
 DATA = os.path.join(WS, "run_data", "2026-10-06_job221_controllers")
-ARMS = {"L": "ours (ū)", "M": "MPPI", "R": "RPP", "G": "Graceful",
+ARMS = {"L": "поправка ū", "M": "MPPI", "R": "RPP", "G": "Graceful",
         "V": "Vector Pursuit", "K": "GMPC"}
 COL = {"L": "tab:blue", "M": "tab:orange", "R": "tab:red", "G": "tab:purple",
        "V": "tab:brown", "K": "tab:green"}
 LOC = {"T": "true pose", "A": "amcl"}
+LOC_RU = {"T": "истинная поза", "A": "amcl"}
+# Graceful and GMPC are left out of the figure: their integration is broken
+# (95-98% miss), see the paper. They stay in the summary.
+PAPER_ARMS = ("L", "M", "R", "V")
 SCORED = ("arrived", "failed", "timeout")
 
 
@@ -76,7 +80,7 @@ def fig_final_err(by):
         for a in ARMS:
             d = by.get(a + loc, {})
             v = [r["final_err"] for r in d.values() if r["scored"]]
-            if v:
+            if v and a in PAPER_ARMS:
                 data.append(np.clip(v, 0.01, 30)), labels.append(ARMS[a]), cols.append(COL[a])
         if not data:
             continue
@@ -84,12 +88,12 @@ def fig_final_err(by):
         for i, (v, c) in enumerate(zip(data, cols), 1):
             a_.plot(np.random.default_rng(i).normal(i, 0.07, len(v)), v, ".", color=c, alpha=0.5)
             m = sum(x > 0.5 for x in v)
-            a_.text(i, 0.012, f"miss\n{m}/{len(v)}", ha="center", fontsize=7)
+            a_.text(i, 0.012, f"{m}/{len(v)}", ha="center", fontsize=7)
         a_.axhline(0.5, color="grey", ls=":", lw=0.8)
         a_.set_yscale("log")
         a_.set_xticks(range(1, len(labels) + 1), labels, rotation=20)
-        a_.set_title(f"{LOC[loc]}: final error on the stored PMP plan")
-    ax[0].set_ylabel("final error [m]")
+        a_.set_title(f"{LOC_RU[loc]}")
+    ax[0].set_ylabel("терминальная ошибка, м")
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "job221_final_err.png"), dpi=130)
     plt.close(fig)
