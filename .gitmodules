@@ -24,3 +24,6 @@
 	path = src/rf2o_laser_odometry
 	url = https://github.com/MAPIRlab/rf2o_laser_odometry.git
 	branch = ros2
+[submodule "src/agx_navigation/agx_baselines/third_party/GMPC-Tracking-Control"]
+	path = src/agx_navigation/agx_baselines/third_party/GMPC-Tracking-Control
+	url = https://github.com/Garyandtang/GMPC-Tracking-Control.git
