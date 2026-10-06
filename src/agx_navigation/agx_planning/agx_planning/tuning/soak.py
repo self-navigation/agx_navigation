@@ -179,8 +179,10 @@ def main():
                         if args.trace_dir and cycle % args.trace_every == 0:
                             trace_path = os.path.join(
                                 args.trace_dir,
-                                f"{name}_q{q_cross:.4f}_r{r_omega:.4f}"
-                                f"_{pid}_{n_done:06d}.csv")
+                                f"{name}_"
+                                + ("identity" if q_cross is None
+                                   else f"q{q_cross:.4f}_r{r_omega:.4f}")
+                                + f"_{pid}_{n_done:06d}.csv")
                             bridge.enable_trace(trace_path)
                         else:
                             # Tracing is armed by FILE, not by rollout, so an
