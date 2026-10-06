@@ -128,3 +128,88 @@ def test_body_clearance_in_corridor():
     assert shifted < centred
     across = swd.body_clearance(0.0, 0.0, math.pi / 2)  # half-length 0.315 m across
     assert across < centred
+
+
+# ---- S1 wiring pieces: rebase, re-join target, wall gate, buffer splice ----
+
+from types import SimpleNamespace
+
+from agx_planning.runtime_corrector.trajectory_buffer import PlaybackSample, TrajectoryBuffer
+from agx_planning.supervisor.walls import rejoin_clear
+
+
+def test_rejoin_target_is_next_waypoint_at_least_t_min_ahead():
+    sup = SupervisorCore()
+    poses, t = straight()          # waypoints every 10 samples, dt 0.25 s
+    sup.set_plan(poses, t)
+    assert sup.rejoin_target(0, 0.25, 0.0) == 10
+    assert sup.rejoin_target(0, 0.25, 3.0) == 20     # 12 samples needed -> next wp
+    assert sup.rejoin_target(195, 0.25, 3.0) == 200  # past the last -> final sample
+
+
+def test_rebase_clears_lag_and_latch_but_keeps_prev_lag():
+    sup = SupervisorCore()
+    poses, t = straight()
+    sup.set_plan(poses, t)
+    sup.prev_lag = 1.0
+    assert sup.update(0.0, 0.0, 0.0, 10.0).trigger  # parked 10 s: lag
+    sup.rebase(10.0)
+    d = sup.update(0.0, 0.0, 0.0, 10.25)
+    assert d.lag_s == pytest.approx(0.25) and not d.trigger and d.prev_lag_s == 1.0
+
+
+def _corridor():
+    wall = np.zeros((40, 200), bool)
+    wall[10, :] = True
+    wall[30, :] = True
+    return SignedWallDistance.from_wall_mask(wall, 0.05, -5.0, -1.0)
+
+
+def _samples(ys, x0=0.0):
+    return [PlaybackSample(0.0, 0.0, (x0 + 0.1 * i, y, 0.0)) for i, y in enumerate(ys)]
+
+
+def test_rejoin_gate_blocks_paths_into_walls_but_lets_a_stopped_robot_back_off():
+    swd = _corridor()
+    stop = 0.15
+    # Body clearance at y = 0, 0.1, 0.15 is 0.20, 0.15, 0.10 m (5 cm grid).
+    assert rejoin_clear(_samples([0.0] * 5), swd, 0.2, stop)
+    assert not rejoin_clear(_samples([0.0, 0.1, 0.15, 0.0]), swd, 0.2, stop)
+    # Started at 0.10 m (a stopped robot), moving back to the centre: allowed.
+    assert rejoin_clear(_samples([0.15, 0.1, 0.0]), swd, 0.10, stop)
+    # ... but not if it ends inside the stop distance.
+    assert not rejoin_clear(_samples([0.15, 0.15]), swd, 0.10, stop)
+
+
+def _buffer(n=50):
+    buf = TrajectoryBuffer(0.1)
+    buf.reset(1, 0.1)
+    chunk = SimpleNamespace(wheel_left=[1.0] * n, wheel_right=[1.0] * n,
+                            pose_x=[0.1 * i for i in range(n)], pose_y=[0.0] * n,
+                            pose_theta=[0.0] * n)
+    buf.add_chunk(0, chunk)
+    buf.mark_result(True)
+    return buf
+
+
+def test_buffer_retime_moves_time_cursor():
+    buf = _buffer()
+    for _ in range(10):
+        buf.advance()
+    buf.retime(4)
+    assert buf.advance().pose[0] == pytest.approx(0.4)
+
+
+def test_buffer_splice_serves_overlay_then_resumes_and_blocks_retime():
+    buf = _buffer()
+    buf.advance()
+    rejoin = [PlaybackSample(2.0, 2.0, (9.0 + i, 1.0, 0.0)) for i in range(3)]
+    buf.splice(rejoin, 30)
+    assert buf.overlay_active
+    buf.retime(0)                 # ignored while the overlay plays
+    got = [buf.advance().pose[0] for _ in range(4)]
+    assert got == [9.0, 10.0, 11.0, pytest.approx(3.0)]
+    assert not buf.overlay_active and not buf.is_done()
+    while buf.advance() is not None:
+        pass
+    assert buf.is_done()

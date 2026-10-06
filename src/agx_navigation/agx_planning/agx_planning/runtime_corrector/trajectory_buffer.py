@@ -70,6 +70,10 @@ class TrajectoryBuffer:
         self._active_traj_id: int = -1
         self._result_received: bool = False
         self._result_success: bool = False
+        # Supervisor re-join (#41): samples served BEFORE the plan, after which
+        # the cursor resumes at a plan index. See splice().
+        self._overlay: List[PlaybackSample] = []
+        self._resume: Optional[int] = None
 
     # ------------------------------------------------------------------
     # State
@@ -101,6 +105,25 @@ class TrajectoryBuffer:
         """(samples consumed, samples known) -- for logging playback progress."""
         return self._cursor, len(self._samples)
 
+    @property
+    def cursor(self) -> int:
+        """Plan index of the NEXT sample advance() serves (overlay aside)."""
+        return self._cursor
+
+    @property
+    def overlay_active(self) -> bool:
+        return bool(self._overlay)
+
+    @property
+    def n_samples(self) -> int:
+        return len(self._samples)
+
+    def plan_poses(self) -> List[Tuple[float, float, float]]:
+        return [s.pose for s in self._samples]
+
+    def plan_samples(self) -> List[PlaybackSample]:
+        return list(self._samples)
+
     def reset(self, traj_id: int, dt: float) -> None:
         self.clear()
         self._active_traj_id = traj_id
@@ -117,6 +140,8 @@ class TrajectoryBuffer:
         self._active_traj_id = -1
         self._result_received = False
         self._result_success = False
+        self._overlay = []
+        self._resume = None
 
     # ------------------------------------------------------------------
     # Incoming data
@@ -169,7 +194,7 @@ class TrajectoryBuffer:
         to 0.725 m, because the lag was simply outstanding at termination
         instead of accumulating during the run.
         """
-        if not self._result_received or self._chunks:
+        if not self._result_received or self._chunks or self._overlay:
             return False
         if not self._progress_mode:
             return self._cursor >= len(self._samples)
@@ -188,6 +213,15 @@ class TrajectoryBuffer:
         """
         if not self._samples:
             return None
+
+        if self._overlay:
+            sample = self._overlay.pop(0)
+            if not self._overlay:
+                self._cursor = self._resume
+                self._proj = min(self._resume, len(self._samples) - 1)
+                self._resume = None
+            self._at_end = False
+            return sample
 
         if actual_xy is None:
             if self._cursor >= len(self._samples):
@@ -211,6 +245,34 @@ class TrajectoryBuffer:
 
         self._at_end = self._cursor >= len(self._samples)
         return sample
+
+    def retime(self, index: int) -> None:
+        """Move the time cursor to plan ``index`` (supervisor waypoint, #41).
+
+        The supervisor calls this when the robot reaches a waypoint, with the
+        robot's progress index there: the reference waits for a robot that is
+        behind (cursor moves back) and catches up with one that is ahead. The
+        per-segment clock is the supervisor's; this only places the cursor.
+        Ignored while a re-join overlay is playing -- the overlay owns timing
+        until it ends at its own resume index.
+        """
+        if self._overlay or not self._samples:
+            return
+        self._cursor = int(min(max(index, 0), len(self._samples) - 1))
+
+    def splice(self, samples: List[PlaybackSample], resume_index: int) -> None:
+        """Serve ``samples`` next, then resume the plan at ``resume_index``.
+
+        ``samples`` is a re-join (pmp_planner/rejoin_service.RejoinSolver),
+        whose last sample is the plan's state at ``resume_index - 1``. The
+        overlay replaces the plan from the current cursor, so the corrector
+        tracks the re-join's poses as its reference while it plays. A splice
+        replaces any overlay still playing.
+        """
+        if not samples:
+            return
+        self._overlay = list(samples)
+        self._resume = int(min(max(resume_index, 0), len(self._samples)))
 
     def _project(self, actual_xy: Tuple[float, float]) -> int:
         """Index of the plan sample closest to `actual_xy`, searching forward

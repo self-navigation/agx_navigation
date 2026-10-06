@@ -72,6 +72,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "supervisor",
+            default_value="false",
+            description=(
+                "Supervisory layer (#40/#41): waypoints every 5%% of the route, "
+                "per-segment re-timing, wall slow-down/stop and PMP re-join on a "
+                "trigger. Publishes ~/supervisor_state. See "
+                "agx_planning/supervisor."
+            ).replace("%%", "%"),
+        ),
+        DeclareLaunchArgument(
             "wheel_bias",
             default_value="",
             description=(
@@ -87,6 +97,7 @@ def generate_launch_description():
     sim = LaunchConfiguration("sim")
     corrector = LaunchConfiguration("corrector")
     playback_index = LaunchConfiguration("playback_index")
+    supervisor = LaunchConfiguration("supervisor")
 
     vector_field = Node(
         package="agx_planning",
@@ -146,6 +157,9 @@ def generate_launch_description():
                 "playback_index": playback_index,
                 "tvlqr.enabled": ParameterValue(
                     EqualsSubstitution(corrector, "tvlqr"), value_type=bool
+                ),
+                "supervisor.enabled": ParameterValue(
+                    EqualsSubstitution(supervisor, "true"), value_type=bool
                 ),
             }
         ],
