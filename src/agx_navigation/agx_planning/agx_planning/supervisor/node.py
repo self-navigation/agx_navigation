@@ -76,6 +76,12 @@ class SupervisorNodeConfig:
     max_replans: int = 20                        # per goal
     new_goal_dist: float = 0.5                   # [m] /plan end moved this far = new goal
     escape_horizon: float = 0.3                  # [s] look-ahead for the escape check
+    # [m] a predicted clearance drop below this is not "closing". The closing
+    # test uses a BILINEAR interpolation of the EDT (the core's clearance is
+    # quantised to the 0.05 m cell: parallel motion flickered by a cell and
+    # pinned a robot spawned at 0.150 m, smoke G1 v2; a 0.05 m tolerance
+    # instead let it ratchet into the wall, v3).
+    closing_tol: float = 0.005
 
 
 def _yaw(q) -> float:
@@ -220,9 +226,9 @@ class SupervisorNode(Node):
 
     def _on_cmd(self, msg: TwistStamped) -> None:
         v, w = msg.twist.linear.x, msg.twist.angular.z
-        d1 = self._predicted_clearance(v, w)
+        d0, d1 = self._smooth_clearance(0.0, 0.0), self._smooth_clearance(v, w)
         if self.stop:
-            if self.replan_since_stop and d1 > self.clearance + 1e-3:
+            if self.replan_since_stop and d1 > d0 + self.cfg.closing_tol:
                 self.applied = 1.0
                 self._publish_cmd(v, w, msg)   # opens clearance: let it out
             else:
@@ -233,17 +239,31 @@ class SupervisorNode(Node):
         # clearance passes unscaled. Without this a robot spawned (or stopped)
         # just above stop_dist has scale ~0 and is pinned there for good --
         # the first smoke (G1, plan 00369) started at 0.150 m and never moved.
-        s = 1.0 if d1 >= self.clearance - 1e-3 else self.scale
+        s = 1.0 if d1 >= d0 - self.cfg.closing_tol else self.scale
         self.applied = s
         self._publish_cmd(v * s, w * s, msg)
 
-    def _predicted_clearance(self, v: float, w: float) -> float:
-        """Hull clearance escape_horizon seconds along (v, w); -inf if unknown."""
+    def _smooth_clearance(self, v: float, w: float) -> float:
+        """Interpolated hull clearance escape_horizon s along (v, w).
+
+        Used ONLY to decide whether a command closes or opens clearance; the
+        decision thresholds stay on the core's clearance. -inf if unknown, so
+        an unknown pose keeps the core's scale.
+        """
         if self.pose is None or self.walls is None:
             return -math.inf
+        from scipy.ndimage import map_coordinates
         x, y, yaw = self.pose
         h = self.cfg.escape_horizon
-        return self._clear(x + v * h * math.cos(yaw), y + v * h * math.sin(yaw), yaw + w * h)
+        x, y, yaw = x + v * h * math.cos(yaw), y + v * h * math.sin(yaw), yaw + w * h
+        W = self.walls
+        c, s = math.cos(yaw), math.sin(yaw)
+        qx = x + W.body[:, 0] * c - W.body[:, 1] * s
+        qy = y + W.body[:, 0] * s + W.body[:, 1] * c
+        # Cell centres: dist[row, col] is the value at origin + (col, row) * res.
+        cols = (qx - W.origin_x) / W.resolution
+        rows = (qy - W.origin_y) / W.resolution
+        return float(map_coordinates(W.dist, [rows, cols], order=1, mode="nearest").min())
 
     # ---- decision tick ------------------------------------------------
     def _tick(self) -> None:
