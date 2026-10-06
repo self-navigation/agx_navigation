@@ -50,6 +50,7 @@ setup(
         # Submodule entrypoints that don't follow the {package}.{name}:main shape.
         + [
             f"rl_corrector_train = {package_name}.rl_corrector.train:main",
+            f"supervisor_node = {package_name}.supervisor.node:main",
         ],
     },
 )

@@ -78,6 +78,48 @@ def se2_log(dx: float, dy: float, dth: float) -> np.ndarray:
     return np.array([rho[0], rho[1], th])
 
 
+def plan_times(poses, times, cruise_speed: float = 0.4,
+               min_speed: float = 0.05) -> np.ndarray:
+    """Per-pose reference time [s from the first pose] -- the time law
+    :func:`build_reference` resamples on. Pure.
+
+    Stamped plans keep their stamps (made non-decreasing); unstamped ones get
+    the arc-length law at ``cruise_speed`` with turn-in-place samples charged
+    their heading change at 1 rad/s.
+    """
+    poses = np.asarray(poses, dtype=float).reshape(-1, 3)
+    if times is None or len(times) != len(poses) or float(np.ptp(times)) <= 0.0:
+        yaw = np.unwrap(poses[:, 2])
+        seg = np.hypot(*np.diff(poses[:, :2], axis=0).T)
+        # Turn-in-place samples have no arc length; charge them the time the
+        # heading change takes at a modest rate so they are not collapsed.
+        turn = np.abs(np.diff(yaw)) / 1.0
+        return np.concatenate([[0.0], np.cumsum(np.maximum(
+            seg / max(cruise_speed, min_speed), turn))])
+    t = np.asarray(times, dtype=float) - float(times[0])
+    return np.maximum.accumulate(t)
+
+
+def reference_index(t: float, dt: float, n: int) -> int:
+    """Reference sample the controller uses at plan time ``t`` (clamped)."""
+    return min(max(int(round(t / dt)), 0), n - 1)
+
+
+def retime_t0(now: float, plan_t: np.ndarray, plan_index: int) -> float:
+    """New clock origin after a supervisor retime (#42). Pure.
+
+    The supervisory layer reports, on each waypoint reached, the PLAN sample
+    the robot has actually progressed to (``/supervisor/retime``, an index
+    into the same path both were given). Moving the origin to
+    ``now - plan_t[i]`` makes ``now - t0 == plan_t[i]``, i.e. the reference
+    jumps to that plan sample: a robot that fell behind no longer chases a
+    reference that ran ahead, and one that ran ahead is not held back. The
+    index is clamped to the plan.
+    """
+    i = min(max(int(plan_index), 0), len(plan_t) - 1)
+    return float(now) - float(plan_t[i])
+
+
 def build_reference(poses: np.ndarray, times: np.ndarray | None, dt: float,
                     cruise_speed: float = 0.4, min_speed: float = 0.05):
     """Resample a plan onto a uniform ``dt`` grid and derive (v, w) per sample.
@@ -90,16 +132,7 @@ def build_reference(poses: np.ndarray, times: np.ndarray | None, dt: float,
     if poses.shape[0] == 1:
         poses = np.vstack([poses, poses])
     yaw = np.unwrap(poses[:, 2])
-    if times is None or len(times) != len(poses) or float(np.ptp(times)) <= 0.0:
-        seg = np.hypot(*np.diff(poses[:, :2], axis=0).T)
-        # Turn-in-place samples have no arc length; charge them the time the
-        # heading change takes at a modest rate so they are not collapsed.
-        turn = np.abs(np.diff(yaw)) / 1.0
-        times = np.concatenate([[0.0], np.cumsum(np.maximum(
-            seg / max(cruise_speed, min_speed), turn))])
-    else:
-        times = np.asarray(times, dtype=float) - float(times[0])
-        times = np.maximum.accumulate(times)
+    times = plan_times(poses, times, cruise_speed, min_speed)
     # Collapse duplicate timestamps so interp is well defined.
     keep = np.concatenate([[True], np.diff(times) > 1e-9])
     times, xy, yaw = times[keep], poses[keep, :2], yaw[keep]
@@ -144,6 +177,9 @@ class PlanTracker:
                  cruise_speed: float = 0.4):
         GeometricMPC = _import_upstream()
         ref_state, ref_control = build_reference(poses, times, dt, cruise_speed)
+        # Per-POSE times of the plan as given, for retime_t0 (#42): the
+        # supervisor's indices refer to these poses, not to the resampled grid.
+        self.plan_t = plan_times(poses, times, cruise_speed)
         self.dt = float(dt)
         self.ref_state = ref_state
         self.ref_control = ref_control
@@ -163,8 +199,11 @@ class PlanTracker:
                                    w_min=w_bounds[0], w_max=w_bounds[1])
 
     def reference_at(self, t: float) -> np.ndarray:
-        k = min(max(int(round(t / self.dt)), 0), self.n - 1)
-        return self.ref_state[:, k]
+        return self.ref_state[:, reference_index(t, self.dt, self.n)]
+
+    def retime_t0(self, now: float, plan_index: int) -> float:
+        """Clock origin that puts the reference at plan pose ``plan_index``."""
+        return retime_t0(now, self.plan_t, plan_index)
 
     def final_pose(self) -> np.ndarray:
         return self.ref_state[:, -1]
