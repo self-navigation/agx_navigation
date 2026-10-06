@@ -122,6 +122,63 @@ def test_does_not_disturb_the_main_solve_state():
     assert solver._theta_pursuit == 0.123
 
 
+def _plan_samples(cfg, n=80, v=0.3, dt=0.1):
+    from agx_planning.runtime_corrector.trajectory_buffer import PlaybackSample
+    wl, wr = cfg.body_to_wheels(v, 0.0)
+    return [PlaybackSample(left=wl, right=wr, pose=(1.0 + v * dt * i, 0.0, 0.0))
+            for i in range(n)]
+
+
+def _rejoin_solver(**kw):
+    from agx_planning.pmp_planner.rejoin_service import RejoinSolver
+    cfg = PlannerConfig(mode="offline")
+    return RejoinSolver(_plan_samples(cfg), None, cfg, dt=0.1, **kw), cfg
+
+
+def test_rejoin_service_pins_first_and_last_sample():
+    rs, cfg = _rejoin_solver()
+    plan = rs.plan
+    x0 = plan[10] + np.array([0.0, 0.25, 0.1, 0.3, -0.2])
+    out = rs.solve(x0, 45, k_now=10)
+    assert out is not None, rs.last
+    assert len(out) == 36
+    np.testing.assert_allclose([*out[0].pose, out[0].left, out[0].right], x0, atol=1e-3)
+    np.testing.assert_allclose([*out[-1].pose, out[-1].left, out[-1].right], plan[45], atol=1e-3)
+    assert all(s.costates is None for s in out)
+
+
+def test_rejoin_service_stretches_short_window_to_T_w_min():
+    rs, cfg = _rejoin_solver()
+    x0 = rs.plan[10] + np.array([0.0, 0.1, 0.0, 0.0, 0.0])
+    out = rs.solve(x0, 15, k_now=10)  # 0.5 s away -> 3.0 s window
+    assert out is not None
+    assert rs.last["stretched"] and abs(rs.last["T_w"] - 3.0) < 1e-9
+    assert len(out) == 31
+    np.testing.assert_allclose(out[-1].pose, rs.plan[15, 0:3], atol=1e-3)
+
+
+def test_rejoin_service_failure_returns_none():
+    # max_nodes below the initial mesh: solve_bvp cannot converge -> None.
+    rs, cfg = _rejoin_solver(max_nodes=5)
+    x0 = rs.plan[10] + np.array([0.0, 1.5, 2.5, 5.0, -5.0])
+    assert rs.solve(x0, 45, k_now=10) is None
+    assert rs.last["status"] != "ok"
+
+
+def test_label_knots_reproduce_solution():
+    from agx_planning.pmp_planner.rejoin_service import body_knots
+    rs, cfg = _rejoin_solver()
+    x0 = rs.plan[10] + np.array([0.0, 0.2, 0.0, 0.0, 0.0])
+    out = rs.solve(x0, 45, k_now=10)
+    assert out is not None
+    T_w = rs.last["T_w"]
+    kn = body_knots(rs.last["sol"], T_w, cfg).reshape(6, 2)
+    # knots at t = 0, 0.7, ..., 3.5 s land on samples 0, 7, ..., 35
+    for j, i in enumerate(range(0, 36, 7)):
+        v, om = cfg.wheels_to_body(out[i].left, out[i].right)
+        np.testing.assert_allclose(kn[j], [v, om], atol=1e-3)
+
+
 def test_unknown_cost_raises():
     solver, cfg = _solver()
     with pytest.raises(ValueError):
