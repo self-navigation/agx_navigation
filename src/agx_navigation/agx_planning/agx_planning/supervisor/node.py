@@ -14,13 +14,14 @@ cancels and re-sends NavigateToPose, or in follow_path computes a new path with
 ComputePathToPose and sends it to FollowPath.
 
 While stopped after a re-plan, a command passes only if it opens clearance at
-the pose predicted escape_horizon seconds ahead.
+the pose predicted escape_horizon seconds ahead. In the slow band a command
+that does not close clearance passes unscaled.
 
 Outputs: /supervisor/state (Decision.as_array() plus [replans, stops,
-replan_in_flight]), /supervisor/terminal (JSON, TRANSIENT_LOCAL: replans,
-stops, last_reason, goals_sent, goal_status, goal_error_code, retimes) and
-/supervisor/retime (plan index at each waypoint). Uses a SingleThreadedExecutor
-with async callbacks only.
+replan_in_flight, applied_scale]), /supervisor/terminal (JSON, TRANSIENT_LOCAL:
+replans, stops, last_reason, goals_sent, goal_status, goal_error_code, retimes)
+and /supervisor/retime (plan index at each waypoint). Uses a
+SingleThreadedExecutor with async callbacks only.
 """
 
 from __future__ import annotations
@@ -144,6 +145,7 @@ class SupervisorNode(Node):
         self.dec: Decision | None = None
         self.stop = False
         self.scale = 1.0
+        self.applied = 1.0
         self.in_flight = False
         self.replan_since_stop = False
         self.last_replan_t = -math.inf
@@ -218,19 +220,30 @@ class SupervisorNode(Node):
 
     def _on_cmd(self, msg: TwistStamped) -> None:
         v, w = msg.twist.linear.x, msg.twist.angular.z
+        d1 = self._predicted_clearance(v, w)
         if self.stop:
-            if self.replan_since_stop and self.pose is not None and self.walls is not None:
-                x, y, yaw = self.pose
-                h = self.cfg.escape_horizon
-                th = yaw + w * h
-                d1 = self._clear(x + v * h * math.cos(yaw), y + v * h * math.sin(yaw), th)
-                if d1 > self.clearance + 1e-3:
-                    self._publish_cmd(v, w, msg)   # opens clearance: let it out
-                    return
-            self._publish_cmd(0.0, 0.0, msg)
+            if self.replan_since_stop and d1 > self.clearance + 1e-3:
+                self.applied = 1.0
+                self._publish_cmd(v, w, msg)   # opens clearance: let it out
+            else:
+                self.applied = 0.0
+                self._publish_cmd(0.0, 0.0, msg)
             return
-        s = self.scale
+        # The slow band brakes APPROACH only: a command that does not close
+        # clearance passes unscaled. Without this a robot spawned (or stopped)
+        # just above stop_dist has scale ~0 and is pinned there for good --
+        # the first smoke (G1, plan 00369) started at 0.150 m and never moved.
+        s = 1.0 if d1 >= self.clearance - 1e-3 else self.scale
+        self.applied = s
         self._publish_cmd(v * s, w * s, msg)
+
+    def _predicted_clearance(self, v: float, w: float) -> float:
+        """Hull clearance escape_horizon seconds along (v, w); -inf if unknown."""
+        if self.pose is None or self.walls is None:
+            return -math.inf
+        x, y, yaw = self.pose
+        h = self.cfg.escape_horizon
+        return self._clear(x + v * h * math.cos(yaw), y + v * h * math.sin(yaw), yaw + w * h)
 
     # ---- decision tick ------------------------------------------------
     def _tick(self) -> None:
@@ -241,7 +254,8 @@ class SupervisorNode(Node):
         x, y, yaw = pose
         t = self._now()
         self.clearance = self._clear(x, y, yaw)
-        extra = [float(self.core.replans), float(self.core.stops), float(self.in_flight)]
+        extra = [float(self.core.replans), float(self.core.stops), float(self.in_flight),
+                 float(self.applied)]
         if self.has_plan:
             d = self.core.update(x, y, yaw, t, self.clearance)
             self.dec = d
