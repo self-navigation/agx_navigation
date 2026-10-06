@@ -216,6 +216,7 @@ class CompareDriver:
             # the plan it is actually following (the LIVE solve, which is not
             # the library plan in plan["poses"]).
             "diag": [],     # (sim_t, [CorrectionDiagnostics.FIELDS...])
+            "sup": [],      # (sim_t, ~/supervisor_state) -- supervisor arms (#41)
             "live_plan": None,  # (N, 3) x, y, yaw from the latest Path
             "sentinel": False,
             "n_plan_paths": 0,
@@ -248,6 +249,10 @@ class CompareDriver:
         self.node.create_subscription(
             Float64MultiArray, "/wheel_corrector/tvlqr_diagnostics",
             lambda m: st["diag"].append((st["sim_t"], list(m.data)))
+            if st["sim_t"] is not None else None, 50)
+        self.node.create_subscription(
+            Float64MultiArray, "/wheel_corrector/supervisor_state",
+            lambda m: st["sup"].append((st["sim_t"], list(m.data)))
             if st["sim_t"] is not None else None, 50)
         self.node.create_subscription(
             Float64MultiArray, "/wheel_velocity_controller/commands",
@@ -948,9 +953,22 @@ def run_one(args, plan_path: str) -> dict:
                        else np.zeros((0, 16))),
                  live_plan=(st["live_plan"] if st["live_plan"] is not None
                             else np.zeros((0, 3))),
+                 sup_t=np.array([c[0] for c in st["sup"]], dtype=float),
+                 # Decision.as_array() + the node's _SUP_EXTRA counters.
+                 sup=(np.array([c[1] for c in st["sup"]], dtype=float)
+                      if st["sup"] else np.zeros((0, 18))),
                  goal_t=goal_t, plan_poses=plan["poses"],
                  goal_xy=np.asarray(plan["goal"], dtype=float))
         row["track_path"] = track_path
+        if st["sup"]:
+            # Last supervisor_state: Decision fields then the node counters.
+            last = st["sup"][-1][1]
+            row["sup_waypoints"] = [int(last[1]), int(last[2])]
+            row["sup_counts"] = dict(zip(
+                ("rejoin_ok", "rejoin_fail", "rejoin_blocked", "rejoin_stale",
+                 "full_replans"), [int(x) for x in last[13:18]]))
+            row["sup_triggers"] = int(sum(1 for _, d in st["sup"] if d[10] > 0.5))
+            row["sup_stop_ticks"] = int(sum(1 for _, d in st["sup"] if d[9] > 0.5))
         final_err = (math.hypot(end_pose[0] - plan["goal"][0],
                                 end_pose[1] - plan["goal"][1])
                      if end_pose is not None else None)
