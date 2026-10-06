@@ -20,6 +20,7 @@ with the `fj` tools). Older versions of this file are in git history
 - Paper (`../paper` 185e249): sec:stack's comparison paragraphs now use job 220 (v7 is gone). The #39 planner failures are counted as excluded and explained in Limitations (`sec:limits`). Style follows the advisor rules: short sentences, no `;:—`, no lists.
 - Figures: `figures/2026-10-06/` (paired final_err, cost ratios, tracks; README there). The tracks show Nav2 stalling at narrow-corridor turns (00219) and only MPPI making a door turn (00061).
 - Killed the stuck ours-lib smoke loop (it had waited ~5 h on worker 9, held by an orphan) and 5 orphan sims (workers 9, 11-14). The one ours-lib smoke that ran arrived 0.32 m on 00047 (the live-planner-fails plan).
+- **Cleanup equivalence: PASSED** (`~/run_data/2026-10-06_scratch_cleanup-equiv/`, 10 plans, truth, phantom walls). Same outcomes on 9/10 (both planner-fail 00443; 00369 straddles 0.5 m). Post-cleanup closer on 4/9, p=1. Item 3 of the list below is done.
 - Lesson: `pkill -f <pattern>` inside `ssh '...'` kills the ssh's own bash. Use the `[x]yz` bracket trick or explicit PIDs.
 
 **Next, in order:** read job 221 (above) and write the controllers paragraph plus figures. Then items 3-5 of the list below (cleanup equivalence, deferred refactor, #38 and the cover note).
