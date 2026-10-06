@@ -1038,7 +1038,12 @@ def run_one(args, plan_path: str) -> dict:
             outcome = "planner-timeout"
         elif res.get("timed_out") or res.get("wall_backstop"):
             outcome = "timeout"
-        elif res.get("terminal") and travelled < 0.05:
+        elif (res.get("terminal") and travelled < 0.05
+              and args.arm not in PMP_PATH_ARMS and args.arm != "ours-lib"):
+            # Arms fed the stored library plan have no planner to fail: a
+            # terminal without motion is the controller refusing to drive
+            # (job 221's first launch: collision_monitor with no scan), a
+            # real failure that must be scored, so it falls through.
             outcome = "planner-failed"
         elif res.get("terminal"):
             outcome = "failed"

@@ -217,11 +217,13 @@ nav2:
 #   make fixture LOCALIZATION=amcl    # localize the lidar against the baked map
 #   make fixture LOCALIZATION=none    # identity map->odom; fastest, least honest
 #
-# Only amcl consumes the lidar, so only amcl pays for the rendering sensors.
+# The lidar is on when something consumes it: amcl, or Nav2 (its costmap
+# obstacle layer and collision_monitor; without a scan the collision monitor
+# stops the robot, "invalid source" -- job 221's first launch, 2026-10-06).
 # Nothing here consumes the RGB/depth cameras (only SLAM does, and the nav2
 # compare profile observes the scan alone), so they are always dropped.
 FIXTURE_LOCALIZATION := $(or $(LOCALIZATION),truth)
-FIXTURE_SENSORS := $(if $(filter amcl,$(FIXTURE_LOCALIZATION)),true,false)
+FIXTURE_SENSORS = $(if $(filter amcl,$(FIXTURE_LOCALIZATION))$(filter nav2,$(FIXTURE_NAV_MODE)),true,false)
 # NAV_MODE of the fixture. vec-pmp is what the fixture has always been; the
 # comparison harness passes nav2 for the Nav2 arms (same static map + amcl, so
 # the two stacks differ only in the nav layer). A command-line NAV_MODE does

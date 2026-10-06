@@ -18,7 +18,7 @@ for r in rows:
     by[c][(r['plan'],r['seed'])]=r
 def fe(r):
     v=r.get('final_err')
-    return v if (v is not None and r.get('outcome') in('arrived','failed') and math.isfinite(v)) else None
+    return v if (v is not None and r.get('outcome') in('arrived','failed','timeout') and math.isfinite(v)) else None
 out=[]
 for c,d in by.items():
     v=[fe(r) for r in d.values() if fe(r) is not None]
