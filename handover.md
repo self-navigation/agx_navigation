@@ -1,5 +1,8 @@
 **Advisor call 2026-10-06 18:00-19:10: SCOPE CHANGED, read #40 and docs/supervisor-plan.md first** (segments #41-#47, one deliverable figure each). Plan agreed, at most 2 weeks. Add a supervisory layer (waypoint progress check, wall slow/stop + replan) to EVERY stack, re-run everything with and without it, full stacks under truth + amcl. TD3 local re-join with PMP as the teacher, a slip model in the python kinematics, and ε-TD3+BC as the paper's novelty. Decisions, thresholds and timeline are in #40. The paper text from before the call (tab:ctrl, Graceful/GMPC sentence) will be superseded by the re-runs.
 
+**In flight (2026-10-06 evening):** S1 core API committed (130a74a, `agx_planning/supervisor/`, 9 unit tests). Three Opus agents are running in git worktrees on their own branches, unpushed except S2's: S4 slip model + G2 (#44), S5 PMP re-join teacher (#45), S2 supervisor_node for Nav2/GMPC (#42, VM WORKER=13, smoke data in `~/run_data/2026-10-07_scratch_s2-smoke/`). The main session merges their branches. Next for the main session: S1 wiring into runtime_corrector (#41).
+
+
 # Handover — 2026-10-02 (rewritten from scratch 21:55)
 
 **Read this first.** It says what we are doing, why, what we know, what is
