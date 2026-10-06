@@ -6,15 +6,19 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), *[".."] * 5, "tools"))
-from compare_run import PMP_PATH_ARMS, ARM_TO_CONTROLLER, plan_to_path  # noqa: E402
+from compare_run import (ARM_TO_CONTROLLER, ARM_TO_NAV_MODE, PMP_PATH_ARMS,  # noqa: E402
+                         plan_to_path)
 
 
 def test_arms_map_to_controllers():
     # Every arm's controller is mppi (the base nav2_params.yaml) or has an
-    # agx_baselines overlay; arms are added there, so no fixed set here.
+    # agx_baselines overlay; arms are added there, so no fixed set here. Arms
+    # with their own nav mode (pmp-gmpc) run no Nav2 controller at all.
     cfg = os.path.join(os.path.dirname(__file__), *[".."] * 3,
                        "agx_baselines", "config")
     for a in PMP_PATH_ARMS:
+        if ARM_TO_NAV_MODE.get(a, "nav2") != "nav2":
+            continue
         c = ARM_TO_CONTROLLER[a]
         assert c == "mppi" or os.path.isfile(
             os.path.join(cfg, f"nav2_controller_{c}.yaml")), a

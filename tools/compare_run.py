@@ -118,7 +118,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
 
 ARMS = ("ours", "ours-lib", "nav2-dwb", "nav2-mppi", "nav2-rpp", "pmp-mppi", "pmp-rpp",
-        "nav2-graceful", "pmp-graceful", "nav2-vpp", "pmp-vpp")
+        "nav2-graceful", "pmp-graceful", "nav2-vpp", "pmp-vpp", "pmp-gmpc")
 ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
                      "pmp-mppi": "mppi", "pmp-rpp": "rpp",
                      "nav2-graceful": "graceful", "pmp-graceful": "graceful",
@@ -127,13 +127,18 @@ ARM_TO_CONTROLLER = {"nav2-dwb": "dwb", "nav2-mppi": "mppi", "nav2-rpp": "rpp",
 # only the tracker differs. The plan npz's (x, y, yaw) path is densified and
 # sent straight to Nav2's controller_server via the FollowPath action (no
 # bt_navigator, no Smac call), with the same nav2 profile as the nav2-* arms.
-PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp", "pmp-graceful", "pmp-vpp")
+PMP_PATH_ARMS = ("pmp-mppi", "pmp-rpp", "pmp-graceful", "pmp-vpp", "pmp-gmpc")
 # Our corrector arms (vec-pmp + runtime_corrector). `ours-lib` (#39) is the
 # controllers-only twin of the Type-A arms: pmp_planner is NOT launched
 # (use_server:=true) and tools/library_plan_server.py serves the plan npz's
 # stored trajectory (poses, wheel commands, costates) over PlanToGoal, so the
 # unchanged TVLQR corrector plays back the SAME plan the pmp-* arms follow.
 VEC_PMP_ARMS = ("ours", "ours-lib")
+# pmp-gmpc (#33 rank 1): agx_baselines' GMPC follow_path server instead of
+# controller_server. GMPC tracks a TRAJECTORY, so it gets the plan's own
+# dt_sample grid as pose stamps (turn-in-place kept), not the arc-length path.
+TIMED_PATH_ARMS = ("pmp-gmpc",)
+ARM_TO_NAV_MODE = {"ours": "vec-pmp", "ours-lib": "vec-pmp", "pmp-gmpc": "gmpc"}
 
 
 def plan_to_path(poses: np.ndarray, ds: float = 0.05) -> np.ndarray:
@@ -385,7 +390,7 @@ class CompareDriver:
 
     # -- goal dispatch ------------------------------------------------------
     def send_goal(self, arm: str, goal_xy, goal_yaw: float,
-                  timeout_s: float, backstop_s: float, path=None) -> dict:
+                  timeout_s: float, backstop_s: float, path=None, times=None) -> dict:
         """Send the goal the arm's way; block until terminal or deadline.
 
         The returned dict carries terminal/travel_time/drive_wall; metrics are
@@ -401,23 +406,29 @@ class CompareDriver:
         if arm in VEC_PMP_ARMS:
             out = self._drive_vec_pmp(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         elif arm in PMP_PATH_ARMS:
-            out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s)
+            out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s, times)
         else:
             out = self._drive_nav2(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         out["goal_t"] = goal_t
         return out
 
-    def _drive_follow_path(self, path, goal_t, timeout_s, backstop_s) -> dict:
-        """Type-A arms: our PMP plan's path straight to controller_server."""
+    def _drive_follow_path(self, path, goal_t, timeout_s, backstop_s, times=None) -> dict:
+        """Type-A arms: our PMP plan's path straight to the follow_path server.
+
+        `times` (seconds from the first pose) stamps each pose; Nav2 ignores
+        pose stamps, the GMPC arm reads them as the reference time law.
+        """
         from geometry_msgs.msg import PoseStamped
         from nav2_msgs.action import FollowPath
 
         goal = FollowPath.Goal()
         goal.path.header.frame_id = "map"
         goal.path.header.stamp = self._sim_stamp(goal_t)
-        for x, y, yaw in path:
+        for i, (x, y, yaw) in enumerate(path):
             ps = PoseStamped()
-            ps.header = goal.path.header
+            ps.header.frame_id = goal.path.header.frame_id
+            ps.header.stamp = self._sim_stamp(
+                goal_t + (float(times[i]) if times is not None else 0.0))
             ps.pose.position.x = float(x)
             ps.pose.position.y = float(y)
             _, _, qz, qw = _yaw_quat(float(yaw))
@@ -724,7 +735,7 @@ def wall_contact(track, floor: int) -> dict:
 
 def bring_up_stack(args, arm: str, spawn, log_path: str):
     """Fresh stack via fixture_up.sh. Returns (ok, attempts, detail)."""
-    nav_mode = "vec-pmp" if arm in VEC_PMP_ARMS else "nav2"
+    nav_mode = ARM_TO_NAV_MODE.get(arm, "nav2")
     cmd = [
         "bash", os.path.join(HERE, "fixture_up.sh"),
         "--worker", str(args.worker or ""),
@@ -955,11 +966,16 @@ def run_one(args, plan_path: str) -> dict:
         # Whatever bring-up and terrain left of the cell's wall budget bounds
         # the goal phase (planning + driving) as a whole.
         cell_left = args.cell_wall_cap - (time.monotonic() - t_start)
-        follow = plan_to_path(plan["poses"]) if args.arm in PMP_PATH_ARMS else None
+        follow, follow_t = None, None
+        if args.arm in TIMED_PATH_ARMS:
+            follow = plan["poses"]
+            follow_t = np.arange(len(follow)) * plan["dt"]
+        elif args.arm in PMP_PATH_ARMS:
+            follow = plan_to_path(plan["poses"])
         if follow is not None:
             row["follow_path_n"] = int(len(follow))
         res = drv.send_goal(args.arm, plan["goal"], plan["goal_yaw"],
-                            timeout_s=sim_timeout, path=follow,
+                            timeout_s=sim_timeout, path=follow, times=follow_t,
                             backstop_s=max(1.0, min(args.wall_backstop, cell_left)))
         if res.get("goal_t") is None:
             # The goal never left the tool (no /clock, no action server...):
