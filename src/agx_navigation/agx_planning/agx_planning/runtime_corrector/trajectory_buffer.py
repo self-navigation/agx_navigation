@@ -74,6 +74,9 @@ class TrajectoryBuffer:
         # the cursor resumes at a plan index. See splice().
         self._overlay: List[PlaybackSample] = []
         self._resume: Optional[int] = None
+        # Fractional time-cursor phase for advance(rate=...) (#41 slow-down).
+        self._phase: float = 0.0
+        self._overlay_phase: float = 0.0
 
     # ------------------------------------------------------------------
     # State
@@ -142,6 +145,8 @@ class TrajectoryBuffer:
         self._result_success = False
         self._overlay = []
         self._resume = None
+        self._phase = 0.0
+        self._overlay_phase = 0.0
 
     # ------------------------------------------------------------------
     # Incoming data
@@ -200,13 +205,22 @@ class TrajectoryBuffer:
             return self._cursor >= len(self._samples)
         return self._proj >= len(self._samples) - 1
 
-    def advance(self, actual_xy: Optional[Tuple[float, float]] = None):
+    def advance(self, actual_xy: Optional[Tuple[float, float]] = None,
+                rate: float = 1.0):
         """Return the sample to command this tick, or None to hold.
 
         With `actual_xy` omitted the cursor is TIME-indexed: one sample per call.
         With a measured (x, y) it is PROGRESS-indexed: the nearest sample at or
         ahead of the cursor, within `max_skip`. See the module docstring for why
         the two differ and when each is right.
+
+        ``rate`` (time indexing and overlays only) dilates the plan's clock:
+        the cursor moves ``rate`` samples per call, accumulated fractionally,
+        so rate 0.5 serves each sample twice. The supervisor slows the robot
+        by scaling the commands AND this rate by the same factor; for a
+        kinematic skid-steer that traverses the same path more slowly, where
+        scaling the commands alone would leave the reference running ahead.
+        rate=1 is exactly the old one-sample-per-call behaviour.
 
         Returns None when the sample we need has not arrived yet (the caller
         should hold the wheels).
@@ -215,8 +229,13 @@ class TrajectoryBuffer:
             return None
 
         if self._overlay:
-            sample = self._overlay.pop(0)
+            sample = self._overlay[0]
+            self._overlay_phase += rate
+            steps = int(self._overlay_phase)
+            self._overlay_phase -= steps
+            del self._overlay[:steps]
             if not self._overlay:
+                self._overlay_phase = 0.0
                 self._cursor = self._resume
                 self._proj = min(self._resume, len(self._samples) - 1)
                 self._resume = None
@@ -227,7 +246,10 @@ class TrajectoryBuffer:
             if self._cursor >= len(self._samples):
                 return None
             sample = self._samples[self._cursor]
-            self._cursor += 1
+            self._phase += rate
+            steps = int(self._phase)
+            self._phase -= steps
+            self._cursor += steps
         else:
             self._progress_mode = True
             # Clamp at the last sample rather than stopping there: the robot may

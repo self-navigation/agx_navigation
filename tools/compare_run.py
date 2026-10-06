@@ -956,7 +956,7 @@ def run_one(args, plan_path: str) -> dict:
                  sup_t=np.array([c[0] for c in st["sup"]], dtype=float),
                  # Decision.as_array() + the node's _SUP_EXTRA counters.
                  sup=(np.array([c[1] for c in st["sup"]], dtype=float)
-                      if st["sup"] else np.zeros((0, 18))),
+                      if st["sup"] else np.zeros((0, 19))),
                  goal_t=goal_t, plan_poses=plan["poses"],
                  goal_xy=np.asarray(plan["goal"], dtype=float))
         row["track_path"] = track_path

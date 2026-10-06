@@ -213,3 +213,28 @@ def test_buffer_splice_serves_overlay_then_resumes_and_blocks_retime():
     while buf.advance() is not None:
         pass
     assert buf.is_done()
+
+
+def test_relative_thresholds_follow_the_plan_clearance():
+    sup = SupervisorCore()
+    poses, t = straight()
+    c_plan = np.full(len(poses), 2.0)
+    c_plan[:20] = 0.2                       # a corridor at the start
+    sup.set_plan(poses, t, clearance=c_plan)
+    assert sup.wall_thresholds(0) == pytest.approx((0.15, 0.05))
+    assert sup.wall_thresholds(100) == pytest.approx((0.5, 0.15))   # open space: agreed values
+    d = sup.update(0.0, 0.0, 0.0, 0.0, clearance=0.2)   # on plan in the corridor
+    assert d.speed_scale == 1.0 and not d.trigger and not d.stop
+    d = sup.update(0.0, 0.0, 0.0, 0.1, clearance=0.04)
+    assert d.stop and d.reason == "wall"
+    # A plan that itself overlaps a wall still stops at contact_dist.
+    sup.set_plan(poses, t, clearance=np.full(len(poses), -0.1))
+    assert sup.wall_thresholds(0)[1] == pytest.approx(0.03)
+
+
+def test_buffer_rate_dilates_the_time_cursor():
+    buf = _buffer()
+    got = [buf.advance(rate=0.5).pose[0] for _ in range(4)]
+    assert got == pytest.approx([0.0, 0.0, 0.1, 0.1])
+    assert buf.advance(rate=0.0).pose[0] == pytest.approx(0.2)
+    assert buf.advance(rate=0.0).pose[0] == pytest.approx(0.2)
