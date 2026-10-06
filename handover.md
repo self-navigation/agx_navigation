@@ -1,3 +1,5 @@
+**Advisor call 2026-10-06 18:00-19:10: SCOPE CHANGED, read #40 first.** Plan agreed, at most 2 weeks. Add a supervisory layer (waypoint progress check, wall slow/stop + replan) to EVERY stack, re-run everything with and without it, full stacks under truth + amcl. TD3 local re-join with PMP as the teacher, a slip model in the python kinematics, and ε-TD3+BC as the paper's novelty. Decisions, thresholds and timeline are in #40. The paper text from before the call (tab:ctrl, Graceful/GMPC sentence) will be superseded by the re-runs.
+
 # Handover — 2026-10-02 (rewritten from scratch 21:55)
 
 **Read this first.** It says what we are doing, why, what we know, what is
