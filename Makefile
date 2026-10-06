@@ -89,10 +89,13 @@ all: build
 build: deps .build.stamp
 
 # colcon does not descend into a package's directory, so the baselines'
-# vendored submodules (agx_baselines/third_party/*) need their own base path.
+# vendored submodules need their own base path. Only vector_pursuit_controller is
+# a colcon package; GMPC-Tracking-Control is NOT built (it ships its own
+# scout_description, which would collide with scout_ros2's) -- setup.py copies
+# its python sources instead.
 .build.stamp: $(SOURCES)
 	source /opt/ros/jazzy/setup.bash && \
-		colcon build --base-paths src src/agx_navigation/agx_baselines/third_party
+		colcon build --base-paths src src/agx_navigation/agx_baselines/third_party/vector_pursuit_controller
 	touch $@
 
 clean:
