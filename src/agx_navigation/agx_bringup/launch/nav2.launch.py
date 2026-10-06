@@ -34,14 +34,26 @@ from launch_ros.descriptions import ComposableNode, ParameterFile
 from agx_bringup import RewrittenYaml, Topics, cfg_file
 
 # Local controllers the comparison runs against (launch arg `nav2_controller`).
-# mppi is the long-standing default here and keeps this file's behaviour
-# byte-identical when the arg is left alone; dwb and rpp are the other two
-# standard nav2 local planners, and the paper's baseline set. Each non-mppi
-# value loads config/nav2_controller_<name>.yaml as an overlay AFTER the main
-# nav2_params.yaml, so only the controller_server subtree is replaced -- the
+# The comparison configuration is NOT ours and lives in the agx_baselines
+# package (see its README): mppi is the base nav2_params.yaml here, and every
+# other value loads agx_baselines/config/nav2_controller_<name>.yaml as an
+# overlay AFTER it, so only the controller_server subtree is replaced -- the
 # costmaps, the Smac2D global planner, the BT navigator and the velocity
-# smoother are shared by every arm.
-CONTROLLERS = ("mppi", "dwb", "rpp")
+# smoother are shared by every arm. Controllers are discovered from those
+# files, so adding a baseline needs no edit here.
+BASELINES_PKG = "agx_baselines"
+
+
+def _baseline_cfg(name):
+    from ament_index_python.packages import get_package_share_directory
+    return os.path.join(get_package_share_directory(BASELINES_PKG), "config", name)
+
+
+def _controllers():
+    import glob
+    found = sorted(os.path.basename(f)[len("nav2_controller_"):-len(".yaml")]
+                   for f in glob.glob(_baseline_cfg("nav2_controller_*.yaml")))
+    return ("mppi", *found)
 
 
 def generate_launch_description():
@@ -51,9 +63,9 @@ def generate_launch_description():
             default_value="mppi",
             description=(
                 "Which local controller FollowPath runs: "
-                + " | ".join(CONTROLLERS)
-                + ". dwb and rpp are loaded as parameter overlays on top of "
-                "nav2_params.yaml (config/nav2_controller_<name>.yaml), so the "
+                + " | ".join(_controllers())
+                + ". Non-mppi values are parameter overlays on top of "
+                "nav2_params.yaml (agx_baselines/config/nav2_controller_<name>.yaml), so the "
                 "global planner and costmaps stay identical across arms."
             ),
         ),
@@ -62,8 +74,9 @@ def generate_launch_description():
             default_value="",
             description=(
                 "Optional parameter profile loaded AFTER nav2_params.yaml for "
-                "every nav2 node (config/nav2_profile_<name>.yaml). Empty keeps "
-                "the default stack; compare_static is the stage-1 baseline."
+                "every nav2 node (agx_baselines/config/nav2_profile_<name>.yaml). Empty keeps "
+                "the default stack; compare_static is the stage-1 baseline. A "
+                "comma-separated list layers profiles, later ones winning."
             ),
         ),
     ]
@@ -75,9 +88,9 @@ def _launch_setup(context):
     # controller choice must be concrete NOW to pick the overlay file.
     sim = LaunchConfiguration("sim")
     controller = LaunchConfiguration("nav2_controller").perform(context).strip().lower()
-    if controller not in CONTROLLERS:
+    if controller not in _controllers():
         raise RuntimeError(
-            f"nav2_controller:='{controller}' is not one of {'|'.join(CONTROLLERS)}")
+            f"nav2_controller:='{controller}' is not one of {'|'.join(_controllers())}")
 
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {"autostart": "true"}
@@ -105,14 +118,15 @@ def _launch_setup(context):
     # The profile is a later file handed to EVERY node, so it may retune the
     # costmaps (which read their params through controller_server /
     # planner_server) and the collision monitor alike.
-    from ament_index_python.packages import get_package_share_directory
 
-    profile = LaunchConfiguration("nav2_profile").perform(context).strip()
+    # A comma-separated list layers several profiles, later ones winning
+    # (e.g. compare_skid,compare_hybrid: the MPPI fix plus Hybrid-A*).
+    profiles = [p.strip() for p in
+                LaunchConfiguration("nav2_profile").perform(context).split(",")
+                if p.strip()]
     base_params = [configured_params]
-    if profile:
-        profile_file = os.path.join(
-            get_package_share_directory("agx_bringup"),
-            "config", f"nav2_profile_{profile}.yaml")
+    for profile in profiles:
+        profile_file = _baseline_cfg(f"nav2_profile_{profile}.yaml")
         if not os.path.isfile(profile_file):
             raise RuntimeError(f"nav2 profile missing: {profile_file}")
         base_params.append(ParameterFile(profile_file, allow_substs=True))
@@ -123,9 +137,7 @@ def _launch_setup(context):
     # other composables are handed the base file only, so an MPPI-only key can
     # never leak into a node that does not declare it.
     if controller != "mppi":
-        overlay = os.path.join(
-            get_package_share_directory("agx_bringup"),
-            "config", f"nav2_controller_{controller}.yaml")
+        overlay = _baseline_cfg(f"nav2_controller_{controller}.yaml")
         if not os.path.isfile(overlay):
             raise RuntimeError(f"nav2 controller overlay missing: {overlay}")
         controller_params = base_params + [ParameterFile(overlay, allow_substs=True)]

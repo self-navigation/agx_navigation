@@ -1126,7 +1126,7 @@ def main() -> int:
     ap.add_argument("--amcl-params", default=None,
                     help="params file layered over nav2_params.yaml's amcl (#34)")
     ap.add_argument("--nav2-profile", default="compare_static",
-                    help="config/nav2_profile_<name>.yaml for the nav2 arms "
+                    help="agx_baselines/config/nav2_profile_<name>.yaml for the nav2 arms "
                          "(costmap inflation, collision monitor); '' = stock")
     ap.add_argument("--floor", type=int, default=6, help="baked map / gz floor number")
     ap.add_argument("--world", default="ordjo_world")
