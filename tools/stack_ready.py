@@ -78,10 +78,12 @@ class Report:
 
 
 class StackProbe(Node):
-    def __init__(self, expect_planner: bool, mode: str = "vec-pmp", require_amcl: bool = False):
+    def __init__(self, expect_planner: bool, mode: str = "vec-pmp", require_amcl: bool = False,
+                 supervisor: bool = False):
         super().__init__("stack_ready_probe")
         self.expect_planner = expect_planner
         self.mode = mode
+        self.supervisor = supervisor
 
         self._clock_stamps: list[float] = []
         self._map = None
@@ -241,10 +243,17 @@ class StackProbe(Node):
                 )
             )
 
+        if self.supervisor and self.mode != "vec-pmp":
+            checks += self._supervisor_checks()
         if self.mode == "nav2":
             return checks + self._nav2_checks()
         if self.mode == "gmpc":
             return checks + self._follow_path_checks("gmpc_controller")
+        if self.mode == "gmpc-nav2":
+            # GMPC under nav_mode:=nav2 (#42): the nav2 stack for planner_server,
+            # GMPC on its own action name.
+            return (checks + self._nav2_checks()
+                    + self._follow_path_checks("gmpc_controller", "follow_path_gmpc"))
 
         # --- vec-pmp mode (the original checks, unchanged) -------------------
         # Graph checks: who is listening for a goal, and who commands wheels.
@@ -367,7 +376,25 @@ class StackProbe(Node):
         return checks
 
 
-    def _follow_path_checks(self, server_node: str) -> list:
+    def _supervisor_checks(self) -> list:
+        """supervisor_node (#42) sits between /cmd_vel_nav_out and /cmd_vel.
+
+        Both edges must exist: an upstream publisher it listens to, and the
+        node itself on /cmd_vel. Missing the node leaves the wheels with no
+        command at all, which looks like a robot that never moves.
+        """
+        names = {n for n, _ns in self.get_node_names_and_namespaces()}
+        up_pubs = self.count_publishers("/cmd_vel_nav_out")
+        up_subs = self.count_subscribers("/cmd_vel_nav_out")
+        state_pubs = self.count_publishers("/supervisor/state")
+        return [Check(
+            "supervisor",
+            "supervisor_node" in names and up_pubs >= 1 and up_subs >= 1 and state_pubs >= 1,
+            f"node {'present' if 'supervisor_node' in names else 'ABSENT'}, "
+            f"/cmd_vel_nav_out {up_pubs} pub(s) {up_subs} sub(s), "
+            f"/supervisor/state {state_pubs} pub(s)")]
+
+    def _follow_path_checks(self, server_node: str, action: str = "follow_path") -> list:
         """Readiness for a bare follow_path tracker (the GMPC arm, agx_baselines).
 
         No lifecycle, no bt_navigator: the goal goes straight to a FollowPath
@@ -382,10 +409,10 @@ class StackProbe(Node):
                          self.get_service_names_and_types_by_node(server_node, "/")}
         except Exception:  # noqa: BLE001 -- graph introspection is best-effort
             pass
-        status_pubs = self.count_publishers("/follow_path/_action/status")
-        send_goal_srv = "/follow_path/_action/send_goal" in srv_names
+        status_pubs = self.count_publishers(f"/{action}/_action/status")
+        send_goal_srv = f"/{action}/_action/send_goal" in srv_names
         checks.append(Check(
-            "follow_path action",
+            f"{action} action",
             send_goal_srv and status_pubs >= 1,
             f"send_goal service {'present' if send_goal_srv else 'ABSENT'} on "
             f"{server_node}, {status_pubs} status pub(s)"))
@@ -398,9 +425,10 @@ class StackProbe(Node):
 
 
 def probe(timeout: float, settle: float, expect_planner: bool, mode: str = "vec-pmp",
-          require_amcl: bool = False) -> Report:
+          require_amcl: bool = False, supervisor: bool = False) -> Report:
     rclpy.init()
-    node = StackProbe(expect_planner=expect_planner, mode=mode, require_amcl=require_amcl)
+    node = StackProbe(expect_planner=expect_planner, mode=mode, require_amcl=require_amcl,
+                      supervisor=supervisor)
     t0 = time.monotonic()
     checks: list = []
     try:
@@ -427,7 +455,11 @@ def main() -> int:
                     help="seconds to listen before each evaluation")
     ap.add_argument("--expect-planner", action="store_true",
                     help="also require planner_data to be FLOWING (only true once a goal is active)")
-    ap.add_argument("--mode", choices=["vec-pmp", "nav2", "gmpc"], default="vec-pmp",
+    ap.add_argument("--supervisor", action="store_true",
+                    help="nav2/gmpc modes: also require supervisor_node (#42) bridging "
+                         "/cmd_vel_nav_out -> /cmd_vel")
+    ap.add_argument("--mode", choices=["vec-pmp", "nav2", "gmpc", "gmpc-nav2"],
+                    default="vec-pmp",
                     help="which stack's readiness to check (vec-pmp keeps the "
                          "original checks exactly; nav2 requires the nav2 "
                          "lifecycle nodes ACTIVE, the navigate_to_pose action "
@@ -441,7 +473,7 @@ def main() -> int:
     try:
         report = probe(timeout=args.wait, settle=args.settle,
                        expect_planner=args.expect_planner, mode=args.mode,
-                       require_amcl=args.require_amcl)
+                       require_amcl=args.require_amcl, supervisor=args.supervisor)
     except Exception as exc:  # noqa: BLE001 -- a probe must never traceback at a caller
         print(json.dumps({"ready": False, "error": str(exc)}) if args.json else f"probe failed: {exc}")
         return 2

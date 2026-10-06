@@ -79,8 +79,57 @@ def generate_launch_description():
                 "comma-separated list layers profiles, later ones winning."
             ),
         ),
+        # Supervisory layer (#40, #42; agx_planning/supervisor/node.py). When
+        # on, collision_monitor publishes /cmd_vel_nav_out and supervisor_node
+        # is the only writer of /cmd_vel. Same thresholds for every arm.
+        DeclareLaunchArgument(
+            "supervisor", default_value="false",
+            description="Insert supervisor_node between collision_monitor and /cmd_vel"),
+        DeclareLaunchArgument(
+            "supervisor_mode", default_value="navigate",
+            description="navigate (full stack: cancel + re-send NavigateToPose, plan "
+                        "from /plan) | follow_path (same-plan arms: ComputePathToPose + "
+                        "FollowPath, plan from /supervisor/plan)"),
+        DeclareLaunchArgument(
+            "supervisor_follow_path_action", default_value="follow_path",
+            description="FollowPath server the supervisor re-sends to (follow_path_gmpc "
+                        "for the GMPC arm)"),
     ]
     return LaunchDescription(declared_args + [OpaqueFunction(function=_launch_setup)])
+
+
+SUPERVISED_CMD_TOPIC = "/cmd_vel_nav_out"
+
+
+def _map_yaml(context) -> str:
+    """The baked map the fixture serves (static_map.launch.py's choice)."""
+    lc = context.launch_configurations
+    explicit = lc.get("map_yaml", "")
+    if explicit:
+        return explicit
+    from ament_index_python.packages import get_package_share_directory
+    floor = lc.get("floor_number", "3")
+    return os.path.join(get_package_share_directory("rudn_ordjo_building"), "maps",
+                        f"floor_{floor}.yaml")
+
+
+def _supervisor_node(context, sim):
+    mode = LaunchConfiguration("supervisor_mode").perform(context)
+    return Node(
+        package="agx_planning",
+        executable="supervisor_node",
+        name="supervisor_node",
+        output="screen",
+        parameters=[{
+            "use_sim_time": sim,
+            "mode": mode,
+            "cmd_in_topic": SUPERVISED_CMD_TOPIC,
+            "cmd_out_topic": Topics.CMD_VEL,
+            "map_yaml": _map_yaml(context),
+            "follow_path_action": LaunchConfiguration(
+                "supervisor_follow_path_action").perform(context),
+        }],
+    )
 
 
 def _launch_setup(context):
@@ -94,6 +143,10 @@ def _launch_setup(context):
 
     # Create our own temporary YAML files that include substitutions
     param_substitutions = {"autostart": "true"}
+    supervised = LaunchConfiguration("supervisor").perform(context).lower() == "true"
+    if supervised:
+        # Only collision_monitor has this key (profiles do not override it).
+        param_substitutions["cmd_vel_out_topic"] = SUPERVISED_CMD_TOPIC
 
     yaml_substitutions = {
         "LASERSCAN_TOPIC": Topics.SCAN,
@@ -288,4 +341,5 @@ def _launch_setup(context):
         stdout_linebuf_envvar,
         nav2_container,
         load_composable_nodes,
+        *([_supervisor_node(context, sim)] if supervised else []),
     ]

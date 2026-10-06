@@ -8,6 +8,12 @@ gets a constant-speed law from ``cruise_speed``. Every terminal path publishes
 an explicit zero twist first, because the downstream controllers latch their
 last command. Uses a SingleThreadedExecutor with a sim-time control timer; the
 execute callback only awaits the loop's future.
+
+Under ``supervisor:=true`` commands go to ``cmd_vel_topic`` for the supervisor
+to gate, the reference clock jumps to the plan index received on
+``retime_topic``, and a new goal pre-empts the active one without a terminal
+zero. ``action_name`` renames the server when controller_server owns
+``follow_path``.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from nav2_msgs.action import FollowPath
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Int32
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
@@ -54,6 +61,8 @@ class GmpcController(Node):
             ("base_frame", "base_link"),
             ("cmd_vel_topic", "/cmd_vel"),
             ("odom_topic", "/odom/filtered"),
+            ("action_name", "follow_path"),
+            ("retime_topic", "/supervisor/retime"),
         ])
         self.cfg = {x.name: x.value for x in p}
         self.dt = 1.0 / float(self.cfg["control_rate"])
@@ -66,9 +75,11 @@ class GmpcController(Node):
         self._last_odom_t: float | None = None  # ROS clock seconds
         self._active = None  # dict with goal_handle, tracker, t0, future ...
         self.timer = self.create_timer(self.dt, self._tick)
+        if self.cfg["retime_topic"]:
+            self.create_subscription(Int32, self.cfg["retime_topic"], self._on_retime, 10)
 
         self.server = ActionServer(
-            self, FollowPath, "follow_path",
+            self, FollowPath, self.cfg["action_name"],
             execute_callback=self._execute,
             goal_callback=self._on_goal,
             cancel_callback=lambda _h: CancelResponse.ACCEPT,
@@ -83,6 +94,18 @@ class GmpcController(Node):
 
     def _on_odom(self, _msg: Odometry) -> None:
         self._last_odom_t = self._now()
+
+    def _on_retime(self, msg: Int32) -> None:
+        st = self._active
+        if st is None or st["future"].done():
+            return
+        now = self._now()
+        old = now - st["t0"]
+        st["t0"] = st["tracker"].retime_t0(now, int(msg.data))
+        st["retimes"] += 1
+        self.get_logger().info(
+            f"retime: plan index {msg.data}, reference clock {old:.2f} -> "
+            f"{now - st['t0']:.2f} s")
 
     def _pose(self):
         """(x, y, yaw, stamp_s) of base in map, or None."""
@@ -113,8 +136,7 @@ class GmpcController(Node):
     # -- action plumbing ------------------------------------------------------
     def _on_goal(self, _req) -> GoalResponse:
         if self._active is not None:
-            self.get_logger().warn("follow_path goal rejected: one is already active")
-            return GoalResponse.REJECT
+            self.get_logger().info("follow_path: new goal pre-empts the active one")
         return GoalResponse.ACCEPT
 
     async def _execute(self, goal_handle):
@@ -153,21 +175,27 @@ class GmpcController(Node):
             f"follow_path: {len(path.poses)} poses, "
             f"{'stamped' if times is not None else 'unstamped'} -> "
             f"{tracker.n} samples, {tracker.duration:.1f} s reference")
+        prev = self._active
+        if prev is not None and not prev["future"].done():
+            # Pre-emption: no terminal zero, the new goal drives from this tick.
+            prev["future"].set_result((ERR.UNKNOWN, "preempted"))
         done: Future = Future()
-        self._active = {"gh": goal_handle, "tracker": tracker, "t0": self._now(),
-                        "future": done, "hold_t0": None, "n_solves": 0,
-                        "solve_s": 0.0, "max_err": 0.0}
+        st = {"gh": goal_handle, "tracker": tracker, "t0": self._now(),
+              "future": done, "hold_t0": None, "n_solves": 0,
+              "solve_s": 0.0, "max_err": 0.0, "retimes": 0}
+        self._active = st
         await done
-        st = self._active
-        self._active = None
+        if self._active is st:
+            self._active = None
         code, msg = done.result()
-        self._stop()
+        if msg != "preempted":
+            self._stop()
         result.error_code = code
         result.error_msg = msg
         self.get_logger().info(
             f"follow_path terminal: code={code} '{msg}' solves={st['n_solves']} "
             f"mean_solve={1e3 * st['solve_s'] / max(1, st['n_solves']):.1f} ms "
-            f"max_track_err={st['max_err']:.3f} m")
+            f"max_track_err={st['max_err']:.3f} m retimes={st['retimes']}")
         if code == ERR.NONE:
             goal_handle.succeed()
         elif goal_handle.is_cancel_requested:
