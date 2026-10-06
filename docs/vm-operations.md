@@ -106,7 +106,7 @@ Non-obvious facts about that box, all of which cost time to work out:
 retired** — replaced by "only ever one sim *per partition*". Everything above
 that says otherwise is describing the default partition, where it remains true.
 
-`WORKER=n` (1-9) is the single knob. It sets `GZ_PARTITION=agxn` and
+`WORKER=n` (1-14; the cap is RAM, ~1.5 GB per sim, see `tools/with-worker`) is the single knob. It sets `GZ_PARTITION=agxn` and
 `ROS_DOMAIN_ID=40+n`, and that is the entire mechanism: **no code changed
 anywhere** — not in `GazeboBridge`, not in the launch files, not in the tuner.
 Both libraries read their isolation setting from the environment at init, so a

@@ -362,7 +362,7 @@ kill the remote processes, which then fight the next launch — `pgrep -af 'gz[ 
 before relaunching, or let `just check-sim` do it. `tmux kill-server` does **not**
 stop the sim; it orphans the `gz sim` processes, which keep running and publishing.
 
-**Only one sim per partition.** `WORKER=n` (1-9) sets `GZ_PARTITION`/`ROS_DOMAIN_ID`
+**Only one sim per partition.** `WORKER=n` (1-14) sets `GZ_PARTITION`/`ROS_DOMAIN_ID`
 and is the entire isolation mechanism; two sims in one partition silently break
 resets and, if both spawn a robot, make it **physically disintegrate**. If you see
 wheels detaching, count the `gz sim` processes before debugging anything else.
