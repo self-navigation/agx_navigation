@@ -75,8 +75,10 @@ Classes:
 | 2026-10-03_UNKNOWN_dep-series | dep_series | | ? | departure series(?) | nothing | e |
 | 2026-10-03_job170_loc-factors | compare_loc, compare_loc_smoke | run_data/loc170 | 170 | localization factors | handover, #34 | b |
 | 2026-10-03_job180_amcl-sweep | compare_amcl, compare_amcl_smoke | run_data/amcl180 | 180 | amcl x EKF factorial | handover, #34 | b |
-| *(pending)* 2026-10-05_job190_lidar-odom | compare_lidar | | 190 | rf2o lidar odom in EKF | handover, #34 | live |
-| *(pending)* 2026-10-05_job200_hybrid | compare_hybrid | | 200 | Hybrid-A*+MPPI | #33 | live |
+| 2026-10-05_job190_lidar-odom | compare_lidar | | 190 | rf2o lidar odom in EKF (negative) | paper sec:stack, #34 | b |
+| 2026-10-05_job200_hybrid | compare_hybrid | | 200 | Hybrid-A*+MPPI, SUPERSEDED by 220 (MPPI stall) | #33 | c |
+| 2026-10-05_job210_pmp-trackers | | | 210 | Nav2 MPPI/RPP on PMP plan vs ours (ours on live plan) | #10 | b |
+| 2026-10-06_job220_fullstack | | | 220 | full stacks: ours vs Smac2D/Hybrid+MPPI, RPP | #10, #33 | live |
 
 Not moved, not run data: `~/agx_navigation`, `~/jobq` + `~/jobq.sh` (queue
 infrastructure), `ollama*`, `torch-cu126`, `.keras`, `ai-practicum` (unrelated
