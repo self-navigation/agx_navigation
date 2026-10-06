@@ -1,0 +1,16 @@
+# Job 220 part 2 (#10, #33 Type A, #39): controllers only. Every arm follows
+# the SAME library plan (npz), so the planner is held fixed; this fixes the
+# job 210 caveat (ours re-solved live). Phantom walls as in job 210.
+# Corrector claim under truth, system claim under amcl (advisor, 2026-10).
+LT  --arm ours-lib      --localization truth --phantom-walls
+MT  --arm pmp-mppi      --localization truth --phantom-walls --nav2-profile compare_skid
+RT  --arm pmp-rpp       --localization truth --phantom-walls --nav2-profile compare_skid
+GT  --arm pmp-graceful  --localization truth --phantom-walls --nav2-profile compare_skid
+VT  --arm pmp-vpp       --localization truth --phantom-walls --nav2-profile compare_skid
+KT  --arm pmp-gmpc      --localization truth --phantom-walls
+LA  --arm ours-lib      --localization amcl  --phantom-walls
+MA  --arm pmp-mppi      --localization amcl  --phantom-walls --nav2-profile compare_skid
+RA  --arm pmp-rpp       --localization amcl  --phantom-walls --nav2-profile compare_skid
+GA  --arm pmp-graceful  --localization amcl  --phantom-walls --nav2-profile compare_skid
+VA  --arm pmp-vpp       --localization amcl  --phantom-walls --nav2-profile compare_skid
+KA  --arm pmp-gmpc      --localization amcl  --phantom-walls
