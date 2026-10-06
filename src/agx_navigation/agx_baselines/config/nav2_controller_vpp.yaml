@@ -1,0 +1,50 @@
+# Vector Pursuit local controller for the Nav2 comparison arms (#10, #33).
+# Built from source: third_party/vector_pursuit_controller (git submodule,
+# blackcoffeerobotics, branch jazzy, Apache-2.0).
+#
+# Loaded by nav2.launch.py as an overlay AFTER nav2_params.yaml, replacing only
+# the controller_server's FollowPath block. Every parameter shared with
+# nav2_controller_rpp.yaml takes RPP's value (0.5 m/s, 1.5 rad/s rotate rate,
+# lookahead 0.3-0.9 m, max_angular_accel 2.8, no reversing, collision
+# detection off for stage 1 with the same 0.5 s horizon) so the two pursuit
+# arms differ only in the pursuit law. VPP-only terms are the upstream README
+# values.
+#
+# Skid-steer: use_rotate_to_heading with rotate_to_heading_angular_vel 1.5.
+# VPP rotates in place at that CONSTANT rate (not proportional to the error),
+# so it is far above the ~0.15 rad/s below which this chassis scrubs instead
+# of rotating (nav2_profile_compare_skid.yaml). min_turning_radius 0.25 keeps
+# moving arcs from asking for a pivot at crawl speed.
+controller_server:
+  ros__parameters:
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "vector_pursuit_controller::VectorPursuitController"
+      k: 5.0
+      desired_linear_vel: 0.5
+      min_turning_radius: 0.25
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 1.5
+      rotate_to_heading_angular_vel: 1.5
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: false
+      min_linear_velocity: 0.0
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      max_allowed_time_to_collision_up_to_target: 0.5
+      use_collision_detection: false
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.5
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      use_rotate_to_heading: true
+      allow_reversing: false
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 2.8
+      max_linear_accel: 2.0
+      max_lateral_accel: 0.2
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+      use_heading_from_path: false

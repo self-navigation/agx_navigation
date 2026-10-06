@@ -1,0 +1,42 @@
+# Graceful Motion local controller (nav2_graceful_controller, apt in Jazzy)
+# for the Nav2 comparison arms (#10, #33).
+#
+# Loaded by nav2.launch.py as an overlay AFTER nav2_params.yaml, replacing only
+# the controller_server's FollowPath block, like nav2_controller_rpp.yaml, and
+# with the same limits so the arms stay comparable: 0.5 m/s and 1.5 rad/s
+# (our planner's v_max / omega_max and the velocity smoother's clamps),
+# forward-only (allow_backward: false). Lookahead band 0.3-0.9 m matches RPP's.
+# Everything else is the plugin's Jazzy defaults.
+#
+# Skid-steer: v_angular_min_in_place 0.25 (default 0.25 too, kept explicit).
+# On this chassis a commanded yaw rate below ~0.15 rad/s scrubs and does not
+# rotate (see nav2_profile_compare_skid.yaml: MPPI parked pivoting at
+# 0.08-0.14 rad/s while the gyro read zero). Graceful clamps every in-place
+# rotation (initial rotation and final heading) to at least this rate, so it
+# can never stall in that band while turning in place. The moving-arc control
+# law has no such floor; that is a property of the controller being compared.
+controller_server:
+  ros__parameters:
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "nav2_graceful_controller::GracefulController"
+      transform_tolerance: 0.1
+      min_lookahead: 0.3
+      max_lookahead: 0.9
+      max_robot_pose_search_dist: 10.0
+      k_phi: 2.0
+      k_delta: 1.0
+      beta: 0.4
+      lambda: 2.0
+      v_linear_min: 0.1
+      v_linear_max: 0.5
+      v_angular_max: 1.5
+      v_angular_min_in_place: 0.25
+      slowdown_radius: 1.5
+      initial_rotation: true
+      initial_rotation_tolerance: 0.785
+      prefer_final_rotation: true
+      rotation_scaling_factor: 0.5
+      allow_backward: false
+      # No collision-detection knob in the Jazzy release (RPP's is off for
+      # stage 1 anyway); in_place_collision_resolution left at its default.

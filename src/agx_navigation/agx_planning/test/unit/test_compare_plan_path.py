@@ -10,7 +10,14 @@ from compare_run import PMP_PATH_ARMS, ARM_TO_CONTROLLER, plan_to_path  # noqa: 
 
 
 def test_arms_map_to_controllers():
-    assert {ARM_TO_CONTROLLER[a] for a in PMP_PATH_ARMS} == {"mppi", "rpp"}
+    # Every arm's controller is mppi (the base nav2_params.yaml) or has an
+    # agx_baselines overlay; arms are added there, so no fixed set here.
+    cfg = os.path.join(os.path.dirname(__file__), *[".."] * 3,
+                       "agx_baselines", "config")
+    for a in PMP_PATH_ARMS:
+        c = ARM_TO_CONTROLLER[a]
+        assert c == "mppi" or os.path.isfile(
+            os.path.join(cfg, f"nav2_controller_{c}.yaml")), a
 
 
 def test_spacing_endpoints_and_turn_in_place():
