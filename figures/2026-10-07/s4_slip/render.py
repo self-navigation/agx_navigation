@@ -2,7 +2,7 @@
 """Render the S4 (#44) slip-model figures from g2_results.json (+ _tracks.npz).
 
 Regenerate the data first (needs the main checkout's traj_data_v2/ and
-soak_data/soak_broad_open_loop.jsonl):
+run_data/2026-10-07_s4-identity-traces/):
     PYTHONPATH=src/rudn-ordjo-building .venv/bin/python tools/validate_slip_model.py \
         --out figures/2026-10-07/s4_slip/g2_results.json
 then:  .venv/bin/python figures/2026-10-07/s4_slip/render.py
@@ -67,17 +67,21 @@ def fig_tracks(res, tracks):
                                + ax.transData)
             ax.add_patch(rect)
         plan = tracks[f"{n}__plan"]
+        k = 0
+        while f"{n}__gz{k}" in tracks:
+            g = tracks[f"{n}__gz{k}"]
+            ax.plot(g[:, 0], g[:, 1], "b-", lw=0.8, alpha=0.5,
+                    label="Gazebo (5 повторов)" if k == 0 else None)
+            k += 1
         ax.plot(plan[:, 0], plan[:, 1], "k-", lw=1.2, label="план")
-        s, z = tracks[f"{n}__slip"], tracks[f"{n}__noslip"]
-        ax.plot(s[:, 0], s[:, 1], "C3-", lw=1.2, label="кинематика + χ(μ)")
-        ax.plot(z[:, 0], z[:, 1], "C2--", lw=1, label="кинематика без скольжения")
-        ge = np.array(r["gz_end"])
-        ax.plot(ge[:, 0], ge[:, 1], "bx", ms=7, mew=1.5, label="Gazebo: конечные точки (5 повторов)")
+        z, c, f = (tracks[f"{n}__{t}"] for t in ("noslip", "centre", "footprint"))
+        ax.plot(z[:, 0], z[:, 1], "C2--", lw=1, label="без скольжения")
+        ax.plot(c[:, 0], c[:, 1], "C1:", lw=1.3, label="χ(μ) в центре (итер. 1)")
+        ax.plot(f[:, 0], f[:, 1], "C3-", lw=1.3, label="χ(μ) под колёсами (итер. 2)")
         ax.plot(*plan[-1, :2], "k*", ms=10)
-        mark = "✓" if r["slip_dir_agree"] else "✗"
         ax.set_title(f"{n.replace('floor_6_v2_', 'план ')}\n"
-                     f"e_кон Gazebo {r['gz_final_err_mean']:.2f} м, модель {r['slip_final_err']:.2f} м; "
-                     f"направление {mark}", fontsize=8)
+                     f"e_кон: Gazebo {r['gz_final_err_mean']:.2f}, центр {r['centre_final_err']:.2f}, "
+                     f"колёса {r['footprint_final_err']:.2f} м", fontsize=8)
         ax.set_aspect("equal", adjustable="datalim")
         ax.tick_params(labelsize=7)
         ax.grid(alpha=0.3)
@@ -86,10 +90,11 @@ def fig_tracks(res, tracks):
         ax.set_xlabel("x, м")
     for ax in axes[:, 0]:
         ax.set_ylabel("y, м")
-    sm_ = res["summary"]["slip"]
-    fig.suptitle("G2: разомкнутый контур, кинематическая модель со скольжением vs Gazebo "
-                 f"(направление {sm_['dir_agree']}/10, e_кон в пределах ×2: {sm_['fe_within2']}/10). "
-                 "Пятна: сид 0 вдоль пути", fontsize=10)
+    sc, sf = res["summary"]["centre"], res["summary"]["footprint"]
+    fig.suptitle("G2: разомкнутый контур, кинематические модели vs треки Gazebo. "
+                 f"Направление / e_кон в ×2: центр {sc['dir_agree']}/{sc['fe_within2']}, "
+                 f"колёса {sf['dir_agree']}/{sf['fe_within2']} из 10. Пятна: сид 0 вдоль пути",
+                 fontsize=10)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "g2_tracks.png"), dpi=130)
 
@@ -99,13 +104,15 @@ def main():
     tracks = np.load(os.path.join(HERE, "g2_results_tracks.npz"))
     fig_chi()
     fig_tracks(res, tracks)
+    yn = lambda b: "yes" if b else "NO"
     for r in res["plans"]:
-        print(f"| {r['plan']} | {r['gz_final_err_mean']:.3f} ± {r['gz_final_err_sd']:.3f} "
-              f"| {r['gz_lat_mean']:+.3f} ({r['gz_lat_sign_agree']}/{r['n_gz']}) "
-              f"| {r['slip_final_err']:.3f} | {r['slip_lat']:+.3f} | {r['slip_fe_ratio']:.2f} "
-              f"| {'yes' if r['slip_dir_agree'] else 'NO'} | {'yes' if r['slip_fe_within2'] else 'NO'} "
-              f"| {r['noslip_final_err']:.3f} | {r['frac_below_knee']:.0%} |")
-
+        print(f"| {r['plan'].replace('floor_6_v2_', '')} | {r['gz_final_err_mean']:.2f} ± {r['gz_final_err_sd']:.2f} "
+              f"| {r['gz_lat_mean']:+.2f} ({r['gz_lat_sign_agree']}/{r['n_gz']}) | {r['gz_max_cross_mean']:.2f} | "
+              + " | ".join(f"{r[t + '_final_err']:.2f} (×{r[t + '_fe_ratio']:.1f}) {yn(r[t + '_dir_agree'])} "
+                           f"| {r[t + '_max_cross']:.2f}" for t in ("noslip", "centre", "footprint")) + " |")
+    for t, v in res["summary"].items():
+        print(f"| {t} | {v['dir_agree']}/10 | {v['fe_within2']}/10 | {v['mc_within2']}/10 | "
+              f"{'PASS' if v['pass'] else 'FAIL'} |")
 
 if __name__ == "__main__":
     main()
