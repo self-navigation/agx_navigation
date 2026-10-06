@@ -633,16 +633,6 @@ fetch-trajectories dest='traj_data':
 gallery src='traj_data' out='figures':
     .venv/bin/python tools/plot_trajectory_gallery.py {{src}} --out {{out}}
 
-# Interactive single-step console against the running sim: step one physics tick
-# at a time and watch WHEN entity changes actually commit. Built to chase the
-# residual patch nondeterminism that batch rollouts cannot show. Attach a GUI
-# with `just gui` and watch on Moonlight while driving this.
-sim-console traj='/home/programmer/run_data/2026-07-29_nojob_plan-library-v1/pmp_trajectories_v2/floor_6_00042.npz': sync
-    {{_ssh}} -t 'cd {{remote}} && source /opt/ros/jazzy/setup.bash \
-        && source install/setup.bash \
-        && PYTHONPATH=src/agx_navigation/agx_planning:$PYTHONPATH \
-        python3 -m agx_planning.tuning.sim_console --trajectory {{traj}}'
-
 # ---------------------------------------------------------------------------
 # Job queue -- serialize long runs on the VM's single sim
 #
