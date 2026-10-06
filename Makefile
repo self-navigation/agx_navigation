@@ -16,7 +16,6 @@ PARAM_VARS := SIM \
 							NAV_MODE \
 							PMP_MODE \
 							USE_SERVER \
-							DO_CORRECTIONS \
 							CORRECTOR \
 							PLAYBACK_INDEX \
 							LOCALIZATION \
