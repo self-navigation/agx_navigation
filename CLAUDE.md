@@ -66,10 +66,9 @@ make                      # == make build (deps + colcon build --base-paths src)
 make clean                # rm -rf install build log .*.stamp
 make setup                # one-time: install ROS 2 Jazzy, Gazebo, system deps
 make deps                 # rosdep + pip install of the workspace python packages
-make test                 # unit tests (pytest, no ROS needed)
-make run SIM=true         # full stack in Gazebo;  SIM=false runs on the robot
-make online / offline     # run with NAV_MODE=vec-pmp and the matching PMP_MODE
-make nav2                 # run with the nav2 stack instead
+make test                 # unit tests (pytest, no ROS needed; needs the rudn-ordjo-building submodule)
+make run SIM=true         # full stack in Gazebo (vec-pmp by default);  SIM=false runs on the robot
+make nav2                 # run with the nav2 stack instead (frontier explorer on by default only here)
 make fixture              # controller test rig: pre-baked map, no SLAM/sensors
 make fixture CORRECTOR=identity SURFACE_PATCHES=false   # baseline, no slip
 make rviz / make teleop
@@ -110,7 +109,8 @@ and `tuning/`) — no ROS, no Gazebo, no torch import path. Keeping those module
 ROS-free is deliberate; don't add `rclpy` imports to them.
 
 Make variables in `PARAM_VARS` (`SIM`, `HEADLESS`, `FLOOR_NUMBER`, `NAV_MODE`,
-`PMP_MODE`, `USE_SERVER`, `DO_CORRECTIONS`, `PORT_NAME`) are lowercased and passed
+`USE_SERVER`, `CORRECTOR`, `PLAYBACK_INDEX`, `LOCALIZATION`, `SURFACE_PATCHES`,
+`PORT_NAME`) are lowercased and passed
 straight through as launch arguments — adding a new launch arg usually means
 adding its name there too.
 
@@ -132,15 +132,13 @@ SLAM/rtabmap map ─► vector_field ─► pmp_planner ─► runtime_corrector
   `x = (p_x, p_y, θ, w_l, w_r)`, control = per-wheel accelerations, solved as a
   TPBVP with `scipy.integrate.solve_bvp`. The long module docstring is the
   authoritative spec of the model and cost terms — read it before touching the
-  dynamics or the cost weights. Two modes:
-  - `online` — runs its own control loop, publishes wheel commands on
-    `/pmp_planner/wheel_cmd`.
-  - `offline` — a `PlanToGoal` action **server** that rolls out a whole trajectory
-    and streams it back as chunked feedback.
+  dynamics or the cost weights. **Offline only**: a `PlanToGoal` action
+  **server** that rolls out a whole trajectory and streams it back as chunked
+  feedback. The `online` mode (its own control loop) was removed 2026-10-06:
+  solve_bvp cannot run online (#29). Do not re-add it.
 - **`runtime_corrector`** ([runtime_corrector/node.py](src/agx_navigation/agx_planning/agx_planning/runtime_corrector/node.py)) —
-  the only writer of `/wheel_velocity_controller/commands`. Mirrors the planner's
-  mode (relay in `online`, action *client* + trajectory playback in `offline`, see
-  `trajectory_buffer.py`). Everything funnels through `_emit() -> _correct()`,
+  the only writer of `/wheel_velocity_controller/commands`. The action
+  *client* + trajectory playback (see `trajectory_buffer.py`). Everything funnels through `_emit() -> _correct()`,
   which is the seam where a residual applies. `JointGroupVelocityController`
   latches its last command, so **every terminal path must publish an explicit
   zero** — silence keeps the wheels spinning.
@@ -168,8 +166,8 @@ Left/right pair speeds expand to the controller's joint order
 [main.launch.py](src/agx_navigation/agx_bringup/launch/main.launch.py) is the entry
 point and composes: `gz_sim` (only when `sim:=true`) → `robot_control`
 (scout_description + `sim_control` or `life_control` + EKF) → `slam` (delayed 10 s,
-rtabmap) → `nav` which branches on `nav_mode` into `nav2.launch.py` or
-`vec_pmp.launch.py`. Launch files resolve each other via
+rtabmap) → `nav` which branches on `nav_mode` (default `vec-pmp`) into
+`nav2.launch.py` or `vec_pmp.launch.py`. Launch files resolve each other via
 `agx_bringup.utils.launch_file` / `cfg_file`; topic names come from
 `agx_bringup.constants.Topics` rather than string literals.
 
@@ -200,7 +198,7 @@ real estimator's output would go.
 
 ### Static map fixture (controller testing)
 
-`make fixture` == `make run NAV_MODE=vec-pmp PMP_MODE=offline LOCALIZATION=truth
+`make fixture` == `make run NAV_MODE=vec-pmp LOCALIZATION=truth
 sim_sensors:=false`. `LOCALIZATION` defaults to `truth` *here* (unlike `make run`,
 which defaults to `slam`) because this is the corrector rig — see the table above
 for why `none` is the wrong default for it. It exists because rtabmap is a bad
@@ -280,7 +278,7 @@ it with `ros2 run agx_planning slip_ident`
 ([slip_ident.py](src/agx_navigation/agx_planning/agx_planning/slip_ident.py)),
 which references the **gyro** — so it runs unchanged on the real robot, and a
 sim/real difference is a statement about friction, not method. `calibrator.py`
-cannot identify it: it compares commands against `/odom`, and both sides share
+(archived) cannot identify it: it compares commands against `/odom`, and both sides share
 the missing slip term. Method and the measured surface dependence:
 [docs/measurement-rig.md](docs/measurement-rig.md).
 
@@ -603,5 +601,9 @@ prerequisites #13, per-worker queues #12, low-priority ideas #14.
   plan set, the code commit, and what to conclude from it (fill in the result
   when read). Job scripts default `OUT_DIR` into that tree; never write data to
   `~` or `/tmp` and leave it there. Index: [docs/run-data-index.md](docs/run-data-index.md).
-- `acados/` at the repo root is untracked scratch; the Makefile's `ACADOS_*` /
-  `t_renderer` bits are vestigial and unset by default.
+- `acados/` at the repo root is untracked scratch (the Makefile's acados bits
+  were removed 2026-10-06).
+- Dead code is archived, not deleted: `tools/archive/`, `*/archive/` beside the
+  module, and `Justfile.archive` (not loaded by `just`). The superseded
+  `tools/loc_analysis/` and `summarize_runs.py` were deleted; use
+  `tools/believed_gain.py` and `tools/summarize_arms.py`.
