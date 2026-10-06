@@ -81,7 +81,7 @@ Classes:
 | 2026-10-06_job220_fullstack | | run_data/ same | 220 | full stacks: ours vs Smac2D/Hybrid+MPPI, RPP | paper sec:stack, figures/2026-10-06, #10, #33 | a |
 | 2026-10-06_scratch_job221-aborted | | | 221 | first launch, aborted (no scan under truth, GMPC sources missing) | handover | d |
 | 2026-10-06_scratch_job221-smoke2 | | | | smokes after the job 221 fixes | handover | d |
-| 2026-10-06_job221_controllers | | | 221 | part 2: six controllers on the library plan, truth + amcl | #10, #33 | live |
+| 2026-10-06_job221_controllers | | | 221 | part 2: six controllers on the library plan, truth + amcl | #10, #33, paper tab:ctrl | a |
 
 Not moved, not run data: `~/agx_navigation`, `~/jobq` + `~/jobq.sh` (queue
 infrastructure), `ollama*`, `torch-cu126`, `.keras`, `ai-practicum` (unrelated
