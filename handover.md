@@ -6,14 +6,28 @@ claims and is the reference. Open work is tracked in Forgejo issues (list them
 with the `fj` tools). Older versions of this file are in git history
 (`git log -p handover.md`); nothing in them is needed to continue.
 
-## 0a. Session 2026-10-06 (night, 03:40- MSK)
+## 0a. Session 2026-10-06 (night, 03:40-05:05 MSK) — paused, resume here
 
-- **RUNNING: job 220 part 1** (full stacks, amcl, solid walls; #10/#33 Type B). Frozen checkout `~/agx_navigation_job220`; workers 1-8; log `/tmp/job220.log`; out `~/run_data/2026-10-06_job220_fullstack/` (README there). Arms: O ours, M2 Smac2D+MPPI, MH Hybrid-A*+MPPI, R2 Smac2D+RPP; every Nav2 arm uses `compare_skid`. Started 04:14 MSK, ETA about 05:40. Read with `tools/summarize_arms.py all_rows.jsonl O`. Also report on the common set, since ours planner-fails about 5/40 (#39).
-- **Job 210 compared different plans:** Nav2 arms followed the LIBRARY plan, ours a LIVE re-solve with stack settings. It is not a controllers-only comparison. An agent is adding `ours-lib` (our corrector on the library plan) for job 220 part 2 (controllers only, library plan, truth + amcl: ours-lib, pmp-mppi, pmp-rpp, pmp-graceful, pmp-vpp, maybe pmp-gmpc).
-- **Live planner failures (#39):** stack cost weights (L_brake/w_v_barrier/w_v_terminal) make the TPBVP too stiff for cold-start solve_bvp; the library used defaults. Proposed fix: continuation on those weights.
-- **Comparison configs moved to the new package `agx_baselines`** (18be0b4). nav2.launch.py discovers controllers from its files; `nav2_profile` takes a comma list. Agents in worktrees are adding Graceful/Vector Pursuit (Opus), GMPC (Fable) there; each uses its own VM checkout and worker 9 only.
-- Job 200 superseded (MPPI stall); data moved to run_data. typeA checkout deleted. VM pip/uv caches cleared (disk was 93%; ollama-models is 28G and not ours).
-- Analysis scripts committed: `tools/believed_gain.py`, `tools/summarize_arms.py`.
+**Running on the VM (nothing needs babysitting):**
+- **Job 220 part 1** (full stacks, amcl, SOLID walls; #10/#33 Type B), workers 1-8, frozen checkout `~/agx_navigation_job220` (commit 1a80fa7), log `/tmp/job220.log`, out `~/run_data/2026-10-06_job220_fullstack/` (README there). Arms: O ours, M2 Smac2D+MPPI, MH Hybrid-A*+MPPI, R2 Smac2D+RPP; Nav2 arms use `compare_skid`. Slower than estimated: ETA about 07:00 MSK; the MPPI arms are slowest. Read: `python3 tools/summarize_arms.py all_rows.jsonl O`. Also report on the common set (ours planner-fails ~5/40, #39). Compare per-run wall times against job 210 to see whether 9-14 concurrent sims slowed it (#32).
+- **ours-lib smokes**, worker 9: `~/run_data/2026-10-06_smoke_ours-lib/run.sh`, log `run.log`, rows `rows_{amcl,truth}.jsonl`. Plans 00047 (live-planner-fails) and 00369 under amcl, then 00369 under truth. CHECK: outcome, `libsrv` start offset, and that the GT track follows the library poses (compare the diag `e_norm` against the distance from GT to `plan_poses`; `live_plan` proves nothing).
+
+**Next, in order:**
+1. Read the ours-lib smokes. If sane, launch **job 220 part 2** (controllers only, every arm on the SAME library plan, phantom walls, under BOTH truth and amcl): ours-lib, pmp-mppi, pmp-rpp, pmp-graceful, pmp-vpp, pmp-gmpc. Workers up to 14 now. Write a configs file like `tools/jobs/fullstack/configs.txt`, freeze a checkout, and put the README in at launch. GMPC needs the `~/.venvs/gmpc` venv (exists on the VM) and `--nav-mode gmpc` (compare_run handles it).
+2. Read job 220 part 1, then write jobs 210/220 into the paper (sec:stack). Job 210 compared DIFFERENT plans (Nav2 on the library plan, ours on a live re-solve), so it is not a controllers-only result. Use part 2 for that claim, and part 1 for the system claim.
+3. Cleanup equivalence check: pre-cleanup (`~/agx_navigation`, synced at 18be0b4) vs cleanup (`~/agx_navigation_cleanup`), 10 plans, truth, phantom walls. Single smokes ran fine but n=1 on 00369 cannot show equivalence (data `~/run_data/2026-10-06_cleanup_smoke/`). One stray "no /clock" stack-failure on worker 13 did not reproduce.
+4. Deferred refactor (audit plan; summary of it in this file's git history for 05:00): consolidate launch args into main.launch.py with explicit passing; merge copy-pasted node defs; full CLAUDE.md rewrite (~250 lines, outline from the audit). Decision pending: PlannerConfig defaults := stack values, plus a `library_v2()` preset for the library tools (#39). Do it only after the paper's library is frozen. Also: Nav2 arms' max turn rate differs from ours (fairness, #10); `slip_chi` 1.373 vs 1.3736.
+5. #38 review list, Russian cover note for the advisor.
+
+**Done tonight (all pushed: main d2f1788, scout_ros2 d2cf3f0, paper aa2256d):**
+- Job 190 read (negative, in the paper); job 210 read (#10). Job 200 superseded (MPPI stall), data in run_data.
+- #39 filed: the live BVP fails on 5/40 because the stack's L_brake/w_v_barrier/w_v_terminal make it stiff; the library used defaults. Fix proposal: weight continuation on the live map (a library warm-start is invalid on live maps).
+- New package `agx_baselines`, comparison-only (README says so): Nav2 overlays/profiles, Graceful + Vector Pursuit (submodule, Apache-2.0), GMPC wrapper (submodule, NO licence upstream: run-only, not redistributable). `nav2_profile` takes a comma list. compare_run arms: ours-lib, nav2-/pmp-graceful, nav2-/pmp-vpp, pmp-gmpc.
+- Smokes on 00369, amcl, phantom (n=1 each, not a ranking): pmp-gmpc arrived 0.40 m; pmp-graceful failed 3.56 m; pmp-vpp failed 1.39 m (`~/run_data/2026-10-06_smoke_{gmpc,graceful-vpp}/`).
+- Cleanup merged: online PMP mode removed (#29); `make run` defaults to vec-pmp; frontier only under nav2; `make test` path fixed (run it with `PYTHON=.venv/bin/python` locally); dead modules/tools/recipes archived. 267 tests pass.
+- Worker cap 9 → 14; the real limit is RAM, ~1.5 GB per sim. Assigned tonight: 9 ours-lib, 10 GMPC, 11 ctrl, 12-14 smokes.
+- VM disk: ollama removed and pip/uv caches cleared, 39 GB free. typeA checkout deleted. Agent VM checkouts `~/agx_navigation_{gmpc,ctrl,lib,cleanup}` can be deleted once part 2 runs from a fresh frozen checkout.
+- Lesson: never poll with `pgrep -f "<pattern>"` from a shell whose own command line contains the pattern. It matches itself forever.
 
 ## 0. Session 2026-10-05: jobs 170/180 read, #34 mechanism found
 
