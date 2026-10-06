@@ -296,6 +296,14 @@ class TrajectoryBuffer:
         self._overlay = list(samples)
         self._resume = int(min(max(resume_index, 0), len(self._samples)))
 
+    def cancel_overlay(self) -> None:
+        """Drop a re-join overlay mid-play; the plan cursor is where the
+        splice left it. Used when the robot is stopped at a wall during a
+        re-join, so a fresh one can be solved from where it actually is."""
+        self._overlay = []
+        self._resume = None
+        self._overlay_phase = 0.0
+
     def _project(self, actual_xy: Tuple[float, float]) -> int:
         """Index of the plan sample closest to `actual_xy`, searching forward
         only from the last projection, at most `max_skip` samples ahead.
