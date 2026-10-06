@@ -82,6 +82,15 @@ def generate_launch_description():
             ).replace("%%", "%"),
         ),
         DeclareLaunchArgument(
+            "supervisor_full_replan",
+            default_value="true",
+            description=(
+                "Supervisor tier 3: a full PlanToGoal after a failed wall "
+                "re-join. false for a plan server that cannot re-plan "
+                "(ours-lib's library server); the re-join is retried instead."
+            ),
+        ),
+        DeclareLaunchArgument(
             "wheel_bias",
             default_value="",
             description=(
@@ -160,6 +169,10 @@ def generate_launch_description():
                 ),
                 "supervisor.enabled": ParameterValue(
                     EqualsSubstitution(supervisor, "true"), value_type=bool
+                ),
+                "supervisor.full_replan": ParameterValue(
+                    EqualsSubstitution(LaunchConfiguration("supervisor_full_replan"), "true"),
+                    value_type=bool,
                 ),
             }
         ],

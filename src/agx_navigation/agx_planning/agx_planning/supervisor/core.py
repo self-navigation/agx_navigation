@@ -47,6 +47,13 @@ class SupervisorConfig:
     rejoin_max_age: float = 0.5     # [s] discard a re-join that arrives later than this
     rejoin_max_nodes: int = 3000    # solve_bvp mesh cap; bounds the 1-6 s failure case
     rejoin_t_min: float = 3.0       # [s] T_w floor (Phase 0: 99% solved at >= 3 s)
+    # Tier 3 (full PlanToGoal from the current pose) after a failed wall
+    # re-join. False for arms whose plan server cannot re-plan (ours-lib
+    # replays the stored library plan from its ORIGINAL start): the robot is
+    # held and the re-join retried every rejoin_retry_s instead.
+    full_replan: bool = True
+    rejoin_retry_s: float = 1.0
+    rejoin_max_retries: int = 10
 
 
 @dataclass

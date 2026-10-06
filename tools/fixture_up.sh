@@ -115,6 +115,9 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 # PlanToGoal server is supplied externally, e.g. tools/library_plan_server.py
 # for compare_run's ours-lib arm.
 [ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA use_server:=true"
+# ours-lib: the library server replays the stored plan from its original
+# start, so the supervisor must not ask it for a full re-plan (#41).
+[ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA supervisor_full_replan:=false"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
 # Supervisory layer (#41 vec-pmp, #42 nav2/gmpc). supervisor_mode is nav2-only
 # (follow_path for the same-plan arms); gmpc.launch.py sets its own.

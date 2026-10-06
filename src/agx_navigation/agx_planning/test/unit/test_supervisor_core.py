@@ -238,3 +238,14 @@ def test_buffer_rate_dilates_the_time_cursor():
     assert got == pytest.approx([0.0, 0.0, 0.1, 0.1])
     assert buf.advance(rate=0.0).pose[0] == pytest.approx(0.2)
     assert buf.advance(rate=0.0).pose[0] == pytest.approx(0.2)
+
+
+def test_buffer_cancel_overlay_returns_to_the_plan_cursor():
+    buf = _buffer()
+    buf.advance()
+    buf.advance()
+    buf.splice([PlaybackSample(0, 0, (9.0, 1.0, 0.0))] * 5, 30)
+    buf.advance()
+    buf.cancel_overlay()
+    assert not buf.overlay_active
+    assert buf.advance().pose[0] == pytest.approx(0.2)

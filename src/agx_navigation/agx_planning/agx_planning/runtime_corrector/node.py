@@ -795,6 +795,8 @@ class WheelCorrectorNode(Node):
         self._rejoin_future = None
         self._rejoin_meta: dict = {}
         self._overlay_c0 = math.inf
+        self._rejoin_not_before = -math.inf
+        self._rejoin_retries = 0
         self._sup_full_replans_goal = 0
         self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
         map_qos = QoSProfile(
@@ -862,6 +864,8 @@ class WheelCorrectorNode(Node):
                                    "thresholds for this plan")
         self._rejoin_future = None
         self._rejoin_solver = None
+        self._rejoin_not_before = -math.inf
+        self._rejoin_retries = 0
         if self._sup_cfg.rejoin:
             try:
                 # Lazy: scipy + the shooting solver only when re-joins are on.
@@ -899,8 +903,15 @@ class WheelCorrectorNode(Node):
         # only if it takes the body closer than where it started.
         if stop and overlay and clearance >= self._overlay_c0 - 0.02:
             stop = False
+        elif stop and overlay:
+            # The re-join is taking the body closer to the wall: abandon it.
+            # Leaving it spliced would deadlock -- a held robot never
+            # advances the overlay, and no new re-join starts while one plays.
+            self._buf.cancel_overlay()
+            overlay = False
         self._sup_scale = 1.0 if (overlay and not stop) else d.speed_scale
-        if d.trigger and not overlay and self._rejoin_future is None:
+        if (d.trigger and not overlay and self._rejoin_future is None
+                and now >= self._rejoin_not_before):
             self._request_rejoin(pose, d, clearance, now)
         self._publish_sup_state(d)
         if stop:
@@ -981,8 +992,26 @@ class WheelCorrectorNode(Node):
                                               self._rejoin_solver.last.get("solve_ms", 0.0)))
 
     def _full_replan(self, why: str) -> None:
-        """Tier 3: drop the plan and request a new one from the current pose."""
+        """Tier 3: drop the plan and request a new one from the current pose.
+
+        With ``full_replan`` off (ours-lib) the robot stays held and the
+        re-join is retried after ``rejoin_retry_s``; past
+        ``rejoin_max_retries`` the goal is abandoned.
+        """
         self._publish_zero()
+        if not self._sup_cfg.full_replan:
+            self._rejoin_retries += 1
+            if self._rejoin_retries > self._sup_cfg.rejoin_max_retries:
+                self.get_logger().error("supervisor: %s; %d re-join retries used, "
+                                        "abandoning the goal." % (
+                                            why, self._sup_cfg.rejoin_max_retries))
+                self._finish()
+                return
+            self._rejoin_not_before = self._now_s() + self._sup_cfg.rejoin_retry_s
+            self._sup.latched = False
+            self.get_logger().warn("supervisor: %s -> holding, re-join retry %d/%d" % (
+                why, self._rejoin_retries, self._sup_cfg.rejoin_max_retries))
+            return
         self._sup_counts["full_replans"] += 1
         self._sup_full_replans_goal += 1
         self._rejoin_future = None
