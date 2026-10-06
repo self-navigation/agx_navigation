@@ -17,13 +17,13 @@ with the `fj` tools). Older versions of this file are in git history
 
 ## 0. Session 2026-10-05: jobs 170/180 read, #34 mechanism found
 
-Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/loc_analysis/`. Run them on the VM from the repo root; the args are cfg dirs under `~/compare_*`.
+Full numbers are on #34 (comment 2026-10-05). Scripts: `tools/believed_gain.py` (gain/lag; args are cfg dirs) and `tools/summarize_arms.py` (miss + paired sign test; args `<all_rows.jsonl> <base_cfg>`), which superseded `tools/loc_analysis/` (deleted 2026-10-06). Run them on the VM from the repo root; the data now lives under `~/run_data/`.
 
 - **amcl tuning cannot close the gap.** All 32 cells of job 180 miss 13–26%, against 9% under truth. EKF wheel yaw has no effect at all (job 170 Cy ≈ C, and p=1.0 in job 180).
 - **Mechanism:** the corrector sees its cross-track error at about **0.4x gain and about 2.5 s lag** under amcl, and only ~5% of it while turning. Under truth it sees 0.95x at 0.1 s. Turn skid is invisible to wheel odometry, and amcl corrects it only slowly.
 - Ruled out: pose latency, the scan-band/bake-band mismatch (real, but it changes ~100 cells), lidar extrinsics, slip patches.
 - **DONE: job 190** (lidar odometry, #34), read 01:50 MSK 2026-10-06. NEGATIVE: rf2o in the EKF leaves amcl's believed-error gain/lag unchanged (k 0.38→0.43, τ 2.7→2.4 s); P_0.5 C 14% (10/70), L 24% (16/68), LA 62% (42/68); L vs C 33/66, p=1. The lag is amcl's scan correction, not the odom source. Paper sec:stack filled (paper aa2256d); data moved to `~/run_data/2026-10-05_job190_lidar-odom/` with README.
-  - How to read it: run `tools/loc_analysis/gain.py ~/compare_lidar/{C,L}` on the VM, and sign-test L vs C with `sum180.py`.
+  - How to read it: run `tools/believed_gain.py ~/run_data/2026-10-05_job190_lidar-odom/{C,L}` on the VM, and sign-test L vs C with `tools/summarize_arms.py <rows> C`.
   - If L has k near 1 and tau near 0.1 s with miss near 9%, the gap was skid observability: adopt lidar odometry, put it in the paper, and test it on the real robot (#36).
   - If L does not move: the wheels' vy=0 is not what blinds amcl, so look at amcl's resampling or motion model next.
   - Note: the VM's /tmp logs vanished between 10-03 and 10-05. The data dirs are what persists.

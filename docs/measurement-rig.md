@@ -250,7 +250,7 @@ run, and identical behaviour proves `slip1/slip2` are decorative.
 
 Measured 2026-08-05 with `slip_ident` on a real-time world, then re-measured
 after the wheel fix (`sweep_data/ground_mu_chi*.csv`, driver
-`tools/sweep_ground_mu.sh`). The pre-fix curve and its narrative are in
+`tools/archive/sweep_ground_mu.sh`). The pre-fix curve and its narrative are in
 [docs/corrector-history.md](docs/corrector-history.md); the mechanism below is
 unchanged and is the reason a frozen PMP plan cannot handle friction zones.
 
@@ -355,5 +355,5 @@ default does not.
   installed; 1920x1080 virtual framebuffer). This is how the final training
   stats block above was found — it was on screen but not in the log tail.
 - `tools/plot_checkpoint_paths.py` draws the checkpoint *paths* in a colour
-  ramp, next to `tools/plot_checkpoints.py` which reduces each to one scalar.
+  ramp, next to `tools/archive/plot_checkpoints.py` which reduces each to one scalar.
   Past ~8 overlaid paths the lines stop being individually traceable.

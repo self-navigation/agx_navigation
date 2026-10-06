@@ -76,7 +76,7 @@ Non-obvious facts about that box, all of which cost time to work out:
 - **Never leave `set -u` on across `source .../setup.bash`.** ROS's setup scripts
   read `AMENT_TRACE_SETUP_FILES` while it is unset, so the script exits on that
   line. Wrap the sourcing in `set +u` / `set -u` rather than dropping `set -u`.
-  This has cost time twice; on 2026-08-13 it killed `tools/queue_r_ladder.sh`
+  This has cost time twice; on 2026-08-13 it killed `tools/archive/queue_r_ladder.sh`
   *after* it had correctly waited for the in-flight sweep and logged `starting
   the r_omega ladder`, and the VM sat idle ~17 h before anyone read the log.
   Corollary for any detached overnight job: **make the log print progress after
