@@ -61,9 +61,10 @@ from launch.actions import (
     IncludeLaunchDescription,
     TimerAction,
 )
-from launch.conditions import LaunchConfigurationEquals
+from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (LaunchConfiguration, PathJoinSubstitution,
+                                  PythonExpression)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -168,8 +169,10 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals("localization", "truth"),
     )
 
-    # --- localization:=amcl -------------------------------------------------
-    # AMCL wants a 2-D LaserScan; the robot carries a 3-D lidar. slam.launch.py
+    # --- localization:=amcl, or nav_mode:=nav2 --------------------------------
+    # Nav2 consumes the scan too (costmap obstacle layer, collision_monitor --
+    # with no scan the collision monitor stops the robot, which is what sank
+    # job 221's first launch under truth). AMCL wants a 2-D LaserScan; the robot carries a 3-D lidar. slam.launch.py
     # flattens the *aggregated* cloud (lidar + depth camera), but localizing
     # against a map baked from wall geometry only needs the lidar, so this skips
     # the aggregator and the camera with it. Band and resolution match
@@ -197,7 +200,9 @@ def generate_launch_description():
             "use_inf": True,
             "use_sim_time": sim,
         }],
-        condition=LaunchConfigurationEquals("localization", "amcl"),
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("localization"), "' == 'amcl' or '",
+            LaunchConfiguration("nav_mode", default="vec-pmp"), "' == 'nav2'"])),
     )
 
     # The amcl block in nav2_params.yaml has been carried for a while but never
