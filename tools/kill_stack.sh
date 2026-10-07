@@ -184,7 +184,12 @@ for sig in TERM TERM KILL; do
     [ -z "$pids" ] && break
     # shellcheck disable=SC2086
     kill "-$sig" $pids 2>/dev/null
-    sleep 4
+    # Poll instead of a fixed 4 s: most stacks are gone in well under a
+    # second, and the fixed sleeps were 10-26 s of every bring-up (job 232).
+    for _ in $(seq 1 20); do
+        [ -z "$(collect)" ] && break
+        sleep 0.2
+    done
 done
 
 left=$(collect)
