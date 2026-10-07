@@ -10,7 +10,8 @@ schema and plan_opt.py's trial dirs both qualify). One row per plan, one column
 per set: baked map, the plan coloured green where its hull clearance is >=
 D_REQ and red where it is below, robot footprints every 1.5 s, and in the title
 the share of the plan below D_REQ and the minimum clearance. Without --plans,
-picks the plans with the largest share below D_REQ in the first set.
+picks the plans with the largest share below D_REQ in the first set, among
+plans every set contains.
 """
 import argparse
 import os
@@ -58,7 +59,8 @@ def main():
         d0 = sets[0][1]
         scored = []
         for name in sorted(os.listdir(d0)):
-            if name.endswith(".npz") and "door" not in name:
+            if (name.endswith(".npz") and "door" not in name
+                    and all(os.path.exists(os.path.join(d, name)) for _, d in sets)):
                 P = np.load(os.path.join(d0, name))["poses"]
                 scored.append((np.mean(clr(P) < D_REQ), name.split("_")[-1][:-4]))
         a.plans = [p for _, p in sorted(scored, reverse=True)[:a.n]]
