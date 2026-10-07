@@ -98,6 +98,8 @@ done
 PARTITION=${WORKER:+agx$WORKER}
 PARTITION=${PARTITION:-default}
 WINDOW="fixture${WORKER}"
+TMUX_SOCK="agx-w${WORKER:-0}"   # attach: tmux -L agx-w<N> attach -t $SESSION
+tm() { tmux -L "$TMUX_SOCK" "$@"; }
 LOG="/tmp/fixture${WORKER}.log"
 
 # The launch args that PARAM_VARS does not carry. All consumed by the launch
@@ -202,13 +204,19 @@ for attempt in $(seq 1 "$TRIES"); do
     bash tools/kill_stack.sh "$WORKSPACE" kill "$PARTITION" >/dev/null 2>&1
     ts "teardown done"
 
-    tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n scratch
-    tmux kill-window -t "$SESSION:$WINDOW" 2>/dev/null
+    # ONE TMUX SERVER PER WORKER (-L). The server inherits the env of whoever
+    # starts it -- workspace path + this worker's GZ_PARTITION -- so kill_stack
+    # for that worker selects the server itself. With one shared server, the
+    # worker that happened to start it killed every OTHER worker's pane on its
+    # next teardown (SIGHUP: ROS nodes die with no log line, gz survives, the
+    # clock stalls). That was every clock_stall in jobs 232/233.
+    tm has-session -t "$SESSION" 2>/dev/null || tm new-session -d -s "$SESSION" -n scratch
+    tm kill-window -t "$SESSION:=$WINDOW" 2>/dev/null
     # A stale scope of the same name would make systemd-run refuse the unit.
     [ -n "$SCOPE_PREFIX" ] && systemctl --user reset-failed "$SCOPE_UNIT" >/dev/null 2>&1
     # tmux windows inherit the tmux SERVER's env, not ours: forward the DDS
     # transport override explicitly (#32 runs an arm with SHM disabled).
-    tmux new-window -d -t "$SESSION" -n "$WINDOW" \
+    tm new-window -d -t "$SESSION" -n "$WINDOW" \
         "cd $WORKSPACE && DISPLAY=:0 ${FASTDDS_BUILTIN_TRANSPORTS:+FASTDDS_BUILTIN_TRANSPORTS=$FASTDDS_BUILTIN_TRANSPORTS} $SCOPE_PREFIX vglrun -d egl0 make fixture FIXTURE_TARGET=launch $FLOOR_VAR $LAUNCH_VAR WORKER=$WORKER \
          CORRECTOR=$CORRECTOR LOCALIZATION=$LOCALIZATION FIXTURE_NAV_MODE=$NAV_MODE \
          HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \

@@ -316,7 +316,9 @@ class SupervisorNode(Node):
         self._set_term(recoveries=self.term["recoveries"] + 1)
         self.recov = [(smp.left, smp.right) for smp in samples]  # to_wheels=identity: (v, w)
         if self._latest_gh is not None:
-            self.executor.create_task(self._latest_gh.cancel_goal_async())
+            # cancel_goal_async already sends; a Future is not a task (create_task
+            # on it raised in spin and killed the node, job 233).
+            self._latest_gh.cancel_goal_async()
             self._latest_gh = None
         self.get_logger().warn(f"recovery {self.recoveries}/{self.core.cfg.recovery_max} "
                                f"({why}): back off and face, {len(samples)} ticks")
