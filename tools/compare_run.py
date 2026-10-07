@@ -42,6 +42,11 @@ import time
 
 import numpy as np
 
+# Idle early stop (CompareDriver._wait_terminal): arm after this much motion,
+# call the robot still while it stays within this radius.
+IDLE_ARM_M = 0.30
+IDLE_RADIUS_M = 0.10
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
 
@@ -198,6 +203,8 @@ class CompareDriver:
         self.goal_tries = int(goal_tries)
         self.goal_ack_wait = float(goal_ack_wait)
         self.plan_wall_cap = float(plan_wall_cap)
+        # Idle early stop (sim s; 0 = off), set by run_one from --idle-stop.
+        self.idle_s = 0.0
         # Supervisory layer on a nav2/gmpc stack (#42/#43): publish the
         # FollowPath plan on /supervisor/plan and take the run's outcome from
         # the supervisor's own last goal once it has re-planned.
@@ -489,7 +496,7 @@ class CompareDriver:
                 kind="supervisor",
                 extra_pred=lambda: (st.get("nsup_term") or {}).get("goal_status") != "active")
             for k in ("terminal", "terminal_kind", "travel_time", "timed_out",
-                      "wall_backstop"):
+                      "wall_backstop", "idle_stop", "idle_at"):
                 if k in o2:
                     out[k] = o2[k]
             out["drive_wall"] = out.get("drive_wall", 0.0) + o2.get("drive_wall", 0.0)
@@ -502,9 +509,22 @@ class CompareDriver:
         out["nav2_error_name"] = None
         return out
 
-    def _wait_terminal(self, goal_t, timeout_s, backstop_s, kind, extra_pred=None) -> dict:
+    def _wait_terminal(self, goal_t, timeout_s, backstop_s, kind, extra_pred=None,
+                       idle=True) -> dict:
+        """Spin until terminal, sim deadline or wall backstop.
+
+        IDLE EARLY STOP (``self.idle_s`` > 0, ``idle``): once the robot has
+        moved IDLE_ARM_M from where it stood at ``goal_t`` (so the planning
+        standstill never counts), a run whose ground-truth position stays
+        within IDLE_RADIUS_M for ``idle_s`` sim seconds is cut short. It sets
+        ``timed_out`` (scored like a timeout, so summaries need no change)
+        plus ``idle_stop`` and ``idle_at`` (sim s after ``goal_t``), which go
+        into the row so truncated runs can be studied as a group.
+        """
         st = self.state
         wall0 = time.monotonic()
+        armed, anchor = False, None   # anchor = (t, x, y) of the current still spell
+        p0 = st["pose"]
         out: dict = {"terminal": False, "terminal_kind": None,
                      "stack_terminal": "none", "nav2_error_code": None}
 
@@ -525,6 +545,20 @@ class CompareDriver:
             if time.monotonic() - wall0 > backstop_s:
                 out["wall_backstop"] = True
                 break
+            if idle and self.idle_s > 0 and st["track"] and sim_t is not None:
+                t, x, y, _ = st["track"][-1]
+                if p0 is None:
+                    p0 = (x, y)
+                if not armed and math.hypot(x - p0[0], y - p0[1]) >= IDLE_ARM_M:
+                    armed = True
+                if armed:
+                    if anchor is None or math.hypot(x - anchor[1], y - anchor[2]) > IDLE_RADIUS_M:
+                        anchor = (t, x, y)
+                    elif t - anchor[0] >= self.idle_s:
+                        out["timed_out"] = True
+                        out["idle_stop"] = True
+                        out["idle_at"] = round(sim_t - goal_t, 1)
+                        break
             self._rclpy.spin_once(self.node, timeout_sec=0.1)
         out["travel_time"] = ((st["sim_t"] - goal_t)
                               if st["sim_t"] is not None else None)
@@ -606,7 +640,7 @@ class CompareDriver:
             # into immediate republishes.
             ack_t = self.state["sim_t"]
             self._wait_terminal(ack_t, self.goal_ack_wait, backstop_s,
-                                kind="sentinel", extra_pred=taken_now)
+                                kind="sentinel", extra_pred=taken_now, idle=False)
             # Re-check taken DIRECTLY instead of trusting the wait's exit
             # reason: the ack window can also end on its own sim-time deadline
             # (timed_out=True) a step before the solve completes and motion
@@ -906,8 +940,11 @@ def run_one(args, plan_path: str) -> dict:
     # carries no heading). --spawn-yaw-zero pins 0.0 for a flat-ground debug.
     spawn_yaw = 0.0 if args.spawn_yaw_zero else float(plan["poses"][0, 2])
     spawn = (float(plan["start"][0]), float(plan["start"][1]), spawn_yaw)
-    up_ok, attempts, _ = bring_up_stack(args, args.arm, spawn, up_log)
+    up_ok, attempts, up_text = bring_up_stack(args, args.arm, spawn, up_log)
     row["stack_up_attempts"] = attempts
+    # fixture_up.sh's stage stamps, [[t_wall_s, stage], ...] in order.
+    row["up_stages"] = [[float(t), stage.strip()] for t, stage in
+                        re.findall(r"^\[fixture-up\] t\+([0-9.]+)s (.+)$", up_text, flags=re.M)]
     row["stack_up_s"] = round(time.monotonic() - t_start, 1)
     if not up_ok:
         row.update(outcome="stack-failed", stack_up_ok=False,
@@ -962,6 +999,7 @@ def run_one(args, plan_path: str) -> dict:
                             follow_action=("follow_path_gmpc"
                                            if args.arm == "pmp-gmpc" and gmpc_on_nav2(args)
                                            else "follow_path"))
+        drv.idle_s = args.idle_stop
         if not drv.spin_until(lambda: drv.state["pose"] is not None, 30.0):
             row.update(outcome="stack-failed", stack_up_ok=True,
                        error=f"no ground-truth pose on {drv.topic_pose}",
@@ -1124,6 +1162,9 @@ def run_one(args, plan_path: str) -> dict:
                  and res.get("drive_wall") else None),
             drive_wall_s=round(res.get("drive_wall", 0.0), 1),
             drive_t0=None if drive_t0 is None else round(drive_t0, 2),
+            idle_stop=bool(res.get("idle_stop")),
+            idle_at=res.get("idle_at"),
+            idle_stop_s=args.idle_stop,
             plan_wall_s=(round(res["plan_wall_s"], 1)
                          if res.get("plan_wall_s") is not None else None),
         )
@@ -1200,6 +1241,10 @@ def main() -> int:
     ap.add_argument("--tries", type=int, default=3, help="stack bring-up attempts per run")
     ap.add_argument("--stack-timeout", type=float, default=120.0,
                     help="per-attempt readiness wait [wall s]")
+    ap.add_argument("--idle-stop", type=float, default=30.0,
+                    help="end a run whose robot has stayed within "
+                         f"{IDLE_RADIUS_M} m for this many sim seconds after first "
+                         "moving; recorded as idle_stop in the row (0 = off)")
     ap.add_argument("--wall-backstop", type=float, default=900.0,
                     help="wall-clock backstop on the drive phase [s], for a "
                          "sim whose /clock died")
