@@ -559,6 +559,11 @@ class CompareDriver:
             elif time.monotonic() - last_sim_wall > CLOCK_STALL_WALL_S:
                 out["clock_stall"] = True
                 out["clock_stall_at"] = (None if sim_t is None else round(sim_t - goal_t, 1))
+                # When the clock stopped (wall, UTC; align with other workers'
+                # scope stops in the journal) and what is left of the stack.
+                out["clock_stall_utc"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - CLOCK_STALL_WALL_S))
+                out["clock_stall_ps"] = _scope_ps(getattr(self, "worker", None))
                 break
             if idle and self.idle_s > 0 and st["track"] and sim_t is not None:
                 t, x, y, _ = st["track"][-1]
@@ -841,6 +846,25 @@ def _scope_cgroup_dir(worker) -> str | None:
     return path if os.path.isdir(path) else None
 
 
+def _scope_ps(worker) -> list | None:
+    """Command names (with state) of every process left in the stack's scope."""
+    d = _scope_cgroup_dir(worker)
+    if d is None:
+        return None
+    out = []
+    try:
+        for pid in open(os.path.join(d, "cgroup.procs")).read().split():
+            try:
+                comm = open(f"/proc/{pid}/comm").read().strip()
+                state = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0]
+                out.append(f"{comm}:{state}")
+            except OSError:
+                pass
+    except OSError:
+        return None
+    return sorted(out)
+
+
 def cgroup_snapshot(worker) -> dict | None:
     """cpu.stat counters + memory.peak + pids.current of the stack scope."""
     d = _scope_cgroup_dir(worker)
@@ -1015,6 +1039,7 @@ def run_one(args, plan_path: str) -> dict:
                                            if args.arm == "pmp-gmpc" and gmpc_on_nav2(args)
                                            else "follow_path"))
         drv.idle_s = args.idle_stop
+        drv.worker = args.worker
         if not drv.spin_until(lambda: drv.state["pose"] is not None, 30.0):
             row.update(outcome="stack-failed", stack_up_ok=True,
                        error=f"no ground-truth pose on {drv.topic_pose}",
@@ -1182,6 +1207,8 @@ def run_one(args, plan_path: str) -> dict:
             drive_t0=None if drive_t0 is None else round(drive_t0, 2),
             idle_stop=bool(res.get("idle_stop")),
             clock_stall=bool(res.get("clock_stall")),
+            clock_stall_utc=res.get("clock_stall_utc"),
+            clock_stall_ps=res.get("clock_stall_ps"),
             clock_stall_at=res.get("clock_stall_at"),
             idle_at=res.get("idle_at"),
             idle_stop_s=args.idle_stop,
