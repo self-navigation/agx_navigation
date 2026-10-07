@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: all clean install-ros install-gazebo install-deps can-bus run teleop rviz test offline nav2 fixture rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
+.PHONY: all clean install-ros install-gazebo install-deps can-bus run launch teleop rviz test offline nav2 fixture rl-deps rl-sim rl-train rl-kill p0 p1 p2 p3 curriculum
 
 SIM ?= true
 HEADLESS ?= false
@@ -172,7 +172,7 @@ can-bus:
 LAUNCH_PKG ?= agx_bringup
 LAUNCH_FILE ?= main.launch.py
 
-run: build can-bus
+define LAUNCH_RECIPE
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
 		$(WORKER_ENV) \
@@ -180,6 +180,15 @@ run: build can-bus
 		ros2 launch $(DEBUG_INFIX) \
 		$(LAUNCH_PKG) $(LAUNCH_FILE) \
 		$(PARAMS) $(EXTRA_PARAMS)
+endef
+
+run: build can-bus
+	$(LAUNCH_RECIPE)
+
+# `run` without its prerequisites (build/deps/can-bus checks): for batch
+# harnesses that build once up front and relaunch the stack per run.
+launch:
+	$(LAUNCH_RECIPE)
 
 # Convenience entry points wrapping `run` with the right nav/planner mode.
 # All accept the usual overrides (e.g. `make nav2 SIM=false`).
@@ -241,8 +250,11 @@ FIXTURE_NAV_MODE ?= vec-pmp
 # the command line would be silently REPLACED by the one below, not appended.
 FIXTURE_EXTRA_PARAMS ?=
 
+# FIXTURE_TARGET=launch skips the build/deps checks (tools/fixture_up.sh
+# uses it: the harness builds once, then relaunches per run).
+FIXTURE_TARGET ?= run
 fixture:
-	$(MAKE) run NAV_MODE=$(FIXTURE_NAV_MODE) \
+	$(MAKE) $(FIXTURE_TARGET) NAV_MODE=$(FIXTURE_NAV_MODE) \
 		LAUNCH_PKG=$(LAUNCH_PKG) LAUNCH_FILE=$(LAUNCH_FILE) \
 		WORKER=$(strip $(WORKER)) \
 		LOCALIZATION=$(FIXTURE_LOCALIZATION) \
