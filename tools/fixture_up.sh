@@ -190,10 +190,17 @@ source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 set -u
 
+# Stage timestamps (wall s since this script started) so a slow bring-up can
+# be split into teardown / launch / readiness. Grep "[fixture-up] t+".
+T0=$(date +%s.%N)
+ts() { echo "[fixture-up] t+$(awk "BEGIN{printf \"%.1f\", $(date +%s.%N) - $T0}")s $*"; }
+
 for attempt in $(seq 1 "$TRIES"); do
     echo "[fixture-up] attempt $attempt/$TRIES  (partition=$PARTITION nav=$NAV_MODE loc=$LOCALIZATION corrector=$CORRECTOR patches=$PATCHES spawn=$SPAWN_X,$SPAWN_Y,$SPAWN_YAW floor=${FLOOR_NUMBER:-default})"
 
+    ts "teardown start"
     bash tools/kill_stack.sh "$WORKSPACE" kill "$PARTITION" >/dev/null 2>&1
+    ts "teardown done"
 
     tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" -n scratch
     tmux kill-window -t "$SESSION:$WINDOW" 2>/dev/null
@@ -207,6 +214,7 @@ for attempt in $(seq 1 "$TRIES"); do
          HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \
          FIXTURE_EXTRA_PARAMS=\"$EXTRA\" 2>&1 | tee $LOG"
 
+    ts "launch sent"
     # The probe must run in the stack's own partition and domain, or it will
     # correctly report an empty graph and we would restart a healthy stack.
     if tools/with-worker "$WORKER" python3 tools/stack_ready.py --mode "$READY_MODE" $READY_FLAGS $AMCL_FLAG --wait "$TIMEOUT" --settle 3; then
@@ -217,10 +225,12 @@ for attempt in $(seq 1 "$TRIES"); do
                 echo "[fixture-up] WARNING: scope $SCOPE_UNIT not active; stats will be null"
             fi
         fi
+        ts "ready"
         echo "[fixture-up] READY on attempt $attempt (log: $LOG)"
         exit 0
     fi
 
+    ts "not ready"
     echo "[fixture-up] attempt $attempt did not come up; last 20 lines of $LOG:"
     tail -20 "$LOG" 2>/dev/null | sed 's/^/    /'
 done
