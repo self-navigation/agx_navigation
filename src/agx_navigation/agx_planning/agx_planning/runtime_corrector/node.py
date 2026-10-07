@@ -10,6 +10,7 @@ publishes an explicit zero. With supervisor.enabled, each playback tick first
 asks SupervisorCore for re-timing, a wall speed scale, a stop or a re-join.
 """
 
+import dataclasses
 import math
 import signal
 from concurrent.futures import ThreadPoolExecutor
@@ -871,6 +872,7 @@ class WheelCorrectorNode(Node):
         self._rejoin_not_before = -math.inf
         self._rejoin_retries = 0
         self._recoveries = 0
+        self._await_rejoin = False
         if self._sup_cfg.rejoin:
             try:
                 # Lazy: scipy + the shooting solver only when re-joins are on.
@@ -914,9 +916,18 @@ class WheelCorrectorNode(Node):
             # advances the overlay, and no new re-join starts while one plays.
             self._buf.cancel_overlay()
             overlay = False
+        if self._await_rejoin and not overlay:
+            # A back-off-and-face recovery has played out. Resuming the plan
+            # from its held cursor would make TVLQR drive the robot from the
+            # new pose straight back to where it hit (C1, plan 00291), so hold
+            # until a re-join from here is spliced (or fails into a retry).
+            stop = True
+            if self._rejoin_future is None and now >= self._rejoin_not_before:
+                self._request_rejoin(pose, dataclasses.replace(d, stop=True, reason="wall"),
+                                     clearance, now)
         self._sup_scale = 1.0 if (overlay and not stop) else d.speed_scale
-        if (d.trigger and not overlay and self._rejoin_future is None
-                and now >= self._rejoin_not_before):
+        if (d.trigger and not overlay and not self._await_rejoin
+                and self._rejoin_future is None and now >= self._rejoin_not_before):
             self._request_rejoin(pose, d, clearance, now)
         self._publish_sup_state(d)
         if stop:
@@ -991,6 +1002,7 @@ class WheelCorrectorNode(Node):
         self._overlay_c0 = meta["c0"]
         self._sup_counts["rejoin_ok"] += 1
         self._rejoin_retries = 0
+        self._await_rejoin = False
         self.get_logger().info("re-join spliced: %d samples, resume at %d (T_w %.1f s,"
                                " %.0f ms)" % (len(samples) - skip, meta["tgt"] + 1,
                                               self._rejoin_solver.last.get("T_w", 0.0),
@@ -1041,8 +1053,8 @@ class WheelCorrectorNode(Node):
     def _try_recovery(self) -> bool:
         """Splice a back-off-and-face motion (supervisor/recovery.py) after a
         held re-join failed or was blocked. The plan cursor does not move, so
-        playback resumes where it was held; the off-plan/lag trigger then asks
-        for a re-join from the new, clear pose."""
+        playback would resume where it was held, so ``_await_rejoin`` holds the
+        robot after the motion until a re-join from the new pose is spliced."""
         meta = self._rejoin_meta or {}
         if (self._recoveries >= self._sup_cfg.recovery_max or self._sup_swd is None
                 or not meta.get("held") or meta.get("x0") is None):
@@ -1057,6 +1069,7 @@ class WheelCorrectorNode(Node):
             self.get_logger().warn("supervisor: no clear back-off-and-face motion")
             return False
         self._recoveries += 1
+        self._await_rejoin = True
         self._buf.splice(samples, self._buf.cursor)
         self._overlay_c0 = meta["c0"]
         self.get_logger().warn("supervisor: recovery %d/%d, back off and face plan "
