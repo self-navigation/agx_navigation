@@ -17,6 +17,11 @@ While stopped after a re-plan, a command passes only if it opens clearance at
 the pose predicted escape_horizon seconds ahead. In the slow band a command
 that does not close clearance passes unscaled.
 
+If the robot stays held for stuck_after s, or the goal aborts away from the
+goal, it backs off and turns to face the plan (recovery.backoff_and_face, up to
+core.recovery_max per goal) and re-plans. Lag triggers during an in-place turn
+are ignored.
+
 Outputs: /supervisor/state (Decision.as_array() plus [replans, stops,
 replan_in_flight, applied_scale]), /supervisor/terminal (JSON, TRANSIENT_LOCAL:
 replans, stops, last_reason, goals_sent, goal_status, goal_error_code, retimes)
@@ -45,6 +50,7 @@ from std_msgs.msg import Float64MultiArray, Int32, String
 from tf2_ros import Buffer, TransformListener
 
 from agx_planning.supervisor.core import Decision, SupervisorConfig, SupervisorCore
+from agx_planning.supervisor.recovery import backoff_and_face
 from agx_planning.supervisor.walls import SignedWallDistance
 from agx_planning.utils import declare_and_load_dataclass
 
@@ -82,6 +88,16 @@ class SupervisorNodeConfig:
     # pinned a robot spawned at 0.150 m, smoke G1 v2; a 0.05 m tolerance
     # instead let it ratchet into the wall, v3).
     closing_tol: float = 0.005
+    # Recovery (C1, job 230): a robot held at a wall, or whose goal Nav2
+    # aborted short of the target, backs off and turns to face the plan
+    # ``face_ahead`` m beyond k*, then re-plans from there (recovery.py).
+    stuck_after: float = 2.0                     # [s] held with no opening command
+    face_ahead: float = 1.0                      # [m] along the plan from k*
+    goal_reached_dist: float = 0.5               # [m] an abort closer than this is not re-sent
+    # [rad/s], [m/s] a command turning faster than this while moving slower
+    # is an in-place turn: a lag trigger then is the turn, not the robot lagging.
+    turn_w: float = 0.3
+    turn_v: float = 0.05
 
 
 def _yaw(q) -> float:
@@ -157,8 +173,13 @@ class SupervisorNode(Node):
         self.last_replan_t = -math.inf
         self.goal_replans = 0
         self._latest_gh = None
+        self.stop_t = None               # sim time the current hold began
+        self.recov = None                # remaining recovery twists [(v, w)]
+        self.recoveries = 0              # per goal
+        self.last_cmd = (0.0, 0.0)
         self.term = {"replans": 0, "stops": 0, "last_reason": "", "goals_sent": 0,
-                     "goal_status": "none", "goal_error_code": None, "retimes": 0}
+                     "goal_status": "none", "goal_error_code": None, "retimes": 0,
+                     "recoveries": 0}
         self._publish_terminal()
         self.timer = self.create_timer(1.0 / self.cfg.rate, self._tick)
         self.get_logger().info(
@@ -219,6 +240,7 @@ class SupervisorNode(Node):
         poses, times = _path_arrays(msg)
         if self.cfg.mode == "follow_path":
             self.goal_replans = 0
+            self.recoveries = 0
             self._install(poses, times)
             return
         end = poses[-1]
@@ -226,12 +248,16 @@ class SupervisorNode(Node):
                                                    end[1] - self.goal[1]) > self.cfg.new_goal_dist
         if new_goal:
             self.goal_replans = 0
+            self.recoveries = 0
         if new_goal or self.await_plan or not self.has_plan:
             self.await_plan = False
             self._install(poses, times)
 
     def _on_cmd(self, msg: TwistStamped) -> None:
         v, w = msg.twist.linear.x, msg.twist.angular.z
+        self.last_cmd = (v, w)
+        if self.recov is not None:
+            return                             # the recovery owns /cmd_vel
         d0, d1 = self._smooth_clearance(0.0, 0.0), self._smooth_clearance(v, w)
         if self.stop:
             if self.replan_since_stop and d1 > d0 + self.cfg.closing_tol:
@@ -271,6 +297,42 @@ class SupervisorNode(Node):
         rows = (qy - W.origin_y) / W.resolution
         return float(map_coordinates(W.dist, [rows, cols], order=1, mode="nearest").min())
 
+    # ---- recovery -----------------------------------------------------
+    def _face_target(self):
+        P, s = self.core.poses, self.core.s
+        k = int(np.searchsorted(s, s[self.core.k_star] + self.cfg.face_ahead))
+        return P[min(k, len(P) - 1), :2]
+
+    def _start_recovery(self, why: str) -> bool:
+        """Back off and face the plan; the re-plan follows when it ends."""
+        if (self.walls is None or not self.has_plan or self.pose is None
+                or self.recoveries >= self.core.cfg.recovery_max):
+            return False
+        samples = backoff_and_face(self.pose, self._face_target(), self._clear,
+                                   lambda v, w: (v, w), 1.0 / self.cfg.rate)
+        if samples is None:
+            return False
+        self.recoveries += 1
+        self._set_term(recoveries=self.term["recoveries"] + 1)
+        self.recov = [(smp.left, smp.right) for smp in samples]  # to_wheels=identity: (v, w)
+        if self._latest_gh is not None:
+            self.executor.create_task(self._latest_gh.cancel_goal_async())
+            self._latest_gh = None
+        self.get_logger().warn(f"recovery {self.recoveries}/{self.core.cfg.recovery_max} "
+                               f"({why}): back off and face, {len(samples)} ticks")
+        return True
+
+    def _step_recovery(self, t: float) -> None:
+        v, w = self.recov.pop(0)
+        self._publish_cmd(v, w)
+        if not self.recov:
+            self.recov = None
+            self.stop = False
+            self.stop_t = None
+            self.last_replan_t = -math.inf      # re-plan from the new pose now
+            self.core.rebase(t)
+            self._maybe_replan(t, "recovery")
+
     # ---- decision tick ------------------------------------------------
     def _tick(self) -> None:
         pose = self._lookup_pose()
@@ -280,6 +342,9 @@ class SupervisorNode(Node):
         x, y, yaw = pose
         t = self._now()
         self.clearance = self._clear(x, y, yaw)
+        if self.recov is not None:
+            self._step_recovery(t)
+            return
         extra = [float(self.core.replans), float(self.core.stops), float(self.in_flight),
                  float(self.applied)]
         if self.has_plan:
@@ -290,7 +355,9 @@ class SupervisorNode(Node):
             if d.reached and d.retime_index is not None:
                 self.retime_pub.publish(Int32(data=int(d.retime_index)))
                 self._set_term(retimes=self.term["retimes"] + 1)
-            if d.trigger:
+            v, w = self.last_cmd
+            turning = abs(w) > self.cfg.turn_w and abs(v) < self.cfg.turn_v
+            if d.trigger and not (d.reason == "lag" and turning):
                 self._maybe_replan(t, d.reason)
         else:
             c = self.core.cfg
@@ -305,8 +372,14 @@ class SupervisorNode(Node):
             arr[i("stop")] = float(stop)
         if stop and not self.stop:
             self.replan_since_stop = False
+            self.stop_t = t
             self.get_logger().warn(f"STOP: hull clearance {self.clearance:.3f} m")
         self.stop = stop
+        if not stop:
+            self.stop_t = None
+        elif (self.replan_since_stop and not self.in_flight and self.stop_t is not None
+              and t - self.stop_t > self.cfg.stuck_after and self._start_recovery("held")):
+            return
         if stop:
             self._publish_cmd(0.0, 0.0)
         self._set_term(replans=self.core.replans, stops=self.core.stops)
@@ -398,6 +471,15 @@ class SupervisorNode(Node):
             code = getattr(res.result, "error_code", None)
             self._set_term(goal_status=_STATUS.get(res.status, f"status_{res.status}"),
                            goal_error_code=None if code is None else int(code))
+            # Nav2 gave up short of the goal (e.g. the progress checker, which
+            # the slow band can trip): back off and re-plan instead of parking.
+            if res.status == GoalStatus.STATUS_ABORTED and self.pose is not None and self.goal:
+                if math.hypot(self.pose[0] - self.goal[0],
+                              self.pose[1] - self.goal[1]) > self.cfg.goal_reached_dist:
+                    self._latest_gh = None
+                    if not self._start_recovery("aborted"):
+                        self.last_replan_t = -math.inf
+                        self._maybe_replan(self._now(), "aborted")
 
 
 def main(args=None):

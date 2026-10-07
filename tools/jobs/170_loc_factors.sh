@@ -38,7 +38,7 @@ ORDER=(${CONFIGS:-${ORDER_DEFAULT[*]}})
 
 mkdir -p "$OUT_DIR"
 PLANS=$(mktemp /tmp/factor_plans.XXXXXX)
-sed "s|__HOME__|$HOME|" tools/jobs/broad40.txt | head -n "${N_PLANS:-1000}" >"$PLANS"
+sed "s|__HOME__|$HOME|" "${PLAN_FILE:-tools/jobs/broad40.txt}" | head -n "${N_PLANS:-1000}" >"$PLANS"
 
 cleanup() {
     local w

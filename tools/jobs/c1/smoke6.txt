@@ -1,0 +1,6 @@
+__HOME__/traj_data_v2/floor_6_v2_00369.npz
+__HOME__/traj_data_v2/floor_6_v2_00482.npz
+__HOME__/traj_data_v2/floor_6_v2_00105.npz
+__HOME__/traj_data_v2/floor_6_v2_00249.npz
+__HOME__/traj_data_v2/floor_6_v2_00302.npz
+__HOME__/traj_data_v2/floor_6_v2_00291.npz
