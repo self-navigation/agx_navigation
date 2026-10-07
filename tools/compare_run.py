@@ -46,6 +46,8 @@ import numpy as np
 # call the robot still while it stays within this radius.
 IDLE_ARM_M = 0.30
 IDLE_RADIUS_M = 0.10
+# Sim clock frozen this long (wall s) = the stack died (_wait_terminal).
+CLOCK_STALL_WALL_S = 30.0
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(HERE)
@@ -496,7 +498,8 @@ class CompareDriver:
                 kind="supervisor",
                 extra_pred=lambda: (st.get("nsup_term") or {}).get("goal_status") != "active")
             for k in ("terminal", "terminal_kind", "travel_time", "timed_out",
-                      "wall_backstop", "idle_stop", "idle_at"):
+                      "wall_backstop", "idle_stop", "idle_at", "clock_stall",
+                      "clock_stall_at"):
                 if k in o2:
                     out[k] = o2[k]
             out["drive_wall"] = out.get("drive_wall", 0.0) + o2.get("drive_wall", 0.0)
@@ -525,6 +528,12 @@ class CompareDriver:
         wall0 = time.monotonic()
         armed, anchor = False, None   # anchor = (t, x, y) of the current still spell
         p0 = st["pose"]
+        # CLOCK STALL: sim time frozen for CLOCK_STALL_WALL_S wall seconds.
+        # Job 231: 135/816 runs sat at the 900 s wall backstop with RTF ~0,
+        # most of the stack's processes gone (pids 440 -> 160), i.e. part of
+        # the stack died mid-run. Recorded as clock_stall, scored as
+        # stack-failed, never as a controller timeout.
+        last_sim, last_sim_wall = st["sim_t"], wall0
         out: dict = {"terminal": False, "terminal_kind": None,
                      "stack_terminal": "none", "nav2_error_code": None}
 
@@ -544,6 +553,12 @@ class CompareDriver:
                 break
             if time.monotonic() - wall0 > backstop_s:
                 out["wall_backstop"] = True
+                break
+            if sim_t != last_sim:
+                last_sim, last_sim_wall = sim_t, time.monotonic()
+            elif time.monotonic() - last_sim_wall > CLOCK_STALL_WALL_S:
+                out["clock_stall"] = True
+                out["clock_stall_at"] = (None if sim_t is None else round(sim_t - goal_t, 1))
                 break
             if idle and self.idle_s > 0 and st["track"] and sim_t is not None:
                 t, x, y, _ = st["track"][-1]
@@ -1118,7 +1133,10 @@ def run_one(args, plan_path: str) -> dict:
         # neither discriminates. A stack that reached ANY terminal state
         # (sentinel or nav2 result) without moving a metre of wheel command is
         # one whose planner never delivered a followable plan.
-        if final_err is not None and final_err <= args.tolerance:
+        if res.get("clock_stall"):
+            # Not the controller's failure: the sim stopped under it.
+            outcome = "stack-failed"
+        elif final_err is not None and final_err <= args.tolerance:
             outcome = "arrived"
         elif res.get("planner_timeout"):
             outcome = "planner-timeout"
@@ -1163,6 +1181,8 @@ def run_one(args, plan_path: str) -> dict:
             drive_wall_s=round(res.get("drive_wall", 0.0), 1),
             drive_t0=None if drive_t0 is None else round(drive_t0, 2),
             idle_stop=bool(res.get("idle_stop")),
+            clock_stall=bool(res.get("clock_stall")),
+            clock_stall_at=res.get("clock_stall_at"),
             idle_at=res.get("idle_at"),
             idle_stop_s=args.idle_stop,
             plan_wall_s=(round(res["plan_wall_s"], 1)
@@ -1189,6 +1209,20 @@ def run_one(args, plan_path: str) -> dict:
         row.update(cgroup_fields(cg_start, cgroup_snapshot(args.worker)))
 
     row["wall_time"] = round(time.monotonic() - t_start, 1)
+    # Keep the stack's own log for any run that did not arrive: fixture_up.sh
+    # writes /tmp/fixture<W>.log and the next run overwrites it, which left
+    # job 231's 135 mid-run stack deaths with no log at all.
+    if row.get("outcome") != "arrived":
+        src = f"/tmp/fixture{args.worker or ''}.log"
+        if os.path.exists(src):
+            import gzip
+            dst = os.path.join(args.log_dir, f"fixture_{tag}.log.gz")
+            try:
+                with open(src, "rb") as fi, gzip.open(dst, "wb") as fo:
+                    shutil.copyfileobj(fi, fo)
+                row["fixture_log"] = dst
+            except OSError:
+                pass
     return row
 
 
