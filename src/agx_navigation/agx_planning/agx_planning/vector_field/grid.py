@@ -18,6 +18,12 @@ class VectorFieldGrid:
     Optionally also holds a signed wall distance d(x, y) (>0 free, <0 in
     walls), Gaussian-smoothed by wall_sigma so the footprint cost built on
     it is close to C^1 for solve_bvp; query_dist samples it.
+
+    Optionally holds a separate unit DIRECTION field (fx, fy) that replaces
+    -normalize(grad T) as F_unit, e.g. the bottleneck-aligned field
+    (bottleneck.py). T and its gradient (the position pull) are unchanged,
+    and F_unit keeps the eps fade of |grad T|, so it still vanishes at the goal
+    sink and at cut loci.
     """
 
     def __init__(self):
@@ -27,6 +33,8 @@ class VectorFieldGrid:
         self._wd: Optional[np.ndarray] = None
         self._dwd_dx: Optional[np.ndarray] = None
         self._dwd_dy: Optional[np.ndarray] = None
+        self._fx: Optional[np.ndarray] = None
+        self._fy: Optional[np.ndarray] = None
         self._origin_x = 0.0
         self._origin_y = 0.0
         self._res = 1.0
@@ -52,6 +60,7 @@ class VectorFieldGrid:
         field_eps: float = 1e-2,
         wall_dist: Optional[np.ndarray] = None,
         wall_sigma: float = 0.05,
+        direction: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     ):
         T = T_field.astype(np.float64)
         finite_mask = np.isfinite(T)
@@ -73,6 +82,11 @@ class VectorFieldGrid:
             self._wd, self._dwd_dx, self._dwd_dy = wd, w_dcol, w_drow
         else:
             self._wd = self._dwd_dx = self._dwd_dy = None
+        if direction is not None:
+            self._fx = np.asarray(direction[0], dtype=np.float64)
+            self._fy = np.asarray(direction[1], dtype=np.float64)
+        else:
+            self._fx = self._fy = None
         self._origin_x = origin_x
         self._origin_y = origin_y
         self._res = resolution
@@ -126,8 +140,18 @@ class VectorFieldGrid:
         # cost near the goal and at cut loci rather than fighting noise.
         eps = self._field_eps
         norm = np.sqrt(dx * dx + dy * dy + eps * eps)
-        fux = -dx / norm
-        fuy = -dy / norm
+        if self._fx is None:
+            fux = -dx / norm
+            fuy = -dy / norm
+        else:
+            # Shaped direction, renormalised after interpolation (it turns
+            # sharply on a bottleneck's axis line), times the same eps fade.
+            fade = np.sqrt(dx * dx + dy * dy) / norm
+            sx, sy = bilerp(self._fx), bilerp(self._fy)
+            sn = np.hypot(sx, sy)
+            sn = np.where(sn > 1e-9, sn, 1.0)
+            fux = sx / sn * fade
+            fuy = sy / sn * fade
 
         T = np.where(in_bounds, T, self._tt_max)
         dx = np.where(in_bounds, dx, 0.0)
