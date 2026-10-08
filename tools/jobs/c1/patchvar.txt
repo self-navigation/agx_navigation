@@ -1,0 +1,6 @@
+# Job 238: slip-patch isolation for ours-lib (user, 2026-10-08). Patches are
+# sampled along the plan by --seed (job 237 orig = seed 0). LTN at other seeds
+# moves the patches; LTF has none, its repeats across seeds are the flat-ground
+# run-to-run noise.
+LTN --arm ours-lib --localization truth --phantom-walls
+LTF --arm ours-lib --localization truth --phantom-walls --no-terrain
