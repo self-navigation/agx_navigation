@@ -63,7 +63,7 @@ def main(argv=None):
     ap.add_argument("--eval-every", type=int, default=25_000)
     ap.add_argument("--beta0", type=float, default=1.0)
     ap.add_argument("--eps0", type=float, default=float("nan"),
-                    help="default: median positive teacher gap on 8192 training draws")
+                    help="default: 0.1 x the teacher's median nominal-chi cost on the training pool")
     ap.add_argument("--alpha", type=float, default=2.5)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max-labels", type=int, default=0, help="smoke tests: use only the first N labels")
@@ -111,10 +111,17 @@ def main(argv=None):
     gi = grng.choice(train_idx[solved[train_idx]], 8192)
     gchi = grng.uniform(*a.chi, len(gi))
     gap = costs(env, gi, env.a_teacher[gi], gchi)["cost"] - j0[gi]
-    eps0 = a.eps0 if np.isfinite(a.eps0) else float(np.median(np.maximum(gap, 0.0)))
+    # eps0: the gap at which beta has fallen to 1/e. NOT the median gap: most
+    # re-joins are straight, chi barely matters there, and the median gap is
+    # ~0.004 (2026-10-08), which would switch the teacher off almost everywhere
+    # it is not exactly optimal. 10% of a typical re-join's cost is G3's own
+    # tolerance: past it, the teacher's model error is worth correcting.
+    tr_sol = train_idx[solved[train_idx]]
+    eps0 = a.eps0 if np.isfinite(a.eps0) else 0.1 * float(np.median(j0[tr_sol]))
     print(f"[setup {time.time() - t_start:.0f}s] train {len(train_idx)} val {len(val_idx)} "
           f"test {len(test_idx)} (plans {sorted(env.plan_names[p] for p in test_pids)}); "
-          f"eps_hat median {np.median(gap):.3f} p90 {np.percentile(gap, 90):.3f}; eps0 {eps0:.3f}",
+          f"eps_hat median {np.median(gap):.3f} p75 {np.percentile(gap, 75):.3f} p90 {np.percentile(gap, 90):.3f} "
+          f"(frac > eps0: {np.mean(gap > eps0):.2f}); J_chi0 median {np.median(j0[tr_sol]):.3f}; eps0 {eps0:.3f}",
           flush=True)
 
     # state normalisation from the training pool
