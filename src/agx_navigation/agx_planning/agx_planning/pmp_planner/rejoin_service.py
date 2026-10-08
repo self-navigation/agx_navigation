@@ -14,12 +14,19 @@ splice into its buffer::
 state at ``target_index`` on the plan's tick, with wheel speeds clipped to
 ``cfg.wheel_cmd_max``. Any failure returns None. ``last`` holds the latest
 solve's diagnostics.
+
+``field_data`` supplies the wall distance for the footprint barrier when
+``cfg.w_fp > 0``; without it the re-join ignores walls. With ``retry_w_fp > 0``
+the wall-blind answer is solved first and, only if the caller's ``accept`` gate
+rejects it, re-solved with the barrier (``retry_w_fp``, ``retry_fp_margin``),
+which is slower and stiffer.
 """
 
 from __future__ import annotations
 
 from math import pi
-from typing import List, Optional, Sequence
+import dataclasses
+from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
@@ -32,6 +39,18 @@ T_W_MIN = 3.0
 
 def wrap(a):
     return (np.asarray(a) + pi) % (2.0 * pi) - pi
+
+
+def wall_field(swd, wall_sigma: float = 0.05):
+    """A ``VectorFieldGrid`` carrying only the wall distance of ``swd`` (a
+    ``supervisor.walls.SignedWallDistance``), for cost B's footprint barrier.
+    Travel time is zero: cost B never queries it. ``wall_sigma`` is the
+    barrier's smoothing (``PlannerConfig.fp_smooth_sigma``)."""
+    from ..vector_field import VectorFieldGrid
+    g = VectorFieldGrid()
+    g.update(np.zeros_like(swd.dist), swd.origin_x, swd.origin_y, swd.resolution,
+             wall_dist=swd.dist, wall_sigma=wall_sigma)
+    return g
 
 
 def plan_guess_effort(plan: np.ndarray, k: int, m: int, x0: np.ndarray, dt: float,
@@ -65,7 +84,8 @@ class RejoinSolver:
 
     def __init__(self, plan_samples: Sequence[PlaybackSample], field_data=None,
                  cfg: Optional[PlannerConfig] = None, dt: Optional[float] = None,
-                 T_w_min: float = T_W_MIN, max_nodes: Optional[int] = None):
+                 T_w_min: float = T_W_MIN, max_nodes: Optional[int] = None,
+                 retry_w_fp: float = 0.0, retry_fp_margin: Optional[float] = None):
         self.cfg = cfg or PlannerConfig(mode="offline")
         self.dt = float(dt if dt is not None else self.cfg.dt)
         self.T_w_min = float(T_w_min)
@@ -76,6 +96,12 @@ class RejoinSolver:
             raise ValueError("plan needs at least 2 samples")
         self.goal = self.plan[-1, 0:3].copy()
         self.solver = PMPShootingSolver(self.cfg, field_data)
+        self.retry_solver = None
+        if retry_w_fp > 0.0 and field_data is not None and field_data.has_wall_dist:
+            rcfg = dataclasses.replace(self.cfg, w_fp=float(retry_w_fp))
+            if retry_fp_margin is not None:
+                rcfg.fp_margin = float(retry_fp_margin)
+            self.retry_solver = PMPShootingSolver(rcfg, field_data)
         self.last: dict = {}
         self.solve_ms: List[float] = []
 
@@ -83,8 +109,9 @@ class RejoinSolver:
         d = np.hypot(self.plan[:, 0] - x0[0], self.plan[:, 1] - x0[1])
         return int(np.argmin(d))
 
-    def solve(self, x0: np.ndarray, target_index: int,
-              k_now: Optional[int] = None) -> Optional[List[PlaybackSample]]:
+    def solve(self, x0: np.ndarray, target_index: int, k_now: Optional[int] = None,
+              accept: Optional[Callable[[List[PlaybackSample]], bool]] = None
+              ) -> Optional[List[PlaybackSample]]:
         x0 = np.asarray(x0, dtype=np.float64).reshape(5)
         n_plan = len(self.plan)
         tgt = int(min(max(target_index, 0), n_plan - 1))
@@ -114,11 +141,36 @@ class RejoinSolver:
                                          max_nodes=self.max_nodes)
             self.solve_ms.append(r["solve_ms"])
         self.last.update(status=r["status"], message=r["message"], nodes=r["nodes"],
-                         solve_ms=r["solve_ms"])
+                         solve_ms=r["solve_ms"], wall_retry=False)
         if not r["success"]:
             return None
-        self.last["sol"] = r["sol"]
-        y = r["sol"](np.arange(m + 1) * self.dt)
+        out = self._samples(r["sol"], m)
+        if out is None or accept is None or self.retry_solver is None or accept(out):
+            return out
+        # Rejected by the caller's wall gate: re-solve with the barrier.
+        t_mesh = np.linspace(0.0, T_w, self.cfg.N + 1)
+        guesses = [r["sol"](t_mesh)]
+        if m_g >= 1:
+            guesses.append(plan_guess_effort(self.plan, k_g, m_g, x0, self.dt, self.cfg.N))
+        guesses.append(None)  # solve_rejoin's linear blend: on a synthetic pillar
+        # it was the only guess that converged with the barrier on
+        total = r["solve_ms"]
+        self.last["wall_retry"] = True
+        for g in guesses:
+            r2 = self.retry_solver.solve_rejoin(x0, x_t, T_w, self.goal, cost="effort",
+                                                y_guess=g, max_nodes=self.max_nodes)
+            self.solve_ms.append(r2["solve_ms"])
+            total += r2["solve_ms"]
+            if r2["success"]:
+                break
+        self.last.update(status="retry_" + r2["status"], nodes=r2["nodes"], solve_ms=total)
+        if not r2["success"]:
+            return None
+        return self._samples(r2["sol"], m)
+
+    def _samples(self, sol, m: int) -> Optional[List[PlaybackSample]]:
+        self.last["sol"] = sol
+        y = sol(np.arange(m + 1) * self.dt)
         if not np.all(np.isfinite(y)):
             self.last["status"] = "nonfinite"
             return None

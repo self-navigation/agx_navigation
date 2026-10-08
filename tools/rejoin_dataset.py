@@ -4,7 +4,8 @@
 Each sample is a re-join problem drawn as in tools/rejoin_phase0.make_problems
 (a broad plan, a random index k, a recorded TVLQR deviation times a log-uniform
 scale), with T_w drawn from [3, 10] s by default, and is solved by the
-runtime's own ``RejoinSolver`` (cost B, effort).
+runtime's own ``RejoinSolver`` (cost B, effort). ``--w-fp`` > 0 adds the
+footprint barrier to cost B.
 
 Per sample, in each .npz shard:
   s      (N, 10)  e_along, e_cross, e_theta  (x0 - plan[k], plan-heading frame)
@@ -20,6 +21,9 @@ Per sample, in each .npz shard:
                   tuning.epsilon.step_cost over the plan ticks against
                   plan[k+i], correction = (v, omega) minus the plan's,
                   at q_cross=2.5, r_omega=2.618.
+  retry  (N,)     1 = the wall-blind answer was rejected by the wall gate and re-solved
+  gate   (N,)     1 = the returned answer passes the runtime's wall gate (rejoin_clear)
+  cmin   (N,)     min hull clearance [m] along the returned samples (plan tick)
   plus   plan (names), k, tgt, solve_ms, dev (N,5) for provenance.
 
     run: tools/rejoin_dataset.py --n 200 --jobs 4 -o <out dir>
@@ -57,15 +61,21 @@ def chi_hat(prob):
 _C = {}
 
 
-def _ctx(plan_path, tw_floor=3.0):
+def _ctx(plan_path, tw_floor=3.0, w_fp=0.0, fp_margin=None, wall_mode="always",
+         max_nodes=None):
     from agx_planning.pmp_planner import PlannerConfig
-    from agx_planning.pmp_planner.rejoin_service import RejoinSolver
+    from agx_planning.pmp_planner.rejoin_service import RejoinSolver, wall_field
     from agx_planning.runtime_corrector.trajectory_buffer import PlaybackSample
     from agx_planning.supervisor.walls import SignedWallDistance
     if plan_path not in _C:
         z = np.load(plan_path)
         dt = float(z["dt_sample"])
         cfg = PlannerConfig(mode="offline")
+        always = wall_mode == "always" and w_fp > 0
+        if always:
+            cfg.w_fp = float(w_fp)
+            if fp_margin is not None:
+                cfg.fp_margin = float(fp_margin)
         samples = [PlaybackSample(left=float(w[0]), right=float(w[1]),
                                   pose=(float(p[0]), float(p[1]), float(p[2])))
                    for p, w in zip(z["poses"], z["wheel_cmds"])]
@@ -75,15 +85,32 @@ def _ctx(plan_path, tw_floor=3.0):
                        if os.path.exists(os.path.join(r, my))), os.path.join(REPO, my))
         if "walls" not in _C or _C["walls"][0] != my:
             _C["walls"] = (my, SignedWallDistance.from_map_yaml(my))
-        _C[plan_path] = (RejoinSolver(samples, None, cfg, dt=dt, T_w_min=tw_floor), cfg, dt)
+        field = wall_field(_C["walls"][1], cfg.fp_smooth_sigma) if w_fp > 0 else None
+        retry = float(w_fp) if wall_mode == "retry" else 0.0
+        rs = RejoinSolver(samples, field, cfg, dt=dt, T_w_min=tw_floor, max_nodes=max_nodes,
+                          retry_w_fp=retry, retry_fp_margin=fp_margin)
+        swd = _C["walls"][1]
+        c_plan = np.array([swd.body_clearance(*s.pose) for s in samples])
+        _C[plan_path] = (rs, cfg, dt, c_plan)
     return _C[plan_path] + (_C["walls"][1],)
+
+
+def stop_thresholds(c_plan, k, tgt, n):
+    """The supervisor's plan-relative stop_at (SupervisorConfig defaults) at
+    the plan index each of n re-join samples stands in for, as the runtime's
+    wall gate computes it (runtime_corrector/node.py _poll_rejoin)."""
+    ks = np.minimum(np.linspace(k, tgt, n).round().astype(int), len(c_plan) - 1)
+    return np.maximum(0.03, np.minimum(0.15, c_plan[ks] - 0.15))
 
 
 def _label(prob):
     from agx_planning.pmp_planner.rejoin_service import body_knots, wrap
     from agx_planning.tuning.epsilon import CostWeights, step_cost
     adopted = CostWeights(q_cross=2.5, r_omega=2.618)
-    rs, cfg, dt, walls = _ctx(prob["plan"], prob.get("tw_floor", 3.0))
+    from agx_planning.supervisor.walls import rejoin_clear
+    rs, cfg, dt, c_plan, walls = _ctx(prob["plan"], prob.get("tw_floor", 3.0),
+                                      prob.get("w_fp", 0.0), prob.get("fp_margin"),
+                                      prob.get("wall_mode", "always"), prob.get("max_nodes"))
     plan = rs.plan
     k, m = prob["k"], prob["m"]
     dev = np.array(prob["dev"])
@@ -99,13 +126,22 @@ def _label(prob):
                   chi_hat(prob), m * dt])
     out = dict(id=prob["id"], plan=os.path.basename(prob["plan"])[:-4], k=k, tgt=tgt,
                dev=dev, s=s, a=np.full(2 * T_KNOTS, np.nan),
-               traj=np.full((T_TRAJ, 5), np.nan), m=0, j=np.nan)
+               traj=np.full((T_TRAJ, 5), np.nan), m=0, j=np.nan, retry=0, gate=0,
+               cmin=np.nan)
+    c0 = float(s[7])
+
+    def accept(smp):  # the runtime's wall gate
+        return rejoin_clear(smp, walls, c0, stop_thresholds(c_plan, k, tgt, len(smp)))
+
     n_before = len(rs.solve_ms)
-    samples = rs.solve(x0, tgt, k_now=k)
+    samples = rs.solve(x0, tgt, k_now=k, accept=accept)
     out["solve_ms"] = float(sum(rs.solve_ms[n_before:]))  # incl. the fallback retry
     out["status"] = rs.last.get("status")
+    out["retry"] = int(bool(rs.last.get("wall_retry")))
     if samples is None:
         return out
+    out["gate"] = int(accept(samples))
+    out["cmin"] = min(walls.body_clearance(*q.pose) for q in samples)
     sol, T_w = rs.last["sol"], rs.last["T_w"]
     out["a"] = body_knots(sol, T_w, cfg, T_KNOTS)
     out["traj"] = sol(np.linspace(0.0, T_w, T_TRAJ))[0:5].T
@@ -132,6 +168,8 @@ def _write_shard(path, rows):
         plan=np.array([r["plan"] for r in rows]), k=np.array([r["k"] for r in rows]),
         tgt=np.array([r["tgt"] for r in rows]), dev=np.array([r["dev"] for r in rows]),
         solve_ms=np.array([r["solve_ms"] for r in rows]),
+        retry=np.array([r["retry"] for r in rows]), gate=np.array([r["gate"] for r in rows]),
+        cmin=np.array([r["cmin"] for r in rows]),
         status=np.array([str(r["status"]) for r in rows]))
 
 
@@ -156,6 +194,15 @@ def main():
                          "3 s lowers it to --tw-min automatically")
     ap.add_argument("--scale-min", type=float, default=0.5)
     ap.add_argument("--scale-max", type=float, default=3.0)
+    ap.add_argument("--w-fp", type=float, default=0.0,
+                    help="footprint-barrier weight in cost B (0 = wall-blind, the S5 teacher)")
+    ap.add_argument("--fp-margin", type=float, default=None,
+                    help="barrier margin [m]; default PlannerConfig.fp_margin (0.05)")
+    ap.add_argument("--wall-mode", choices=("always", "retry"), default="always",
+                    help="always: the barrier is in every solve; retry: solve wall-blind, "
+                         "re-solve with the barrier only when the runtime's wall gate rejects")
+    ap.add_argument("--max-nodes", type=int, default=None,
+                    help="solve_bvp mesh cap (the runtime uses SupervisorConfig.rejoin_max_nodes=3000)")
     ap.add_argument("-o", "--out", required=True, help="output directory (run_data/...)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -165,6 +212,8 @@ def main():
                              trace_plan_dir=a.trace_plan_dir)
     for q in probs:
         q["tw_floor"] = min(a.tw_floor, a.tw_min)
+        q["w_fp"], q["fp_margin"] = a.w_fp, a.fp_margin
+        q["wall_mode"], q["max_nodes"] = a.wall_mode, a.max_nodes
     probs.sort(key=lambda q: q["plan"])  # one solver/field per plan per worker
     commit = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
                             capture_output=True, text=True).stdout.strip()
