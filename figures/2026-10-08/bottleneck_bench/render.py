@@ -62,28 +62,84 @@ for corr in ("tvlqr", "tvlqr_slip"):
 open(os.path.join(OUT, "stats.txt"), "w").write("\n".join(L) + "\n")
 print("\n".join(L))
 
-# --- tracks at the doors of the plans where align changes the door error most (plain tvlqr) ---
+# --- footprints at the door each plan passes, for the plans whose wall contact changes (plain tvlqr) ---
+from matplotlib.patches import Polygon  # noqa: E402
+HL, HW = 0.315, 0.2925   # compare_run.FP_HALF_LENGTH / FP_HALF_WIDTH
+
+
+def hull(x, y, th):
+    c, s = np.cos(th), np.sin(th)
+    pts = np.array([(HL, HW), (HL, -HW), (-HL, -HW), (-HL, HW)])
+    return np.c_[x + pts[:, 0] * c - pts[:, 1] * s, y + pts[:, 0] * s + pts[:, 1] * c]
+
+
+import compare_run as _cr  # noqa: E402
+_d, _r, _ox, _oy = _cr._signed_wall_dist(6)
+_nl, _nw = int(2 * HL / _cr.FP_SPACING) + 1, int(2 * HW / _cr.FP_SPACING) + 1
+_lx, _wy = np.linspace(-HL, HL, _nl), np.linspace(-HW, HW, _nw)
+_BODY = np.vstack([np.c_[_lx, np.full(_nl, HW)], np.c_[_lx, np.full(_nl, -HW)],
+                   np.c_[np.full(_nw, HL), _wy], np.c_[np.full(_nw, -HL), _wy]])
+
+
+def hull_clear(a):
+    """Per-sample min clearance of the hull perimeter (compare_run.wall_contact's raster)."""
+    c, s = np.cos(a["true_theta"]), np.sin(a["true_theta"])
+    px = a["true_x"][:, None] + _BODY[:, 0] * c[:, None] - _BODY[:, 1] * s[:, None]
+    py = a["true_y"][:, None] + _BODY[:, 0] * s[:, None] + _BODY[:, 1] * c[:, None]
+    cc = np.clip(((px - _ox) / _r).astype(int), 0, _d.shape[1] - 1)
+    rr = np.clip(((py - _oy) / _r).astype(int), 0, _d.shape[0] - 1)
+    return _d[rr, cc].min(axis=1)
+
+
+def worst_door(S, p, corr):
+    """The door this run passes with the largest |e|: (door xy, sample index of the max)."""
+    a = S[(p, corr)]["a"]
+    e = np.abs(a["e_cross"])
+    dd = np.hypot(a["plan_x"][:, None] - DOORS[:, 0], a["plan_y"][:, None] - DOORS[:, 1])
+    near = dd.min(axis=1) < DOOR_R
+    k = int(np.nanargmax(np.where(near & np.isfinite(e), e, -1)))
+    return DOORS[int(np.argmin(dd[k]))], k
+
+
 corr = "tvlqr"
 plans = sorted(p for (p, c) in B if c == corr and (p, c) in A)
-dd = {p: A[(p, corr)]["door"] - B[(p, corr)]["door"] for p in plans if np.isfinite(A[(p, corr)]["door"] - B[(p, corr)]["door"])}
-pick = sorted(dd, key=dd.get)[:2] + sorted(dd, key=dd.get)[-2:]
+fixed = [p for p in plans if B[(p, corr)]["contact"] and not A[(p, corr)]["contact"]]
+new = [p for p in plans if A[(p, corr)]["contact"] and not B[(p, corr)]["contact"]]
+fixed.sort(key=lambda p: A[(p, corr)]["door"] - B[(p, corr)]["door"])
+pick = fixed[:3] + new[:1]
 wall = arr >= 65
 EXT = [ox, ox + arr.shape[1] * res, oy, oy + arr.shape[0] * res]
-fig, axs = plt.subplots(1, len(pick), figsize=(5 * len(pick), 5.5))
-for ax, p in zip(axs, pick):
-    ax.imshow(np.where(wall, 0.0, np.where(arr < 0, 0.75, 1.0)), cmap="gray", origin="lower", extent=EXT, vmin=0, vmax=1)
-    for lib, S, c in (("base", B, "tab:blue"), ("align", A, "tab:red")):
+fig, axs = plt.subplots(2, len(pick), figsize=(4.6 * len(pick), 9.4), squeeze=False)
+for j, p in enumerate(pick):
+    # centre on base's tightest pose if it touched, else on align's
+    ref = B if B[(p, corr)]["contact"] else A
+    ar = ref[(p, corr)]["a"]
+    kk = int(np.argmin(hull_clear(ar)))
+    cx, cy = ar["true_x"][kk], ar["true_y"][kk]
+    for i, (lib, S, col) in enumerate((("base", B, "tab:blue"), ("align", A, "tab:red"))):
+        ax = axs[i, j]
+        ax.imshow(np.where(wall, 0.0, np.where(arr < 0, 0.75, 1.0)), cmap="gray", origin="lower", extent=EXT,
+                  vmin=0, vmax=1)
         a = S[(p, corr)]["a"]
-        ax.plot(a["plan_x"], a["plan_y"], c=c, lw=0.8, ls=":")
-        ax.plot(a["true_x"], a["true_y"], c=c, lw=1.6, label=f"{lib}: door max|e| {S[(p, corr)]['door']:.2f}"
-                f"{' CONTACT' if S[(p, corr)]['contact'] else ''}")
-    a = B[(p, corr)]["a"]
-    e = np.abs(a["e_cross"]); k = int(np.nanargmax(np.where(np.isfinite(e), e, -1)))
-    # centre on the door nearest the base run's worst point
-    j = int(np.argmin(np.hypot(DOORS[:, 0] - a["plan_x"][k], DOORS[:, 1] - a["plan_y"][k])))
-    cx, cy = DOORS[j]
-    ax.set_xlim(cx - 2, cx + 2); ax.set_ylim(cy - 2, cy + 2); ax.set_aspect("equal")
-    ax.set_title(f"{p} ({corr})", fontsize=9); ax.legend(fontsize=7, loc="lower left")
-fig.suptitle("Gazebo truth (solid) vs plan (dotted), base blue / aligned red; the two plans where align helps "
-             "most at the doors (left two), and the two where it hurts most (right two; worse by <= 1 cm, panel centred on the door nearest base's worst point)", fontsize=10)
+        win = np.hypot(a["true_x"] - cx, a["true_y"] - cy) < 1.6
+        ax.plot(a["plan_x"], a["plan_y"], c="0.4", lw=1, ls="--", label="plan")
+        for k in np.nonzero(win)[0][::4]:   # every 0.4 s
+            ax.add_patch(Polygon(hull(a["true_x"][k], a["true_y"][k], a["true_theta"][k]), closed=True,
+                                 fc="none", ec=col, lw=0.6, alpha=0.7))
+        ax.plot(a["true_x"], a["true_y"], c=col, lw=1.5, label="robot centre (Gazebo truth)")
+        hc = hull_clear(a)
+        kw = int(np.argmin(np.where(win, hc, np.inf)))
+        ax.add_patch(Polygon(hull(a["true_x"][kw], a["true_y"][kw], a["true_theta"][kw]), closed=True,
+                             fc=col, ec="k", lw=1.0, alpha=0.45, label="tightest pose", zorder=5))
+        r = S[(p, corr)]
+        ax.set_title(f"{p[11:]} {lib}: door max|e| {r['door']:.2f} m, min hull clearance "
+                     f"{r['clear']:+.2f} m{'  CONTACT' if r['contact'] else ''}", fontsize=8.5,
+                     color="crimson" if r["contact"] else "k")
+        ax.set_xlim(cx - 1.0, cx + 1.0); ax.set_ylim(cy - 1.0, cy + 1.0); ax.set_aspect("equal")
+        if i == 0 and j == 0:
+            ax.legend(fontsize=7, loc="lower left")
+fig.suptitle(f"Plain TVLQR, Gazebo bench: robot hull every 0.4 s around the base run's tightest pose (filled = tightest pose in view). "
+             f"Top: base plan; bottom: bottleneck-aligned plan.\nAlign removed wall contact on {len(fixed)} plans "
+             f"(first {min(3, len(fixed))} shown, largest door gain first) and added it on {len(new)} "
+             f"(right column: in the final turn to the goal, 5.7 m from any door)", fontsize=10)
 fig.tight_layout(); fig.savefig(os.path.join(OUT, "door_tracks.png"), dpi=85); plt.close(fig)
