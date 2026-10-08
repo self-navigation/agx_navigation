@@ -71,6 +71,21 @@ class VectorFieldConfig:
     centring_cap: float = 0.8  # [m]
     centring_smooth: float = 0.0  # [m]
 
+    # Bottleneck alignment, i.e. stop-and-aim at doorways (#50, bottleneck.py).
+    # Default OFF. When on, the result carries a shaped unit DIRECTION field
+    # (dir_x, dir_y): near every narrow passage it is a line-following field on
+    # the passage axis, so the planner stops, turns in place and drives straight
+    # through instead of skidding through a turn taken on the move. T, and hence
+    # the position pull, is unchanged.
+    bottleneck_align: bool = False
+    bottleneck_max_width: float = 1.2      # [m] openings narrower than this
+    bottleneck_approach: float = 1.0       # [m] zone length before the opening
+    bottleneck_exit: float = 0.6           # [m] zone length past it
+    bottleneck_lateral: float = 0.8        # [m] zone half-width
+    bottleneck_fade: float = 0.3           # [m] blend into the FM2 direction
+    bottleneck_converge_deg: float = 80.0  # max approach angle onto the axis
+    bottleneck_converge_dist: float = 0.15  # [m] lateral scale of that approach
+
     # Smooth T before differentiating. This regularises FMM ridges, where
     # the central-difference gradient otherwise averages two opposing sides
     # and produces an unstable unit direction. Default OFF: with the
@@ -112,6 +127,9 @@ class VectorFieldResult:
                     the planner's footprint cost has an outward gradient
                     even for a body point already in a wall. Optional so
                     hand-built results (tests) need not supply it.
+    dir_x, dir_y -- shaped unit direction (cfg.bottleneck_align), or None.
+                    grad_x/grad_y stay FM2's own -grad T direction.
+    bottlenecks  -- the (Bottleneck, sign) pairs the shaping used.
     """
 
     travel_time: np.ndarray
@@ -123,6 +141,9 @@ class VectorFieldResult:
     origin_y: float
     resolution: float
     wall_dist: Optional[np.ndarray] = None
+    dir_x: Optional[np.ndarray] = None
+    dir_y: Optional[np.ndarray] = None
+    bottlenecks: Optional[list] = None
 
     def query_vec(self, wx: float, wy: float) -> Optional[np.ndarray]:
         """Bilinear interpolation of [vx, vy, T] at world position (wx, wy).
@@ -578,6 +599,20 @@ def compute_field(
         resolution=resolution,
         wall_dist=edt_free - distance_transform_edt(obstacle_mask) * resolution,
     )
+    if cfg.bottleneck_align:
+        from agx_planning.vector_field.bottleneck import find_bottlenecks, shape_direction
+        bns = find_bottlenecks(obstacle_mask, resolution, origin_x, origin_y,
+                               max_width=cfg.bottleneck_max_width,
+                               approach=cfg.bottleneck_approach)
+        result.dir_x, result.dir_y, result.bottlenecks = shape_direction(
+            gx, gy, obstacle_mask, bns, resolution, origin_x, origin_y,
+            approach=cfg.bottleneck_approach, exit=cfg.bottleneck_exit,
+            lateral=cfg.bottleneck_lateral, fade=cfg.bottleneck_fade,
+            converge_angle=np.deg2rad(cfg.bottleneck_converge_deg),
+            converge_dist=cfg.bottleneck_converge_dist,
+            goal_xy=(origin_x + (goal_col + 0.5) * resolution,
+                     origin_y + (goal_row + 0.5) * resolution))
+        message += f" [bottleneck_align: {len(result.bottlenecks)}/{len(bns)} oriented]"
     return result, message
 
 
@@ -645,5 +680,6 @@ def field_result_to_grid(
         field_eps=field_eps,
         wall_dist=result.wall_dist,
         wall_sigma=wall_sigma,
+        direction=(None if result.dir_x is None else (result.dir_x, result.dir_y)),
     )
     return grid

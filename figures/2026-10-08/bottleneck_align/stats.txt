@@ -1,0 +1,19 @@
+00355__base.npz success 395
+00443__base.npz success 565
+00355__sharp.npz success 405
+00355__align.npz success 400
+00428__base.npz success 380
+00443__align.npz success 565
+00428__align.npz success 380
+00428__sharp.npz success 385
+00443__sharp.npz success 570
+00355 base  status success      duration   39.5 s  max v 0.71  max v|w| 0.68  v|w| at the doors 0.41 0.35
+00355 align status success      duration   40.0 s  max v 0.70  max v|w| 0.68  v|w| at the doors 0.35 0.29
+00355 sharp status success      duration   40.5 s  max v 0.70  max v|w| 0.68  v|w| at the doors 0.38 0.45
+00443 base  status success      duration   56.5 s  max v 0.80  max v|w| 0.54  v|w| at the doors 0.41
+00443 align status success      duration   56.5 s  max v 0.80  max v|w| 0.54  v|w| at the doors 0.37
+00443 sharp status success      duration   57.0 s  max v 0.80  max v|w| 0.54  v|w| at the doors 0.38
+00428 base  status success      duration   38.0 s  max v 0.69  max v|w| 0.57  v|w| at the doors 0.54
+00428 align status success      duration   38.0 s  max v 0.68  max v|w| 0.66  v|w| at the doors 0.55
+00428 sharp status success      duration   38.5 s  max v 0.69  max v|w| 0.69  v|w| at the doors 0.46
+EXIT 0
