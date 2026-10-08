@@ -288,6 +288,10 @@ class CompareDriver:
             lambda m: st.__setitem__("nsup_term", json.loads(m.data)), latched)
         self._sup_plan_pub = (self.node.create_publisher(Path, "/supervisor/plan", latched)
                               if self.supervised else None)
+        # The timed PMP plan, one pose per sample: supervisor_node's
+        # replan_source plan|pmp re-plans keep it (supervisor/rejoin_path.py).
+        self._sup_ref_pub = (self.node.create_publisher(Path, "/supervisor/pmp_plan", latched)
+                             if self.supervised else None)
         self.node.create_subscription(
             Float64MultiArray, "/wheel_velocity_controller/commands",
             lambda m: st["wheel"].append((st["sim_t"], list(m.data)))
@@ -357,7 +361,8 @@ class CompareDriver:
 
     # -- goal dispatch ------------------------------------------------------
     def send_goal(self, arm: str, goal_xy, goal_yaw: float,
-                  timeout_s: float, backstop_s: float, path=None, times=None) -> dict:
+                  timeout_s: float, backstop_s: float, path=None, times=None,
+                  ref=None) -> dict:
         """Send the goal the arm's way; block until terminal or deadline.
 
         The returned dict carries terminal/travel_time/drive_wall; metrics are
@@ -373,13 +378,14 @@ class CompareDriver:
         if arm in VEC_PMP_ARMS:
             out = self._drive_vec_pmp(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         elif arm in PMP_PATH_ARMS:
-            out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s, times)
+            out = self._drive_follow_path(path, goal_t, timeout_s, backstop_s, times, ref)
         else:
             out = self._drive_nav2(goal_xy, goal_yaw, goal_t, timeout_s, backstop_s)
         out["goal_t"] = goal_t
         return out
 
-    def _drive_follow_path(self, path, goal_t, timeout_s, backstop_s, times=None) -> dict:
+    def _drive_follow_path(self, path, goal_t, timeout_s, backstop_s, times=None,
+                           ref=None) -> dict:
         """Type-A arms: our PMP plan's path straight to the follow_path server.
 
         `times` (seconds from the first pose) stamps each pose; Nav2 ignores
@@ -387,6 +393,7 @@ class CompareDriver:
         """
         from geometry_msgs.msg import PoseStamped
         from nav2_msgs.action import FollowPath
+        from nav_msgs.msg import Path
 
         goal = FollowPath.Goal()
         goal.path.header.frame_id = "map"
@@ -409,6 +416,20 @@ class CompareDriver:
         if self._sup_plan_pub is not None:
             # follow_path mode: the supervisor's plan is the EXACT path sent
             # (same poses and stamps), latched, before the goal goes out.
+            if ref is not None:  # (poses, dt): published first, used on re-plan only
+                rp = Path()
+                rp.header = goal.path.header
+                for i, (x, y, yaw) in enumerate(ref[0]):
+                    ps = PoseStamped()
+                    ps.header.frame_id = rp.header.frame_id
+                    ps.header.stamp = self._sim_stamp(goal_t + i * float(ref[1]))
+                    ps.pose.position.x = float(x)
+                    ps.pose.position.y = float(y)
+                    _, _, qz, qw = _yaw_quat(float(yaw))
+                    ps.pose.orientation.z = qz
+                    ps.pose.orientation.w = qw
+                    rp.poses.append(ps)
+                self._sup_ref_pub.publish(rp)
             self._sup_plan_pub.publish(goal.path)
             self.spin(0.5)
         return self._drive_nav2(None, None, goal_t, timeout_s, backstop_s,
@@ -1066,6 +1087,8 @@ def run_one(args, plan_path: str) -> dict:
             row["follow_path_n"] = int(len(follow))
         res = drv.send_goal(args.arm, plan["goal"], plan["goal_yaw"],
                             timeout_s=sim_timeout, path=follow, times=follow_t,
+                            ref=((plan["poses"], plan["dt"]) if args.arm in PMP_PATH_ARMS
+                                 and args.arm not in TIMED_PATH_ARMS else None),
                             backstop_s=max(1.0, min(args.wall_backstop, cell_left)))
         if res.get("goal_t") is None:
             # The goal never left the tool (no /clock, no action server...):
@@ -1145,6 +1168,8 @@ def run_one(args, plan_path: str) -> dict:
                 row["sup_min_clearance"] = round(float(min(clr)), 4) if clr else None
             row["sup_counts"] = {k: term.get(k) for k in
                                  ("replans", "stops", "goals_sent", "retimes")}
+            if term.get("ref_replans"):
+                row["sup_ref_replans"] = term["ref_replans"]  # replan_source plan|pmp
             row["sup_goal_status"] = term.get("goal_status")
             row["sup_last_reason"] = term.get("last_reason")
             row["sup_n_retime"] = len(st["nsup_retime"])

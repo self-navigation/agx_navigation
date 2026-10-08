@@ -26,3 +26,12 @@ LTW  --arm ours-lib --localization truth --phantom-walls --supervisor --supervis
 LAN  --arm ours-lib --localization amcl  --phantom-walls
 LAS  --arm ours-lib --localization amcl  --phantom-walls --supervisor
 LAW  --arm ours-lib --localization amcl  --phantom-walls --supervisor --supervisor-params rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__
+# Track E: keep the PMP plan on a nav2 re-plan instead of planner_server's path
+# (supervisor/rejoin_path.py). Triggers as S. p = plan remainder (controller
+# joins), q = PMP re-join arc + remainder (falls back to p), barrier retry on.
+MTSp --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=plan
+MTSq --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=pmp,rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__
+RTSp --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=plan
+RTSq --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=pmp,rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__
+VTSp --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=plan
+VTSq --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params replan_source=pmp,rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__

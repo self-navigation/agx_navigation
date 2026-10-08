@@ -64,6 +64,9 @@ class SupervisorConfig:
     # robot never retries: the barrier solve takes 1-3 s, past rejoin_max_age.
     rejoin_wall_w_fp: float = 0.0
     rejoin_wall_margin: float = 0.15  # [m] barrier margin (PlannerConfig.fp_margin)
+    # supervisor_node follow_path re-plans (Nav2 same-plan arms, not GMPC):
+    # planner | plan | pmp, see supervisor/rejoin_path.py.
+    replan_source: str = "planner"
     # Tier 3 (full PlanToGoal from the current pose) after a failed wall
     # re-join. False for arms whose plan server cannot re-plan (ours-lib
     # replays the stored library plan from its ORIGINAL start): the robot is

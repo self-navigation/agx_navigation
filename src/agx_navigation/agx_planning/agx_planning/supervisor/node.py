@@ -11,7 +11,10 @@ is /supervisor/plan, the exact path sent to FollowPath.
 
 On a trigger (one in flight, replan_cooldown apart, max_replans per goal) it
 cancels and re-sends NavigateToPose, or in follow_path computes a new path with
-ComputePathToPose and sends it to FollowPath.
+ComputePathToPose and sends it to FollowPath. With core.replan_source plan|pmp
+the follow_path re-plan instead keeps the PMP plan remainder from the re-join
+target (ref_plan_topic), joined by the controller or by a PMP re-join arc,
+falling back to plan when the solve fails or the wall gate rejects it.
 
 While stopped after a re-plan, a command passes only if it opens clearance at
 the pose predicted escape_horizon seconds ahead. In the slow band a command
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -46,6 +50,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.task import Future
 from std_msgs.msg import Float64MultiArray, Int32, String
 from tf2_ros import Buffer, TransformListener
 
@@ -98,6 +103,7 @@ class SupervisorNodeConfig:
     # is an in-place turn: a lag trigger then is the turn, not the robot lagging.
     turn_w: float = 0.3
     turn_v: float = 0.05
+    ref_plan_topic: str = "/supervisor/pmp_plan"  # timed PMP plan (replan_source plan|pmp)
 
 
 def _yaw(q) -> float:
@@ -158,6 +164,12 @@ class SupervisorNode(Node):
         else:
             self.path_client = ActionClient(self, ComputePathToPose, self.cfg.compute_path_action)
             self.follow_client = ActionClient(self, FollowPath, self.cfg.follow_path_action)
+        self.ref = None                  # timed PMP reference (replan_source plan|pmp)
+        if core_cfg.replan_source not in ("planner", "plan", "pmp"):
+            raise ValueError(f"core.replan_source must be planner|plan|pmp, "
+                             f"got {core_cfg.replan_source!r}")
+        if self.cfg.mode == "follow_path" and core_cfg.replan_source != "planner":
+            self.create_subscription(Path, self.cfg.ref_plan_topic, self._on_ref, LATCHED)
 
         self.has_plan = False
         self.goal = None                 # (x, y, yaw) of the plan's end
@@ -179,7 +191,7 @@ class SupervisorNode(Node):
         self.last_cmd = (0.0, 0.0)
         self.term = {"replans": 0, "stops": 0, "last_reason": "", "goals_sent": 0,
                      "goal_status": "none", "goal_error_code": None, "retimes": 0,
-                     "recoveries": 0}
+                     "recoveries": 0, "ref_replans": {}}
         self._publish_terminal()
         self.timer = self.create_timer(1.0 / self.cfg.rate, self._tick)
         self.get_logger().info(
@@ -252,6 +264,37 @@ class SupervisorNode(Node):
         if new_goal or self.await_plan or not self.has_plan:
             self.await_plan = False
             self._install(poses, times)
+
+    def _on_ref(self, msg: Path) -> None:
+        """The timed PMP plan the plan|pmp re-plans keep (rejoin_path.py)."""
+        from agx_planning.pmp_planner import PlannerConfig
+        from agx_planning.runtime_corrector.trajectory_buffer import PlaybackSample
+        from agx_planning.supervisor import rejoin_path as rp
+        poses, times = _path_arrays(msg)
+        if times is None or len(poses) < 2:
+            self.get_logger().error("reference plan unstamped: plan|pmp re-plans OFF")
+            return
+        dt = float(np.median(np.diff(times)))
+        pcfg = PlannerConfig(mode="offline")
+        wheels = rp.wheel_speeds(poses, dt, pcfg)
+        c_ref = (None if self.walls is None else
+                 np.array([self.walls.body_clearance(*p) for p in poses]))
+        solver = None
+        if self.core.cfg.replan_source == "pmp":
+            from agx_planning.pmp_planner.rejoin_service import RejoinSolver, wall_field
+            c = self.core.cfg
+            field = (wall_field(self.walls, pcfg.fp_smooth_sigma)
+                     if c.rejoin_wall_w_fp > 0 and self.walls is not None else None)
+            samples = [PlaybackSample(left=float(w[0]), right=float(w[1]),
+                                      pose=(float(p[0]), float(p[1]), float(p[2])))
+                       for p, w in zip(poses, wheels)]
+            solver = RejoinSolver(samples, field, dt=dt, T_w_min=c.rejoin_t_min,
+                                  max_nodes=c.rejoin_max_nodes or None,
+                                  retry_w_fp=c.rejoin_wall_w_fp,
+                                  retry_fp_margin=c.rejoin_wall_margin)
+        self.ref = dict(poses=poses, dt=dt, c=c_ref, k=0, solver=solver, pcfg=pcfg)
+        self.get_logger().info(f"reference plan: {len(poses)} samples at dt {dt:.3f} s, "
+                               f"replan_source={self.core.cfg.replan_source}")
 
     def _on_cmd(self, msg: TwistStamped) -> None:
         v, w = msg.twist.linear.x, msg.twist.angular.z
@@ -425,6 +468,9 @@ class SupervisorNode(Node):
         await self._send(self.nav_client, goal)
 
     async def _replan_follow(self) -> None:
+        if self.ref is not None:
+            await self._replan_ref()
+            return
         x, y, yaw = self.pose
         gx, gy, gyaw = self.goal
         stamp = self.get_clock().now().to_msg()
@@ -448,6 +494,64 @@ class SupervisorNode(Node):
         self._install(poses, None)
         fp = FollowPath.Goal()
         fp.path = path
+        fp.controller_id = self.cfg.controller_id
+        fp.goal_checker_id = self.cfg.goal_checker_id
+        if hasattr(fp, "progress_checker_id"):
+            fp.progress_checker_id = self.cfg.progress_checker_id
+        await self._send(self.follow_client, fp)
+
+    async def _replan_ref(self) -> None:
+        """replan_source plan|pmp: keep the PMP plan (module docstring)."""
+        from agx_planning.supervisor import rejoin_path as rp
+        from agx_planning.supervisor.walls import rejoin_clear
+        r, c = self.ref, self.core.cfg
+        x, y, yaw = self.pose
+        r["k"] = rp.progress(r["poses"], x, y, r["k"], c.window)
+        k0 = r["k"]
+        tgt = min(k0 + int(math.ceil(c.rejoin_t_min / r["dt"] - 1e-9)), len(r["poses"]) - 1)
+        head, how = None, "plan"
+        if r["solver"] is not None:
+            c0 = self.clearance
+
+            def gate(smp) -> bool:
+                stops = rp.stop_thresholds(c, r["c"], k0, tgt, len(smp))
+                return stops is None or rejoin_clear(smp, self.walls, c0, stops)
+
+            v, w = (0.0, 0.0) if self.stop else self.last_cmd
+            wl, wr = r["pcfg"].body_to_wheels(v, w)
+            x0 = np.array([x, y, yaw, wl, wr])
+            # Solved off the executor thread (a failure takes 1-6 s); only a
+            # held robot waits for the barrier retry, as in the corrector.
+            fut = Future()
+            accept = gate if self.stop else None
+
+            def work():
+                try:
+                    out = r["solver"].solve(x0, tgt, k0, accept)
+                except Exception:  # noqa: BLE001 -- a failed solve falls back
+                    out = None
+                fut.set_result(out)
+
+            threading.Thread(target=work, daemon=True).start()
+            samples = await fut
+            if samples is not None and gate(samples):
+                head = [s.pose for s in samples]
+                how = "pmp_wall" if r["solver"].last.get("wall_retry") else "pmp"
+            else:
+                how = "fallback_" + ("fail" if samples is None else "blocked")
+        poses = rp.join_path((x, y, yaw), r["poses"], tgt, head)
+        counts = dict(self.term["ref_replans"])
+        counts[how] = counts.get(how, 0) + 1
+        self._set_term(ref_replans=counts)
+        self.get_logger().info(f"re-plan from the PMP plan ({how}): k {k0} -> {tgt}, "
+                               f"{len(poses)} path poses")
+        self._install(poses, None)
+        fp = FollowPath.Goal()
+        stamp = self.get_clock().now().to_msg()
+        fp.path.header.frame_id = self.cfg.map_frame
+        fp.path.header.stamp = stamp
+        fp.path.poses = [_pose_msg(self.cfg.map_frame, px, py, pth, stamp)
+                         for px, py, pth in poses]
         fp.controller_id = self.cfg.controller_id
         fp.goal_checker_id = self.cfg.goal_checker_id
         if hasattr(fp, "progress_checker_id"):
