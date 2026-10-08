@@ -110,7 +110,7 @@ class Learner:
             self.opt_c.zero_grad()
             lc.backward()
             self.opt_c.step()
-            info["critic_loss"] = float(lc)
+            info["critic_loss"] = lc.item()
         self.n_updates += 1
         if self.critic is not None and self.n_updates % self.v.policy_delay:
             return info
@@ -124,12 +124,12 @@ class Learner:
             q = self.critic(t["s"], pi)[0]
             lam = self.v.alpha / q.abs().mean().detach().clamp(min=1e-6)
             la = -lam * q.mean() + l_bc
-            info["q_pi"] = float(q.mean())
-            info["lam"] = float(lam)
+            info["q_pi"] = q.mean().item()
+            info["lam"] = lam.item()
         self.opt_a.zero_grad()
         la.backward()
         self.opt_a.step()
-        info.update(actor_loss=float(la), bc_err=float(bc_err.mean()), beta_mean=float(beta.mean()))
+        info.update(actor_loss=la.item(), bc_err=bc_err.mean().item(), beta_mean=beta.mean().item())
         return info
 
     def export(self) -> dict:
