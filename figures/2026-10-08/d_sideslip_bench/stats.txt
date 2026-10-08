@@ -1,0 +1,7 @@
+n = 34 plans (delta = tvlqr_slip - tvlqr, paired)
+max    tvlqr 0.211  slip 0.155  delta mean -0.057 median -0.057  slip better (lower) 34/34  p=1.2e-10
+rms    tvlqr 0.084  slip 0.051  delta mean -0.033 median -0.033  slip better (lower) 34/34  p=1.2e-10
+final  tvlqr 0.090  slip 0.071  delta mean -0.019 median -0.007  slip better (lower) 23/34  p=0.058
+clear  tvlqr -0.007  slip 0.102  delta mean +0.109 median +0.100  slip better (higher) 32/32  p=4.7e-10
+contact plans tvlqr 23  slip 0  (fixed 23, new 0)
+sanity: bench tvlqr vs p50-closedloop tvlqr max|e| over 34 plans: mean |diff| 0.0001, max 0.0012
