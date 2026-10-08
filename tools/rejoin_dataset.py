@@ -145,6 +145,9 @@ def main():
     ap.add_argument("--traj-dir", default=os.path.join(MAIN, "traj_data_v2"))
     ap.add_argument("--trace-dir", default=os.path.join(MAIN, "broad_gains_traces"))
     ap.add_argument("--soak", default=os.path.join(MAIN, "soak_data/soak_broad_gains.jsonl"))
+    ap.add_argument("--trace-plan-dir", default=None,
+                    help="plans the traces were driven on, if --traj-dir is a different "
+                         "library (e.g. the centred re-solve): deviations are taken against these")
     ap.add_argument("--gains", default="q1.5000_r2.6180")
     ap.add_argument("--tw-min", type=float, default=3.0)
     ap.add_argument("--tw-max", type=float, default=10.0)
@@ -158,7 +161,8 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     plans = p0.broad_plans(a.traj_dir, a.soak)
     probs = p0.make_problems(plans, a.trace_dir, a.gains, a.n, a.seed,
-                             (a.tw_min, a.tw_max), (a.scale_min, a.scale_max))
+                             (a.tw_min, a.tw_max), (a.scale_min, a.scale_max),
+                             trace_plan_dir=a.trace_plan_dir)
     for q in probs:
         q["tw_floor"] = min(a.tw_floor, a.tw_min)
     probs.sort(key=lambda q: q["plan"])  # one solver/field per plan per worker

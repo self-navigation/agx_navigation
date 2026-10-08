@@ -110,9 +110,30 @@ def trace_deviations(trace_dir, plan_path, gains):
     return np.array(devs)
 
 
-def make_problems(plans, trace_dir, gains, n, seed, tw_range, scale_range):
+def make_problems(plans, trace_dir, gains, n, seed, tw_range, scale_range, trace_plan_dir=None):
+    """`trace_plan_dir`: where the plans the TRACES were driven on live, if not
+    `plans` themselves. Deviations must be taken against the plan that was
+    actually tracked; subtracting a different plan (e.g. the centred re-solve of
+    the same pair) measures the gap between the two plans, not tracking error."""
     rng = np.random.default_rng(seed)
-    devs = {p: trace_deviations(trace_dir, p, gains) for p in plans}
+    def src(p):
+        return p if trace_plan_dir is None else os.path.join(trace_plan_dir, os.path.basename(p))
+    devs = {p: trace_deviations(trace_dir, src(p), gains) for p in plans}
+    if trace_plan_dir is not None:
+        # Re-express each (dx, dy) in the tracked plan's heading frame, then in
+        # this plan's frame at the same index: a lateral error stays lateral.
+        for p in plans:
+            if not len(devs[p]):
+                continue
+            th_src = np.load(src(p))["poses"][:, 2]
+            th_dst = np.load(p)["poses"][:, 2]
+            nk = min(devs[p].shape[1], len(th_dst))
+            devs[p] = devs[p][:, :nk]
+            a = th_dst[:nk] - th_src[:nk]
+            c, sn = np.cos(a), np.sin(a)
+            dx, dy = devs[p][..., 0].copy(), devs[p][..., 1].copy()
+            devs[p][..., 0] = c * dx - sn * dy
+            devs[p][..., 1] = sn * dx + c * dy
     plans = [p for p in plans if len(devs[p])]
     probs = []
     while len(probs) < n:
@@ -126,6 +147,8 @@ def make_problems(plans, trace_dir, gains, n, seed, tw_range, scale_range):
             continue
         k = int(rng.integers(0, n_plan - m))
         tr = int(rng.integers(len(devs[p])))
+        if k >= devs[p].shape[1]:   # traced plan shorter than this one
+            continue
         d = devs[p][tr, k]
         if not np.all(np.isfinite(d)):
             continue
