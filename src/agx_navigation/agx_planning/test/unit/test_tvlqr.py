@@ -245,3 +245,37 @@ def test_diagnostics_array_matches_declared_fields():
     """as_array() order is API for logged runs; keep it in step with FIELDS."""
     d = tvlqr.CorrectionDiagnostics()
     assert len(d.as_array()) == len(tvlqr.CorrectionDiagnostics.FIELDS)
+
+
+def _skid_arc(sideslip_k, plant_k=-0.33, v=0.5, w=0.8, dt=0.05, n=80):
+    """Closed loop on a constant arc; the plant skids v_lat = plant_k v omega."""
+    from agx_planning.runtime_corrector import tvlqr as T
+    cfg = T.TVLQRConfig(enabled=True, sideslip_k=sideslip_k)
+    cache = T.GainCache(cfg, dt)
+    ref = [(np.sin(w * i * dt) * v / w, (1 - np.cos(w * i * dt)) * v / w, w * i * dt)
+           for i in range(n + 1)]
+    x, y, th = ref[0][0], ref[0][1], ref[0][2] + T.sideslip_heading_offset(w, cfg)
+    worst = 0.0
+    for i in range(n):
+        err = T.slip_error(T.tracking_error(ref[i], (x, y, th)), w, cfg)
+        vc, wc, _ = T.correct(cache.get(v, w), err, v, w, cfg)
+        lat = plant_k * vc * wc
+        x += (vc * np.cos(th) - lat * np.sin(th)) * dt
+        y += (vc * np.sin(th) + lat * np.cos(th)) * dt
+        th += wc * dt
+        worst = max(worst, abs(T.tracking_error(ref[i + 1], (x, y, th))[1]))
+    return worst
+
+
+def test_sideslip_model_holds_a_skidding_turn_closer():
+    plain, slip = _skid_arc(0.0), _skid_arc(-0.33)
+    assert slip < 0.5 * plain, (plain, slip)
+
+
+def test_sideslip_zero_is_the_classic_model():
+    from agx_planning.runtime_corrector import tvlqr as T
+    A0, B0 = T.error_dynamics(0.4, 0.5)
+    A1, B1 = T.error_dynamics(0.4, 0.5, 0.0)
+    assert np.array_equal(A0, A1) and np.array_equal(B0, B1)
+    e = np.array([0.1, 0.2, 0.3])
+    assert T.slip_error(e, 0.8, T.TVLQRConfig()) is e

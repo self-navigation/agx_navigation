@@ -18,6 +18,10 @@ The linearised error dynamics depend only on the reference twist:
             [0, 0],
             [0, 1]]
 
+Optional ``sideslip_k`` models lateral skid as v_lat = k v omega: the heading
+reference is offset by delta = -atan(k omega_ref) (sideslip_heading_offset())
+and B gains the cross term k v_ref. k = 0 gives the model above.
+
 (e_cross, e_heading) is controllable only when v_ref != 0;
 `min_speed_for_steering` handles the stationary case explicitly.
 """
@@ -92,6 +96,9 @@ class TVLQRConfig:
     # (see module docstring): steering authority is faded out rather than letting
     # the gains grow without bound. Along-track correction stays active.
     min_speed_for_steering: float = 0.05   # [m/s]
+    # Lateral skid v_lat = sideslip_k * v * omega [s] (module docstring,
+    # SIDESLIP). 0 = the classic no-slip error model.
+    sideslip_k: float = 0.0
 
     # --- Solver ------------------------------------------------------------
     # Iterations for the steady-state (online / frozen-time) Riccati solve.
@@ -173,11 +180,13 @@ class CorrectionDiagnostics:
 # ----------------------------------------------------------------------------
 
 
-def error_dynamics(v_ref: float, omega_ref: float) -> Tuple[np.ndarray, np.ndarray]:
+def error_dynamics(v_ref: float, omega_ref: float,
+                   sideslip_k: float = 0.0) -> Tuple[np.ndarray, np.ndarray]:
     """Continuous-time (A, B) of the tracking-error dynamics at one tick.
 
     Depends only on the REFERENCE twist -- see the module docstring for the
     derivation. This is what makes the gain schedule precomputable.
+    ``sideslip_k`` adds the lateral-skid cross term (SIDESLIP).
     """
     A = np.array([
         [0.0, omega_ref, 0.0],
@@ -186,10 +195,25 @@ def error_dynamics(v_ref: float, omega_ref: float) -> Tuple[np.ndarray, np.ndarr
     ], dtype=float)
     B = np.array([
         [1.0, 0.0],
-        [0.0, 0.0],
+        [0.0, sideslip_k * v_ref],
         [0.0, 1.0],
     ], dtype=float)
     return A, B
+
+
+def sideslip_heading_offset(omega_ref: float, cfg: "TVLQRConfig") -> float:
+    """delta = -atan(k omega_ref): the body heading, relative to the path
+    tangent, at which the skidding body's velocity follows the tangent."""
+    return float(-np.arctan(cfg.sideslip_k * omega_ref)) if cfg.sideslip_k else 0.0
+
+
+def slip_error(err: np.ndarray, omega_ref: float, cfg: "TVLQRConfig") -> np.ndarray:
+    """``tracking_error`` with the heading measured against theta_ref + delta."""
+    if not cfg.sideslip_k:
+        return err
+    e = np.array(err, dtype=float)
+    e[2] = wrap_to_pi(e[2] - sideslip_heading_offset(omega_ref, cfg))
+    return e
 
 
 def discretize(A: np.ndarray, B: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -250,7 +274,7 @@ def gain_schedule(
     gains: List[Optional[np.ndarray]] = [None] * n
     for k in range(n - 1, -1, -1):
         vk = _faded_speed(float(v_ref[k]), cfg)
-        A, B = error_dynamics(vk, float(omega_ref[k]))
+        A, B = error_dynamics(vk, float(omega_ref[k]), cfg.sideslip_k)
         Ad, Bd = discretize(A, B, dt)
         K, S = _riccati_step(S, Ad, Bd, Q, R)
         gains[k] = K
@@ -269,7 +293,7 @@ def steady_state_gain(
     """
     Q = cfg.q_matrix()
     R = cfg.r_matrix()
-    A, B = error_dynamics(_faded_speed(v_ref, cfg), omega_ref)
+    A, B = error_dynamics(_faded_speed(v_ref, cfg), omega_ref, cfg.sideslip_k)
     Ad, Bd = discretize(A, B, dt)
 
     S = Q.copy()
