@@ -58,7 +58,10 @@ def main() -> None:
     ap.add_argument("--correctors", nargs="+", default=["identity", "tvlqr", "rl"],
                     choices=("identity", "tvlqr", "rl"))
     ap.add_argument("--policy", default="", help="SB3 .zip, required for --correctors rl")
-    ap.add_argument("--bridge", choices=("kinematic", "gazebo"), default="gazebo")
+    ap.add_argument("--bridge", choices=("kinematic", "gazebo", "dynamic"), default="gazebo")
+    ap.add_argument("--params", default="",
+                    help="dynamic bridge: fitted DynamicParams JSON (tools/fit_surrogate.py); "
+                         "default = the URDF/SDF starting values")
     ap.add_argument("--terrain", action="store_true",
                     help="drop slip patches along the path (gazebo bridge only)")
     ap.add_argument("--world", default="rl_corrector")
@@ -109,6 +112,9 @@ def main() -> None:
     if args.bridge == "kinematic":
         from .kinematic_bridge import KinematicBridge
         bridge = KinematicBridge(cfg)
+    elif args.bridge == "dynamic":
+        from .dynamic_bridge import DynamicBridge, DynamicParams
+        bridge = DynamicBridge(cfg, DynamicParams.load(args.params) if args.params else None)
     else:
         from .gazebo_bridge import GazeboBridge
         bridge = GazeboBridge(cfg, world_name=args.world, model_name=args.model,
