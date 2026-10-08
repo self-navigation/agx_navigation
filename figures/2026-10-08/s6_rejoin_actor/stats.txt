@@ -1,0 +1,25 @@
+final checkpoint (policy_final), per seed: ratio = mean cost / teacher mean cost
+run                 test test_nom     val  val_nom   win contact pin_med
+td3_s0             1.301    1.354   0.772    0.801  0.13   0.097   0.128  sign test student<teacher 256/2000 p=1.1e-271
+td3_s1             1.308    1.420   0.728    0.760  0.13   0.105   0.148  sign test student<teacher 252/2000 p=4.8e-275
+td3_s2             1.271    1.381   0.781    0.815  0.13   0.089   0.145  sign test student<teacher 268/2000 p=7.7e-262
+td3bc_s0           1.056    1.118   0.715    0.739  0.15   0.077   0.132  sign test student<teacher 294/2000 p=2.2e-241
+td3bc_s1           1.082    1.143   0.707    0.731  0.14   0.080   0.130  sign test student<teacher 280/2000 p=3e-252
+td3bc_s2           1.081    1.135   0.700    0.719  0.14   0.098   0.123  sign test student<teacher 282/2000 p=1.1e-250
+eps_td3bc_s0       1.087    1.126   0.700    0.724  0.14   0.089   0.121  sign test student<teacher 281/2000 p=1.8e-251
+eps_td3bc_s1       1.130    1.201   0.694    0.714  0.14   0.080   0.135  sign test student<teacher 282/2000 p=1.1e-250
+eps_td3bc_s2       1.199    1.268   0.723    0.747  0.13   0.088   0.135  sign test student<teacher 252/2000 p=4.8e-275
+bc_s0              1.234    1.243   0.994    1.014  0.25   0.147   0.066  sign test student<teacher 501/2000 p=4.4e-115
+bc_s1              1.170    1.186   1.060    1.087  0.22   0.143   0.058  sign test student<teacher 433/2000 p=3.2e-150
+bc_s2              1.217    1.223   1.155    1.202  0.27   0.145   0.062  sign test student<teacher 549/2000 p=1.6e-93
+
+cost components on test (random chi), seed means: track / 10 pin^2 / contact; ratio without contact; ratio and win rate on samples where NEITHER touches a wall
+  td3        n_seeds=3  student 4.19/0.54/0.86  teacher 2.33/0.02/1.98  no-contact ratio 2.018  both-clean ratio 2.349 win 0.038
+  td3bc      n_seeds=3  student 3.40/0.49/0.76  teacher 2.33/0.02/1.98  no-contact ratio 1.658  both-clean ratio 1.871 win 0.045
+  eps_td3bc  n_seeds=3  student 3.65/0.50/0.77  teacher 2.33/0.02/1.98  no-contact ratio 1.772  both-clean ratio 2.019 win 0.042
+  bc         n_seeds=3  student 2.58/0.50/2.14  teacher 2.33/0.02/1.98  no-contact ratio 1.313  both-clean ratio 1.298 win 0.225
+
+beta map (eps_td3bc_s0): eps0 0.0533; beta<0.1 on 0.246 of labelled states; eps_hat median 0.0039 p90 0.987
+  max|plan omega| in [0, 0.3): n= 23018  beta<0.1 frac 0.092
+  max|plan omega| in [0.3, 0.8): n= 15335  beta<0.1 frac 0.331
+  max|plan omega| in [0.8, 10): n= 11273  beta<0.1 frac 0.447
