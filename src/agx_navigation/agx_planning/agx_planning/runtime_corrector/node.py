@@ -500,6 +500,7 @@ class WheelCorrectorNode(Node):
         if self._sup is not None:
             self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
             self._sup.replans = self._sup.stops = 0
+        self._wall_retry_ok = 0
         self.get_logger().info(
             "New goal: (%.2f, %.2f), yaw=%.2f" % (pos.x, pos.y, yaw)
         )
@@ -771,7 +772,11 @@ class WheelCorrectorNode(Node):
           re-join to the next waypoint is solved OFF the executor thread
           (a failed solve takes 1-6 s), gated by wall clearance along it
           (the re-join cost ignores walls) and spliced into the buffer
-          (TrajectoryBuffer.splice), where the corrector tracks it;
+          (TrajectoryBuffer.splice), where the corrector tracks it. With
+          ``rejoin_wall_w_fp`` > 0 a HELD robot's re-join that fails the gate
+          is re-solved with the footprint barrier (rejoin_service "Wall
+          retry"); a moving robot's is not (the retry outlives
+          ``rejoin_max_age``);
         * a wall stop whose re-join fails, or is blocked by the gate, falls
           back to a full PlanToGoal from the current pose (tier 3), at most
           ``_MAX_FULL_REPLANS`` times per goal before the goal is abandoned.
@@ -804,6 +809,7 @@ class WheelCorrectorNode(Node):
         self._rejoin_retries = 0
         self._sup_full_replans_goal = 0
         self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
+        self._wall_retry_ok = 0
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -878,13 +884,39 @@ class WheelCorrectorNode(Node):
                 # Lazy: scipy + the shooting solver only when re-joins are on.
                 from agx_planning.pmp_planner.rejoin_service import RejoinSolver
                 self._rejoin_solver = RejoinSolver(
-                    self._buf.plan_samples(), dt=dt, T_w_min=self._sup_cfg.rejoin_t_min,
-                    max_nodes=self._sup_cfg.rejoin_max_nodes or None)
+                    self._buf.plan_samples(), self._rejoin_wall_field(), dt=dt,
+                    T_w_min=self._sup_cfg.rejoin_t_min,
+                    max_nodes=self._sup_cfg.rejoin_max_nodes or None,
+                    retry_w_fp=self._sup_cfg.rejoin_wall_w_fp,
+                    retry_fp_margin=self._sup_cfg.rejoin_wall_margin)
             except Exception as exc:  # noqa: BLE001 - re-join is optional
                 self.get_logger().error("re-join solver unavailable (%s); triggers "
                                         "will only stop or replan." % exc)
         self.get_logger().info("supervisor: %d waypoints over %d samples"
                                % (self._sup.n_waypoints, len(poses)))
+
+    def _rejoin_wall_field(self):
+        """The wall-distance field for the re-join's barrier retry, built once
+        per map (it is several full-map grids). None when the retry is off."""
+        if self._sup_cfg.rejoin_wall_w_fp <= 0.0 or self._sup_swd is None:
+            return None
+        if getattr(self, "_wall_field_src", None) is not self._sup_swd:
+            from agx_planning.pmp_planner import PlannerConfig
+            from agx_planning.pmp_planner.rejoin_service import wall_field
+            self._wall_field = wall_field(self._sup_swd,
+                                          PlannerConfig(mode="offline").fp_smooth_sigma)
+            self._wall_field_src = self._sup_swd
+        return self._wall_field
+
+    def _rejoin_gate(self, samples, k0: int, tgt: int, c0: float) -> bool:
+        """The wall gate a re-join must pass to be spliced: per-sample
+        plan-relative stop thresholds (stop_at at the plan index each sample
+        stands in for, linear over k0..tgt), supervisor.walls.rejoin_clear."""
+        if self._sup_swd is None:
+            return True
+        ks = np.linspace(k0, tgt, len(samples)).round().astype(int)
+        stops = [self._sup.wall_thresholds(int(k))[1] for k in ks]
+        return rejoin_clear(samples, self._sup_swd, c0, stops)
 
     def _supervise(self, pose) -> bool:
         """One supervisor step. True = the wheels are held this tick."""
@@ -956,8 +988,13 @@ class WheelCorrectorNode(Node):
         tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt, self._rejoin_t_min())
         self._rejoin_meta = dict(t0=now, tgt=tgt, k0=d.k_star, c0=clearance,
                                  reason=d.reason, held=bool(d.stop), x0=x0)
+        # Only a held robot may wait for the barrier retry (SupervisorConfig).
+        accept = None
+        if d.stop:
+            k0, c0 = d.k_star, clearance
+            accept = lambda smp: self._rejoin_gate(smp, k0, tgt, c0)  # noqa: E731
         self._rejoin_future = self._rejoin_pool.submit(
-            self._rejoin_solver.solve, x0, tgt, d.k_star)
+            self._rejoin_solver.solve, x0, tgt, d.k_star, accept)
 
     def _poll_rejoin(self, now: float) -> None:
         f = self._rejoin_future
@@ -982,13 +1019,7 @@ class WheelCorrectorNode(Node):
             self._sup_counts["rejoin_stale"] += 1
             self._sup.latched = False  # let the next tick ask again
             return
-        # Per-sample stop thresholds: the plan-relative stop_at at the plan
-        # index each re-join sample stands in for (linear over k0..tgt).
-        n = len(samples)
-        ks = np.linspace(meta["k0"], meta["tgt"], n).round().astype(int)
-        stops = [self._sup.wall_thresholds(int(k))[1] for k in ks]
-        if self._sup_swd is not None and not rejoin_clear(
-                samples, self._sup_swd, meta["c0"], stops):
+        if not self._rejoin_gate(samples, meta["k0"], meta["tgt"], meta["c0"]):
             self._sup_counts["rejoin_blocked"] += 1
             self.get_logger().warn("re-join blocked by wall clearance")
             if wall:
@@ -1001,12 +1032,15 @@ class WheelCorrectorNode(Node):
         self._buf.splice(samples[skip:], meta["tgt"] + 1)
         self._overlay_c0 = meta["c0"]
         self._sup_counts["rejoin_ok"] += 1
+        if self._rejoin_solver.last.get("wall_retry"):
+            self._wall_retry_ok += 1
         self._rejoin_retries = 0
         self._await_rejoin = False
         self.get_logger().info("re-join spliced: %d samples, resume at %d (T_w %.1f s,"
-                               " %.0f ms)" % (len(samples) - skip, meta["tgt"] + 1,
-                                              self._rejoin_solver.last.get("T_w", 0.0),
-                                              self._rejoin_solver.last.get("solve_ms", 0.0)))
+                               " %.0f ms, %s)" % (len(samples) - skip, meta["tgt"] + 1,
+                                                  self._rejoin_solver.last.get("T_w", 0.0),
+                                                  self._rejoin_solver.last.get("solve_ms", 0.0),
+                                                  self._rejoin_solver.last.get("status")))
 
     def _full_replan(self, why: str) -> None:
         """Tier 3: drop the plan and request a new one from the current pose.
@@ -1088,10 +1122,11 @@ class WheelCorrectorNode(Node):
         c = self._sup_counts
         self.get_logger().info(
             "supervisor summary traj %d: waypoints %d/%d, triggers %d, wall stops %d, "
-            "re-joins ok %d fail %d blocked %d stale %d, full replans %d" % (
+            "re-joins ok %d fail %d blocked %d stale %d, full replans %d, "
+            "wall-retried ok %d" % (
                 traj_id, self._sup.next_wp, self._sup.n_waypoints, self._sup.replans,
                 self._sup.stops, c["rejoin_ok"], c["rejoin_fail"], c["rejoin_blocked"],
-                c["rejoin_stale"], c["full_replans"]))
+                c["rejoin_stale"], c["full_replans"], self._wall_retry_ok))
 
     def _publish_sup_state(self, d) -> None:
         msg = Float64MultiArray()

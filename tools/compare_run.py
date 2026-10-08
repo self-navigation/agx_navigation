@@ -797,6 +797,8 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
         *(["--supervisor"] if args.supervisor else []),
+        *(["--supervisor-params", args.supervisor_params]
+          if args.supervisor and args.supervisor_params else []),
         # Same-plan Nav2 arms: the layer follows OUR plan (published on
         # /supervisor/plan), not bt_navigator's. gmpc.launch.py sets its own.
         *(["--supervisor-mode", "follow_path"]
@@ -959,6 +961,7 @@ def run_one(args, plan_path: str) -> dict:
         "localization": args.localization,
         "phantom_walls": args.phantom_walls,
         "supervisor": args.supervisor,
+        "supervisor_params": args.supervisor_params,
         "gmpc_nav2": gmpc_on_nav2(args) if args.arm == "pmp-gmpc" else None,
         "ekf_wheel_yaw": not args.no_ekf_wheel_yaw,
         "lidar_odom": args.lidar_odom,
@@ -1323,6 +1326,9 @@ def main() -> int:
     ap.add_argument("--localization", default="amcl")
     ap.add_argument("--supervisor", action="store_true",
                     help="enable the supervisory layer on any arm (#41 vec-pmp, #42 nav2/gmpc)")
+    ap.add_argument("--supervisor-params", default="",
+                    help="SupervisorConfig overrides 'key=value,...' for the layer, e.g. "
+                         "'lag_trigger=false,near_wall_trigger=false' or 'rejoin_wall_w_fp=1000'")
     ap.add_argument("--gmpc-nav2", action="store_true",
                     help="pmp-gmpc without the layer but inside the same nav2 bring-up "
                          "the layer needs (gmpc_nav2:=true) -- C1's like-for-like 'off' cell. "
