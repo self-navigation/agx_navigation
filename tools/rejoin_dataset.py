@@ -85,7 +85,13 @@ def _ctx(plan_path, tw_floor=3.0, w_fp=0.0, fp_margin=None, wall_mode="always",
                        if os.path.exists(os.path.join(r, my))), os.path.join(REPO, my))
         if "walls" not in _C or _C["walls"][0] != my:
             _C["walls"] = (my, SignedWallDistance.from_map_yaml(my))
-        field = wall_field(_C["walls"][1], cfg.fp_smooth_sigma) if w_fp > 0 else None
+        field = None
+        if w_fp > 0:
+            # One field per map, NOT per plan: it is several full-map grids,
+            # and per plan it filled the VM's 31 GB at --jobs 56 (2026-10-08).
+            if _C.get("field", (None,))[0] != my:
+                _C["field"] = (my, wall_field(_C["walls"][1], cfg.fp_smooth_sigma))
+            field = _C["field"][1]
         retry = float(w_fp) if wall_mode == "retry" else 0.0
         rs = RejoinSolver(samples, field, cfg, dt=dt, T_w_min=tw_floor, max_nodes=max_nodes,
                           retry_w_fp=retry, retry_fp_margin=fp_margin)

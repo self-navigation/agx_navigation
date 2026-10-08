@@ -19,6 +19,9 @@ once per segment ("near_wall"). When set_plan gets the plan's own clearance
 c_plan, the thresholds follow it:
     slow_at = max(min(slow_dist, c_plan - slow_margin), stop_at + min_band)
     stop_at = max(contact_dist, min(stop_dist, c_plan - stop_margin))
+
+lag_trigger and near_wall_trigger set to False drop those re-plan reasons
+without changing the slow-down or the wall stop.
 """
 
 from __future__ import annotations
@@ -46,11 +49,21 @@ class SupervisorConfig:
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
     min_seg_speed: float = 0.05     # [m/s] floor for v_seg (turn-in-place segments)
+    # Which latched triggers request a re-plan (module docstring, "Trigger
+    # switches"). Walls always stop and slow whatever these say.
+    lag_trigger: bool = True
+    near_wall_trigger: bool = True
     # Adapter-side (runtime corrector): the PMP re-join answering a trigger.
     rejoin: bool = True             # False = trigger is logged only (and walls still stop)
     rejoin_max_age: float = 0.5     # [s] discard a re-join that arrives later than this
     rejoin_max_nodes: int = 3000    # solve_bvp mesh cap; bounds the 1-6 s failure case
     rejoin_t_min: float = 3.0       # [s] T_w floor (Phase 0: 99% solved at >= 3 s)
+    # Wall-aware re-join (rejoin_service "Wall retry"): > 0 re-solves a HELD
+    # robot's re-join with the footprint barrier at this weight when the
+    # wall-blind answer fails the wall gate. 0 = wall-blind only. A moving
+    # robot never retries: the barrier solve takes 1-3 s, past rejoin_max_age.
+    rejoin_wall_w_fp: float = 0.0
+    rejoin_wall_margin: float = 0.15  # [m] barrier margin (PlannerConfig.fp_margin)
     # Tier 3 (full PlanToGoal from the current pose) after a failed wall
     # re-join. False for arms whose plan server cannot re-plan (ours-lib
     # replays the stored library plan from its ORIGINAL start): the robot is
@@ -260,9 +273,9 @@ class SupervisorCore:
             self._stopped = True
         elif not self.latched and not self.done:
             ratio_ok = self.prev_lag <= 0 or lag >= cfg.trigger_ratio * self.prev_lag
-            if ratio_ok and lag_m > cfg.reach_radius:
+            if cfg.lag_trigger and ratio_ok and lag_m > cfg.reach_radius:
                 trigger, reason = True, "lag"
-            elif scale < 1.0:
+            elif cfg.near_wall_trigger and scale < 1.0:
                 trigger, reason = True, "near_wall"
             elif cfg.offplan_dist > 0 and math.hypot(
                     self.poses[self.k_star, 0] - x,

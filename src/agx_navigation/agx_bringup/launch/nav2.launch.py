@@ -32,6 +32,7 @@ from launch_ros.actions import (
 from launch_ros.descriptions import ComposableNode, ParameterFile
 
 from agx_bringup import RewrittenYaml, Topics, cfg_file
+from agx_bringup.utils import supervisor_overrides
 
 # Local controllers the comparison runs against (launch arg `nav2_controller`).
 # The comparison configuration is NOT ours and lives in the agx_baselines
@@ -91,6 +92,9 @@ def generate_launch_description():
                         "from /plan) | follow_path (same-plan arms: ComputePathToPose + "
                         "FollowPath, plan from /supervisor/plan)"),
         DeclareLaunchArgument(
+            "supervisor_params", default_value="",
+            description="SupervisorConfig overrides 'key=value,...' (core.<key> on supervisor_node)"),
+        DeclareLaunchArgument(
             "supervisor_follow_path_action", default_value="follow_path",
             description="FollowPath server the supervisor re-sends to (follow_path_gmpc "
                         "for the GMPC arm)"),
@@ -128,6 +132,7 @@ def _supervisor_node(context, sim):
             "map_yaml": _map_yaml(context),
             "follow_path_action": LaunchConfiguration(
                 "supervisor_follow_path_action").perform(context),
+            **supervisor_overrides(context, "core."),
         }],
     )
 

@@ -107,6 +107,23 @@ def test_wall_scaling_and_stop():
     assert sup.stops == 1  # one stop episode
 
 
+def test_trigger_switches_drop_lag_and_near_wall_but_keep_slowing_and_stopping():
+    sup = SupervisorCore(SupervisorConfig(lag_trigger=False, near_wall_trigger=False))
+    poses, t = straight()
+    sup.set_plan(poses, t)
+    for i in range(30):  # parked: lag grows past every threshold
+        assert not sup.update(0.0, 0.0, 0.0, i * 1.0).trigger
+    d = sup.update(0, 0, 0, 30.1, clearance=0.325)
+    assert d.speed_scale == pytest.approx(0.5) and not d.trigger
+    d = sup.update(0, 0, 0, 30.2, clearance=0.15)
+    assert d.stop and d.trigger and d.reason == "wall"
+    # off-plan still fires
+    sup2 = SupervisorCore(SupervisorConfig(lag_trigger=False, near_wall_trigger=False))
+    sup2.set_plan(poses, t)
+    d = sup2.update(0.0, 0.8, 0.0, 0.0)
+    assert d.trigger and d.reason == "offplan"
+
+
 def test_plan_without_times_uses_cruise_speed():
     sup = SupervisorCore(SupervisorConfig(cruise_speed=0.5))
     poses, _ = straight()

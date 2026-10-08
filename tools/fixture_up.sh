@@ -15,6 +15,7 @@
 #                         [--nav2-profile compare_static]
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
 #                         [--supervisor] [--supervisor-mode navigate|follow_path]
+#                         [--supervisor-params k=v,k=v]
 #                         [--gmpc-nav2]
 #
 # --supervisor (#41/#42/#43) turns the supervisory layer on for every nav mode;
@@ -90,6 +91,7 @@ while [ $# -gt 0 ]; do
         --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
         --supervisor)     SUPERVISOR_=true; shift ;;
         --supervisor-mode) SUPERVISOR_MODE=$2; shift 2 ;;
+        --supervisor-params) SUPERVISOR_PARAMS=$2; shift 2 ;;
         --gmpc-nav2)      GMPC_NAV2_=true; shift ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -128,6 +130,8 @@ if [ -n "${SUPERVISOR_:-}" ]; then
     EXTRA="$EXTRA supervisor:=true"
     READY_FLAGS="--supervisor"
     [ -n "${SUPERVISOR_MODE:-}" ] && EXTRA="$EXTRA supervisor_mode:=$SUPERVISOR_MODE"
+    # SupervisorConfig overrides 'k=v,k=v' (agx_bringup.utils.supervisor_overrides).
+    [ -n "${SUPERVISOR_PARAMS:-}" ] && EXTRA="$EXTRA supervisor_params:=$SUPERVISOR_PARAMS"
 fi
 # Patches: false is passed EXPLICITLY (the comparison spawns its own along-path
 # patches via tools/spawn_patches.py, so the fixture's near-origin patches must

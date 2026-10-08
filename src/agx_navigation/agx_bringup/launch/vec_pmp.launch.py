@@ -1,4 +1,4 @@
-from agx_bringup.utils import launch_file
+from agx_bringup.utils import launch_file, supervisor_overrides
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -12,7 +12,7 @@ from launch.substitutions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import UnlessCondition
-from launch_ros.actions import Node
+from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -33,6 +33,13 @@ def _wheel_bias_node(context):
         remappings=[("~/in", "/wheel_bias/in"),
                     ("~/out", "/wheel_velocity_controller/commands")],
     )]
+
+
+def _supervisor_params(context):
+    """supervisor_params:="k=v,..." -> runtime_corrector's supervisor.k (see
+    agx_bringup.utils.supervisor_overrides). Must precede the node."""
+    return [SetParameter(name=k, value=v)
+            for k, v in supervisor_overrides(context, "supervisor.").items()]
 
 
 def generate_launch_description():
@@ -80,6 +87,14 @@ def generate_launch_description():
                 "trigger. Publishes ~/supervisor_state. See "
                 "agx_planning/supervisor."
             ).replace("%%", "%"),
+        ),
+        DeclareLaunchArgument(
+            "supervisor_params",
+            default_value="",
+            description=(
+                "SupervisorConfig overrides, 'key=value,key=value' (e.g. "
+                "'lag_trigger=false,rejoin_wall_w_fp=1000'); empty = defaults."
+            ),
         ),
         DeclareLaunchArgument(
             "supervisor_full_replan",
@@ -212,6 +227,7 @@ def generate_launch_description():
         + [
             vector_field,
             launch_pmp_planner,
+            OpaqueFunction(function=_supervisor_params),
             wheel_corrector,
             OpaqueFunction(function=_wheel_bias_node),
         ]
