@@ -1,0 +1,9 @@
+# Job 240 (#50, track D): the sideslip-aware TVLQR (TVLQRConfig.sideslip_k) in the
+# full stack. On the flat bench it cut max|e_cross| 0.211 -> 0.155 m on 34/34 plans
+# and wall-contact plans 23 -> 0 (2026-10-08_nojob_sideslip-bench). Does that
+# survive patches, the planner/action loop and the layer? Order matters: units go
+# round-robin over 2 workers, so worker A runs LTN, LTS and worker B LTNk, LTSk.
+LTN  --arm ours-lib --localization truth --phantom-walls
+LTNk --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_k=__K__
+LTS  --arm ours-lib --localization truth --phantom-walls --supervisor
+LTSk --arm ours-lib --localization truth --phantom-walls --supervisor --tvlqr-params sideslip_k=__K__

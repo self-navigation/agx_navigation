@@ -15,7 +15,7 @@
 #                         [--nav2-profile compare_static]
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
 #                         [--supervisor] [--supervisor-mode navigate|follow_path]
-#                         [--supervisor-params k=v,k=v]
+#                         [--supervisor-params k=v,k=v] [--tvlqr-params k=v,k=v]
 #                         [--gmpc-nav2]
 #
 # --supervisor (#41/#42/#43) turns the supervisory layer on for every nav mode;
@@ -92,6 +92,7 @@ while [ $# -gt 0 ]; do
         --supervisor)     SUPERVISOR_=true; shift ;;
         --supervisor-mode) SUPERVISOR_MODE=$2; shift 2 ;;
         --supervisor-params) SUPERVISOR_PARAMS=$2; shift 2 ;;
+        --tvlqr-params)   TVLQR_PARAMS=$2; shift 2 ;;
         --gmpc-nav2)      GMPC_NAV2_=true; shift ;;
         *) echo "fixture_up.sh: unknown argument '$1'" >&2; exit 2 ;;
     esac
@@ -123,6 +124,8 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 # start, so the supervisor must not ask it for a full re-plan (#41).
 [ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA supervisor_full_replan:=false"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
+# TVLQRConfig overrides 'k=v,k=v' (agx_bringup.utils.tvlqr_overrides), e.g. sideslip_k=-0.33.
+[ -n "${TVLQR_PARAMS:-}" ] && EXTRA="$EXTRA tvlqr_params:=$TVLQR_PARAMS"
 # Supervisory layer (#41 vec-pmp, #42 nav2/gmpc). supervisor_mode is nav2-only
 # (follow_path for the same-plan arms); gmpc.launch.py sets its own.
 READY_FLAGS=""

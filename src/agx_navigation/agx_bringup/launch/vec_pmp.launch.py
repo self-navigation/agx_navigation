@@ -1,4 +1,4 @@
-from agx_bringup.utils import launch_file, supervisor_overrides
+from agx_bringup.utils import launch_file, supervisor_overrides, tvlqr_overrides
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -40,6 +40,12 @@ def _supervisor_params(context):
     agx_bringup.utils.supervisor_overrides). Must precede the node."""
     return [SetParameter(name=k, value=v)
             for k, v in supervisor_overrides(context, "supervisor.").items()]
+
+
+def _tvlqr_params(context):
+    """tvlqr_params:="k=v,..." -> runtime_corrector's tvlqr.k. Must precede
+    the node; tvlqr.enabled still comes from corrector:=."""
+    return [SetParameter(name=k, value=v) for k, v in tvlqr_overrides(context).items()]
 
 
 def generate_launch_description():
@@ -94,6 +100,14 @@ def generate_launch_description():
             description=(
                 "SupervisorConfig overrides, 'key=value,key=value' (e.g. "
                 "'lag_trigger=false,rejoin_wall_w_fp=1000'); empty = defaults."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tvlqr_params",
+            default_value="",
+            description=(
+                "TVLQRConfig overrides, 'key=value,key=value' (e.g. "
+                "'sideslip_k=-0.33'); empty = defaults."
             ),
         ),
         DeclareLaunchArgument(
@@ -228,6 +242,7 @@ def generate_launch_description():
             vector_field,
             launch_pmp_planner,
             OpaqueFunction(function=_supervisor_params),
+            OpaqueFunction(function=_tvlqr_params),
             wheel_corrector,
             OpaqueFunction(function=_wheel_bias_node),
         ]
