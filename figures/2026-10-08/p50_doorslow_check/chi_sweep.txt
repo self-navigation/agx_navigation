@@ -1,0 +1,9 @@
+Gazebo          orig 0.211  delta -0.022
+kinematic       orig 0.031 (spearman vs gz +0.21)  delta -0.011 (spearman vs gz +0.76, mean|err| 0.011)
+kin_chi1.45     orig 0.042 (spearman vs gz +0.20)  delta -0.012 (spearman vs gz +0.53, mean|err| 0.010)
+kin_chi1.55     orig 0.068 (spearman vs gz +0.17)  delta -0.013 (spearman vs gz +0.40, mean|err| 0.012)
+kin_chi1.65     orig 0.099 (spearman vs gz +0.10)  delta -0.017 (spearman vs gz +0.39, mean|err| 0.015)
+kin_chi1.8      orig 0.148 (spearman vs gz +0.11)  delta -0.024 (spearman vs gz +0.25, mean|err| 0.021)
+kin_chi2.0      orig 0.213 (spearman vs gz +0.10)  delta -0.033 (spearman vs gz +0.29, mean|err| 0.029)
+kin_chi2.2      orig 0.280 (spearman vs gz +0.10)  delta -0.044 (spearman vs gz +0.29, mean|err| 0.039)
+dynamic_fit     orig 0.189 (spearman vs gz +0.51)  delta -0.081 (spearman vs gz +0.83, mean|err| 0.059)

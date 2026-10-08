@@ -1,0 +1,9 @@
+=== identity  (delta = slow - orig, per plan; n=34)
+Gazebo               max|e| orig 0.890 slow 0.884  delta mean -0.006 median -0.006  slow better 19/34 (p=0.61)  contacts 30->30  final 0.899->0.895
+surrogate (fitted)   max|e| orig 0.808 slow 0.781  delta mean -0.026 median -0.034  slow better 18/34 (p=0.86)  contacts 27->26  final 0.813->0.784  | delta vs Gazebo delta: spearman +0.65, same sign 21/34, mean|err| 0.095
+kinematic            max|e| orig 0.673 slow 0.649  delta mean -0.024 median -0.017  slow better 21/34 (p=0.23)  contacts 18->18  final 0.697->0.676  | delta vs Gazebo delta: spearman +0.63, same sign 30/34, mean|err| 0.067
+
+=== tvlqr  (delta = slow - orig, per plan; n=34)
+Gazebo               max|e| orig 0.211 slow 0.189  delta mean -0.022 median -0.025  slow better 34/34 (p=1.2e-10)  contacts 23->21  final 0.090->0.089
+surrogate (fitted)   max|e| orig 0.189 slow 0.108  delta mean -0.081 median -0.085  slow better 34/34 (p=1.2e-10)  contacts 15->0  final 0.022->0.014  | delta vs Gazebo delta: spearman +0.83, same sign 34/34, mean|err| 0.059
+kinematic            max|e| orig 0.031 slow 0.020  delta mean -0.011 median -0.011  slow better 34/34 (p=1.2e-10)  contacts 0->0  final 0.003->0.002  | delta vs Gazebo delta: spearman +0.76, same sign 34/34, mean|err| 0.011
