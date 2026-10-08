@@ -64,8 +64,16 @@ run_worker() {  # $1 = worker, rest = units
             --plans "$PLANS" --arm ours --worker "$w" --seed "$s" ${CFG[$c]} \
             --out "$OUT_DIR/$c/rows.s$s.jsonl" --log-dir "$OUT_DIR/$c/s$s" \
             >>"$OUT_DIR/w$w.log" 2>&1
-        echo "[fac] $(date -Is) worker $w done $c seed $s rc=$? rows $(grep -c . "$OUT_DIR/$c/rows.s$s.jsonl" 2>/dev/null)"
+        local rc=$?
+        echo "[fac] $(date -Is) worker $w done $c seed $s rc=$rc rows $(grep -c . "$OUT_DIR/$c/rows.s$s.jsonl" 2>/dev/null)"
     done
+    # Tear down our own last stack HERE, before "finished at": a job launched
+    # on these workers after that line must find them idle. (The EXIT-trap
+    # sweep used to do this after "finished", one worker at a time, ~2-10 min
+    # each under load -- and kill_stack agxN also matches worker N's harness,
+    # so it killed the NEXT job's compare_run worker by worker: job 236 lost
+    # 10/24 units to job 235's sweep, 2026-10-08.)
+    bash tools/kill_stack.sh "$PWD" kill "agx$w" >/dev/null 2>&1
 }
 
 PIDS=()
@@ -80,6 +88,7 @@ for i in "${!WORKERS[@]}"; do
 done
 for p in "${PIDS[@]}"; do wait "$p"; done
 
+trap - EXIT  # workers already cleaned up; the trap is for aborts only
 cat "$OUT_DIR"/*/rows.s*.jsonl >"$OUT_DIR/all_rows.jsonl" 2>/dev/null
 echo "[fac] finished at $(date -Is); rows $(grep -c . "$OUT_DIR/all_rows.jsonl" 2>/dev/null || echo 0)"
 rm -f "$PLANS"
