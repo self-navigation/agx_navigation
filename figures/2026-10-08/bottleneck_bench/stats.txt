@@ -1,0 +1,19 @@
+bottleneck-aligned (align) vs base plans, both re-solved fresh; doors = 35 detected bottlenecks, 'door' = max|e| where the plan is within 0.6 m of one; clear = min hull clearance (Gazebo truth); plan_clear = the plan's own
+
+tvlqr: n = 32
+  max        base 0.211  align 0.202  delta median -0.007  align better 26/32  p=0.00054
+  door       base 0.192  align 0.169  delta median -0.015  align better 29/30  p=5.8e-08
+  final      base 0.089  align 0.072  delta median -0.002  align better 17/32  p=0.86
+  clear      base -0.008  align 0.024  delta median +0.000  align better 13/14  p=0.0018
+  plan_clear base 0.138  align 0.104  delta median -0.041  align better 5/28  p=0.00091
+  dur        base 38.909  align 39.116  delta median +0.000  align better 7/21  p=0.19
+  contact plans base 22  align 13  (fixed 10, new 1)
+
+tvlqr_slip: n = 32
+  max        base 0.137  align 0.130  delta median +0.000  align better 15/32  p=0.86
+  door       base 0.102  align 0.077  delta median -0.021  align better 28/30  p=8.7e-07
+  final      base 0.083  align 0.074  delta median -0.004  align better 20/32  p=0.22
+  clear      base 0.095  align 0.110  delta median +0.000  align better 15/23  p=0.21
+  plan_clear base 0.138  align 0.104  delta median -0.041  align better 5/28  p=0.00091
+  dur        base 38.909  align 39.116  delta median +0.000  align better 7/21  p=0.19
+  contact plans base 2  align 1  (fixed 1, new 0)
