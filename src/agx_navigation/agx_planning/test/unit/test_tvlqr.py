@@ -254,10 +254,10 @@ def _skid_arc(sideslip_k, plant_k=-0.33, v=0.5, w=0.8, dt=0.05, n=80):
     cache = T.GainCache(cfg, dt)
     ref = [(np.sin(w * i * dt) * v / w, (1 - np.cos(w * i * dt)) * v / w, w * i * dt)
            for i in range(n + 1)]
-    x, y, th = ref[0][0], ref[0][1], ref[0][2] + T.sideslip_heading_offset(w, cfg)
+    x, y, th = ref[0][0], ref[0][1], ref[0][2] + T.sideslip_heading_offset(v, w, cfg)
     worst = 0.0
     for i in range(n):
-        err = T.slip_error(T.tracking_error(ref[i], (x, y, th)), w, cfg)
+        err = T.slip_error(T.tracking_error(ref[i], (x, y, th)), v, w, cfg)
         vc, wc, _ = T.correct(cache.get(v, w), err, v, w, cfg)
         lat = plant_k * vc * wc
         x += (vc * np.cos(th) - lat * np.sin(th)) * dt
@@ -278,4 +278,13 @@ def test_sideslip_zero_is_the_classic_model():
     A1, B1 = T.error_dynamics(0.4, 0.5, 0.0)
     assert np.array_equal(A0, A1) and np.array_equal(B0, B1)
     e = np.array([0.1, 0.2, 0.3])
-    assert T.slip_error(e, 0.8, T.TVLQRConfig()) is e
+    assert T.slip_error(e, 0.4, 0.8, T.TVLQRConfig()) is e
+
+
+def test_sideslip_offset_fades_out_when_turning_in_place():
+    from agx_planning.runtime_corrector import tvlqr as T
+    cfg = T.TVLQRConfig(sideslip_k=-0.33)
+    assert T.sideslip_heading_offset(0.0, 1.3, cfg) == 0.0
+    full = T.sideslip_heading_offset(0.6, 1.3, cfg)
+    assert full == pytest.approx(np.arctan(0.33 * 1.3))
+    assert T.sideslip_heading_offset(0.15, 1.3, cfg) == pytest.approx(0.5 * full)

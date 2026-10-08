@@ -20,7 +20,9 @@ The linearised error dynamics depend only on the reference twist:
 
 Optional ``sideslip_k`` models lateral skid as v_lat = k v omega: the heading
 reference is offset by delta = -atan(k omega_ref) (sideslip_heading_offset())
-and B gains the cross term k v_ref. k = 0 gives the model above.
+and B gains the cross term k v_ref. k = 0 gives the model above. delta is
+scaled by min(1, |v_ref| / sideslip_v_gate), because the skid needs translation
+and plans start and end with turns in place.
 
 (e_cross, e_heading) is controllable only when v_ref != 0;
 `min_speed_for_steering` handles the stationary case explicitly.
@@ -99,6 +101,9 @@ class TVLQRConfig:
     # Lateral skid v_lat = sideslip_k * v * omega [s] (module docstring,
     # SIDESLIP). 0 = the classic no-slip error model.
     sideslip_k: float = 0.0
+    # delta fades in linearly up to this |v_ref| [m/s] (SIDESLIP): no crab
+    # angle while turning in place.
+    sideslip_v_gate: float = 0.3
 
     # --- Solver ------------------------------------------------------------
     # Iterations for the steady-state (online / frozen-time) Riccati solve.
@@ -201,18 +206,23 @@ def error_dynamics(v_ref: float, omega_ref: float,
     return A, B
 
 
-def sideslip_heading_offset(omega_ref: float, cfg: "TVLQRConfig") -> float:
+def sideslip_heading_offset(v_ref: float, omega_ref: float, cfg: "TVLQRConfig") -> float:
     """delta = -atan(k omega_ref): the body heading, relative to the path
-    tangent, at which the skidding body's velocity follows the tangent."""
-    return float(-np.arctan(cfg.sideslip_k * omega_ref)) if cfg.sideslip_k else 0.0
+    tangent, at which the skidding body's velocity follows the tangent; faded
+    in with |v_ref| up to ``sideslip_v_gate`` (none while turning in place)."""
+    if not cfg.sideslip_k:
+        return 0.0
+    fade = min(1.0, abs(v_ref) / cfg.sideslip_v_gate) if cfg.sideslip_v_gate > 0 else 1.0
+    return float(-np.arctan(cfg.sideslip_k * omega_ref)) * fade
 
 
-def slip_error(err: np.ndarray, omega_ref: float, cfg: "TVLQRConfig") -> np.ndarray:
+def slip_error(err: np.ndarray, v_ref: float, omega_ref: float,
+               cfg: "TVLQRConfig") -> np.ndarray:
     """``tracking_error`` with the heading measured against theta_ref + delta."""
     if not cfg.sideslip_k:
         return err
     e = np.array(err, dtype=float)
-    e[2] = wrap_to_pi(e[2] - sideslip_heading_offset(omega_ref, cfg))
+    e[2] = wrap_to_pi(e[2] - sideslip_heading_offset(v_ref, omega_ref, cfg))
     return e
 
 

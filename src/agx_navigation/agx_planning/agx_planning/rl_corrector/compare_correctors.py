@@ -42,7 +42,7 @@ def _tvlqr_wheels(left, right, planned_pose, actual_pose, cfg, tvcfg, cache, k):
     """TVLQR's own deployment path: nominal twist -> feedback -> wheels."""
     v_ref, omega_ref = tvlqr_mod.wheels_to_twist(left, right, cfg)
     err = tvlqr_mod.slip_error(tvlqr_mod.tracking_error(planned_pose, actual_pose),
-                               omega_ref, tvcfg)
+                               v_ref, omega_ref, tvcfg)
     K = cache.get(v_ref, omega_ref)
     v_cmd, omega_cmd, diag = tvlqr_mod.correct(K, err, v_ref, omega_ref, tvcfg, k)
     wl, wr = tvlqr_mod.twist_to_wheels(v_cmd, omega_cmd, cfg)
@@ -68,6 +68,9 @@ def main() -> None:
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--sideslip-v-gate", type=float, default=0.3,
+                    help="tvlqr_slip's TVLQRConfig.sideslip_v_gate [m/s]; 0 = un-gated "
+                         "(the 2026-10-08 sideslip-bench run)")
     ap.add_argument("--sideslip-k", type=float, default=-0.33,
                     help="tvlqr_slip's TVLQRConfig.sideslip_k [s] (lateral skid "
                          "v_lat = k v omega; -0.33 fitted on Gazebo, tools/yaw_response.py)")
@@ -112,7 +115,8 @@ def main() -> None:
             raise SystemExit("policy action_dim disagrees with config")
 
     tvcfg = tvlqr_mod.TVLQRConfig(enabled=True)
-    tvcfg_slip = tvlqr_mod.TVLQRConfig(enabled=True, sideslip_k=args.sideslip_k)
+    tvcfg_slip = tvlqr_mod.TVLQRConfig(enabled=True, sideslip_k=args.sideslip_k,
+                                        sideslip_v_gate=args.sideslip_v_gate)
 
     if args.bridge == "kinematic":
         from .kinematic_bridge import KinematicBridge
