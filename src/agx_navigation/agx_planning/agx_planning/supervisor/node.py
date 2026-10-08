@@ -27,9 +27,9 @@ are ignored.
 
 Outputs: /supervisor/state (Decision.as_array() plus [replans, stops,
 replan_in_flight, applied_scale]), /supervisor/terminal (JSON, TRANSIENT_LOCAL:
-replans, stops, last_reason, goals_sent, goal_status, goal_error_code, retimes)
-and /supervisor/retime (plan index at each waypoint). Uses a
-SingleThreadedExecutor with async callbacks only.
+replans, stops, last_reason, goals_sent, goal_status, goal_error_code, retimes,
+recoveries, ref_replans) and /supervisor/retime (plan index at each waypoint).
+Uses a SingleThreadedExecutor with async callbacks only.
 """
 
 from __future__ import annotations
