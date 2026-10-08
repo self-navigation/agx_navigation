@@ -179,3 +179,38 @@ def test_unknown_cost_raises():
     solver, cfg = _solver()
     with pytest.raises(ValueError):
         solver.solve_rejoin(_cruise(cfg, 5.0), _cruise(cfg, 5.6), 2.0, GOAL, cost="nope")
+
+
+def _pillar_case():
+    """A straight plan along +x at 0.4 m/s and a pillar beside it; x0 is
+    0.3 m to the pillar's side, so the wall-blind re-join cuts its corner
+    into the pillar (clearance -0.10 m), as S6 (#46) found on real plans."""
+    from agx_planning.pmp_planner.rejoin_service import wall_field
+    from agx_planning.runtime_corrector.trajectory_buffer import PlaybackSample
+    from agx_planning.supervisor.walls import SignedWallDistance
+    res, o = 0.05, -3.0
+    wall = np.zeros((120, 160), bool)
+    wall[int((0.45 - o) / res):int((0.6 - o) / res), int((0.3 - o) / res):int((0.7 - o) / res)] = True
+    swd = SignedWallDistance.from_wall_mask(wall, res, o, o)
+    cfg = PlannerConfig(mode="offline")
+    wl, wr = cfg.body_to_wheels(0.4, 0.0)
+    plan = [PlaybackSample(left=wl, right=wr, pose=(-0.6 + 0.04 * i, 0.0, 0.0)) for i in range(100)]
+    x0 = np.array([-0.2, 0.3, 0.0, wl, wr])
+    return swd, wall_field(swd, cfg.fp_smooth_sigma), plan, x0
+
+
+def test_wall_retry_clears_a_pillar_the_blind_rejoin_hits():
+    from agx_planning.pmp_planner.rejoin_service import RejoinSolver
+    swd, field, plan, x0 = _pillar_case()
+    clear = lambda smp: min(swd.body_clearance(*s.pose) for s in smp) > 0.0  # noqa: E731
+    blind = RejoinSolver(plan, None, dt=0.1)
+    out = blind.solve(x0, 33, k_now=3, accept=clear)
+    assert out is not None and not clear(out) and not blind.last["wall_retry"]
+    rs = RejoinSolver(plan, field, dt=0.1, retry_w_fp=1000.0, retry_fp_margin=0.15)
+    out = rs.solve(x0, 33, k_now=3, accept=clear)
+    assert rs.last["wall_retry"] and out is not None and clear(out)
+    assert np.allclose(out[-1].pose[:2], plan[33].pose[:2], atol=1e-3)
+    # an accepted wall-blind answer is returned as is, with no retry
+    far = x0 + np.array([-0.4, 0.0, 0.0, 0.0, 0.0])
+    assert rs.solve(far, 33, k_now=0, accept=lambda smp: True) is not None
+    assert not rs.last["wall_retry"]

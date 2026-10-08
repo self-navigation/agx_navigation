@@ -797,9 +797,13 @@ class PMPShootingSolver:
           "field"  (A) -- this planner's _ode unchanged: field-descent,
                    heading, speed, brake and barrier terms. The pins
                    override whatever terminal pull the field would add.
-          "effort" (B) -- minimum wheel-acceleration effort only
-                   (gamma_wheel/2 * |a|^2, same tanh-saturated law);
-                   costates lx, ly, lth are then constant.
+          "effort" (B) -- minimum wheel-acceleration effort
+                   (gamma_wheel/2 * |a|^2, same tanh-saturated law), plus
+                   the footprint barrier L_fp when cfg.w_fp > 0 and the
+                   field carries wall_dist (rejoin_service.wall_field). With
+                   w_fp = 0 the costates lx, ly are constant and B knows
+                   nothing about walls: S6 (#46) found that it drives a
+                   clear hull into a wall on ~1 in 10 re-joins.
         goal feeds only v_ref in cost A. y_guess may be on any mesh spanning
         [0, T_w] (shape (10, n)); max_nodes overrides cfg.bvp_max_nodes.
 
@@ -865,9 +869,10 @@ class PMPShootingSolver:
         return out
 
     def _ode_effort(self, t: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Cost B: L = gamma_wheel/2 * (a_l^2 + a_r^2) only. Same state
-        dynamics and control law as _ode; the costate ODEs are just
-        -dH/dx of the kinematic coupling (no running state cost)."""
+        """Cost B: L = gamma_wheel/2 * (a_l^2 + a_r^2) [+ L_fp]. Same state
+        dynamics and control law as _ode; the costate ODEs are -dH/dx of
+        the kinematic coupling, plus -dL_fp/d(x, y, theta) when the
+        footprint barrier is on (exactly as in _ode)."""
         cfg = self.cfg
         c_v, c_w = cfg.c_v, cfg.c_w
         th, wl, wr = y[2], y[3], y[4]
@@ -878,13 +883,17 @@ class PMPShootingSolver:
         sat = cfg.gamma_wheel * cfg.a_wheel_max
         al = cfg.a_wheel_max * np.tanh(-lwl / sat)
         ar = cfg.a_wheel_max * np.tanh(-lwr / sat)
-        zero = np.zeros_like(th)
+        dlx = np.zeros_like(th)
+        dly = np.zeros_like(th)
         dlt = lx * v * sin_t - ly * v * cos_t
+        if cfg.w_fp > 0.0 and self.field is not None and self.field.has_wall_dist:
+            _, gpx, gpy, gth = footprint_cost(self.field, y[0], y[1], th, cfg)
+            dlx, dly, dlt = dlx - gpx, dly - gpy, dlt - gth
         H_v = lx * cos_t + ly * sin_t
         H_om = lt
         return np.vstack([
             v * cos_t, v * sin_t, w, al, ar,
-            zero, zero, dlt,
+            dlx, dly, dlt,
             -c_v * H_v + c_w * H_om,
             -c_v * H_v - c_w * H_om,
         ])
