@@ -26,26 +26,38 @@ def _find_file(dir: str, name: str) -> PathJoinSubstitution:
     )
 
 
-def supervisor_overrides(context, prefix: str) -> dict:
-    """``supervisor_params:="k=v,k=v"`` as ``{prefix + k: v}``, values parsed as
-    YAML scalars (``false`` -> bool, ``1000`` -> int). The keys are
-    ``agx_planning.supervisor.core.SupervisorConfig`` fields; the prefix is
-    where each node loads that dataclass (``supervisor.`` on runtime_corrector,
-    ``core.`` on supervisor_node). One launch arg for every layer variant, so a
-    new field needs no launch/fixture/harness plumbing."""
+def config_overrides(context, arg: str, defaults, prefix: str) -> dict:
+    """Launch arg ``arg:="k=v,k=v"`` as ``{prefix + k: v}``, values parsed as
+    YAML scalars (``false`` -> bool, ``1000`` -> int) and cast to the type of
+    the field in the dataclass instance ``defaults``; an unknown key raises.
+    One launch arg per config dataclass, so a new field needs no
+    launch/fixture/harness plumbing."""
     import yaml
     from launch.substitutions import LaunchConfiguration
-    from agx_planning.supervisor.core import SupervisorConfig
-    defaults = SupervisorConfig()
-    spec = LaunchConfiguration("supervisor_params", default="").perform(context).strip()
+    spec = LaunchConfiguration(arg, default="").perform(context).strip()
     out = {}
     for item in filter(None, (t.strip() for t in spec.split(","))):
         k, _, v = item.partition("=")
         k = k.strip()
         if not _ or not hasattr(defaults, k):
-            raise ValueError(f"supervisor_params item {item!r}: not key=value with a "
-                             "SupervisorConfig field as the key")
+            raise ValueError(f"{arg} item {item!r}: not key=value with a "
+                             f"{type(defaults).__name__} field as the key")
         # Cast to the default's type: ROS rejects '1000' (INTEGER) for a
-        # DOUBLE parameter (job 238 smoke).
+        # DOUBLE parameter (job 239 smoke).
         out[prefix + k] = type(getattr(defaults, k))(yaml.safe_load(v))
     return out
+
+
+def supervisor_overrides(context, prefix: str) -> dict:
+    """``supervisor_params:="k=v,k=v"``: ``SupervisorConfig`` fields; the prefix
+    is where each node loads that dataclass (``supervisor.`` on
+    runtime_corrector, ``core.`` on supervisor_node)."""
+    from agx_planning.supervisor.core import SupervisorConfig
+    return config_overrides(context, "supervisor_params", SupervisorConfig(), prefix)
+
+
+def tvlqr_overrides(context) -> dict:
+    """``tvlqr_params:="k=v,k=v"``: ``TVLQRConfig`` fields on runtime_corrector
+    (e.g. ``sideslip_k=-0.33``, track D 2026-10-08)."""
+    from agx_planning.runtime_corrector.tvlqr import TVLQRConfig
+    return config_overrides(context, "tvlqr_params", TVLQRConfig(), "tvlqr.")
