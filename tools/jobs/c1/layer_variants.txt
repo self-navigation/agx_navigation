@@ -1,0 +1,28 @@
+# Job 238 (#47, #40): layer variants after job 236. Same 34 centred pairs, phantom
+# walls, seed 0; every cell's control (N = layer off, S = layer as in job 236)
+# is carried in the same process.
+# Nav2 trigger ablation (truth): job 236 lost about half the nav2 arms' arrivals to
+# the layer (VPP 27->11), each re-plan swapping the PMP plan for a planner_server
+# path, mostly on near_wall and lag triggers.
+#   Sn = near_wall re-plan off (near a wall the layer only slows)
+#   Sx = near_wall AND lag re-plans off (only wall stops and off-plan re-plan)
+MTN  --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid
+MTS  --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+MTSn --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false
+MTSx --arm pmp-mppi --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false,lag_trigger=false
+RTN  --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid
+RTS  --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+RTSn --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false
+RTSx --arm pmp-rpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false,lag_trigger=false
+VTN  --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid
+VTS  --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor
+VTSn --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false
+VTSx --arm pmp-vpp  --localization truth --phantom-walls --nav2-profile compare_skid --supervisor --supervisor-params near_wall_trigger=false,lag_trigger=false
+# ours-lib wall-aware re-join: W = layer on, a held robot's re-join that fails the
+# wall gate is re-solved with the footprint barrier (rejoin_wall_w_fp, margin).
+LTN  --arm ours-lib --localization truth --phantom-walls
+LTS  --arm ours-lib --localization truth --phantom-walls --supervisor
+LTW  --arm ours-lib --localization truth --phantom-walls --supervisor --supervisor-params rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__
+LAN  --arm ours-lib --localization amcl  --phantom-walls
+LAS  --arm ours-lib --localization amcl  --phantom-walls --supervisor
+LAW  --arm ours-lib --localization amcl  --phantom-walls --supervisor --supervisor-params rejoin_wall_w_fp=__WFP__,rejoin_wall_margin=__WM__

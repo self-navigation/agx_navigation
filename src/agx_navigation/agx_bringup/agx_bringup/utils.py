@@ -35,11 +35,17 @@ def supervisor_overrides(context, prefix: str) -> dict:
     new field needs no launch/fixture/harness plumbing."""
     import yaml
     from launch.substitutions import LaunchConfiguration
+    from agx_planning.supervisor.core import SupervisorConfig
+    defaults = SupervisorConfig()
     spec = LaunchConfiguration("supervisor_params", default="").perform(context).strip()
     out = {}
     for item in filter(None, (t.strip() for t in spec.split(","))):
         k, _, v = item.partition("=")
-        if not _:
-            raise ValueError(f"supervisor_params item {item!r} is not key=value")
-        out[prefix + k.strip()] = yaml.safe_load(v)
+        k = k.strip()
+        if not _ or not hasattr(defaults, k):
+            raise ValueError(f"supervisor_params item {item!r}: not key=value with a "
+                             "SupervisorConfig field as the key")
+        # Cast to the default's type: ROS rejects '1000' (INTEGER) for a
+        # DOUBLE parameter (job 238 smoke).
+        out[prefix + k] = type(getattr(defaults, k))(yaml.safe_load(v))
     return out
