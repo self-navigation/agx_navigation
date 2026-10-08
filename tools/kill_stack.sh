@@ -51,7 +51,8 @@ case "$MODE" in
     *) echo "kill_stack.sh: mode must be kill|list (got '$MODE')" >&2; exit 2 ;;
 esac
 
-# Does this process belong to the partition we were asked about? Reads the
+# Does this process belong to the partition we were asked about? (in_partition
+# inside collect() below.) Reads the
 # process's own environment rather than its command line: GZ_PARTITION is
 # inherited, so a gz server started under a worker carries it even though
 # nothing about `gz sim -s -r <world>` says so.
@@ -62,17 +63,6 @@ esac
 # that shares nothing with the default stack. Worker processes always carry both
 # (make and tools/with-worker set them together), so requiring both costs
 # nothing and removes the false positive.
-in_partition() {
-    local environ=$1 part domain
-    [ "$PARTITION" = "all" ] && return 0
-    part=$(grep -m1 '^GZ_PARTITION=' <<<"$environ" | cut -d= -f2-)
-    domain=$(grep -m1 '^ROS_DOMAIN_ID=' <<<"$environ" | cut -d= -f2-)
-    if [ "$PARTITION" = "default" ]; then
-        [ -z "$part" ] && { [ -z "$domain" ] || [ "$domain" = "0" ]; }
-    else
-        [ "$part" = "$PARTITION" ]
-    fi
-}
 
 # RViz is deliberately spared: it only subscribes, so it cannot corrupt a run,
 # and it is the only view of a headless sim. Keeping it alive means a sweep
@@ -83,63 +73,74 @@ in_partition() {
 # command line says nothing about rviz -- so the wrapper got killed, and then
 # lingered long enough to fail the verify pass and abort a whole sweep. Spare
 # the ancestor chain too, whatever the launcher happens to be.
-SPARE_RE='rviz'
-
-# Never kill ourselves or anything we are running under -- this script's own
-# shell has the workspace in its environment too, as does the ssh session and
-# any tmux pane that sourced setup.bash.
-ancestors() {
-    local pid=$1
-    while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
-        echo "$pid"
-        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    done
-}
-
-spared_tree() {
-    local pid
-    # Every RViz-ish process, plus everything it was started from.
-    for pid in $(pgrep -u "$(id -u)" -f "$SPARE_RE" 2>/dev/null); do
-        ancestors "$pid"
-    done
-}
-
-# Never kill ourselves, anything we run under, or the operator's RViz window.
+#
+# Never kill ourselves or anything we are running under either -- this
+# script's own shell has the workspace in its environment too, as does the ssh
+# session and any tmux pane that sourced setup.bash -- nor anything descended
+# from us: `left=$(collect)` runs in a command-substitution subshell that
+# inherits the workspace environment, and the verify pass would otherwise call
+# it a survivor and report failure on a table it just cleaned.
+#
+# ONE /proc PASS (2026-10-08). The old bash collect() forked ps/tr/grep per
+# process and per ancestor hop: 4 s with 55 processes on an idle VM, and
+# teardown calls it at least three times. With 14 stacks up it was a median
+# 113 s per teardown, 31 of job 236's 56 worker-hours. Same selection rules,
+# now read straight from /proc in one python process.
 MYPID=$$
-readarray -t EXCLUDE < <({ ancestors "$MYPID"; spared_tree; } | sort -u)
-
-is_excluded() {
-    local pid=$1 e p hops=0
-    for e in "${EXCLUDE[@]}"; do [ "$pid" = "$e" ] && return 0; done
-    # ...and anything descended from us. `left=$(collect)` runs collect in a
-    # command-substitution subshell, which inherits the workspace environment and
-    # is born AFTER the exclusion list was built -- so the verify pass sees that
-    # subshell, calls it a survivor, and the script reports failure on a table it
-    # just cleaned. Whether that happens at all is a race, which is why this
-    # passed when run by hand and failed inside the sweep.
-    p=$pid
-    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ "$hops" -lt 20 ]; do
-        p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
-        [ "$p" = "$MYPID" ] && return 0
-        hops=$((hops + 1))
-    done
-    return 1
-}
-
 collect() {
-    local pid environ args
-    # Only our own processes: /proc/<pid>/environ is unreadable for anyone
-    # else's, and scanning them just produces a screenful of permission errors.
-    for pid in $(pgrep -u "$(id -u)" '' 2>/dev/null || ps -u "$(id -u)" -o pid=); do
-        is_excluded "$pid" && continue
-        # NUL-separated; tr makes it greppable. Unreadable => not ours.
-        environ=$({ tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null) || continue
-        grep -qF "$WORKSPACE" <<<"$environ" || continue
-        in_partition "$environ" || continue
-        args=$({ tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null)
-        [ -z "$args" ] && continue          # kernel thread
-        echo "$pid"
-    done
+    python3 - "$WORKSPACE" "$PARTITION" "$MYPID" <<'PY'
+import os, re, sys
+ws, partition, mypid = sys.argv[1], sys.argv[2], int(sys.argv[3])
+uid = os.getuid()
+ppid, cmd, env = {}, {}, {}
+for d in os.listdir("/proc"):
+    if not d.isdigit():
+        continue
+    pid = int(d)
+    try:
+        if os.stat(f"/proc/{d}").st_uid != uid:
+            continue
+        with open(f"/proc/{d}/stat") as fh:
+            ppid[pid] = int(fh.read().rsplit(")", 1)[1].split()[1])
+        with open(f"/proc/{d}/cmdline", "rb") as fh:
+            cmd[pid] = fh.read().replace(b"\0", b" ").decode(errors="replace")
+        with open(f"/proc/{d}/environ", "rb") as fh:
+            env[pid] = fh.read().split(b"\0")
+    except (OSError, ValueError, IndexError):
+        ppid.pop(pid, None); cmd.pop(pid, None); env.pop(pid, None)
+
+def chain(pid):
+    while pid > 1 and pid in ppid:
+        yield pid
+        pid = ppid[pid]
+
+exclude = set(chain(mypid))
+for pid, c in cmd.items():
+    if re.search("rviz", c):
+        exclude.update(chain(pid))
+
+def var(e, name):
+    pre = name.encode() + b"="
+    for kv in e:
+        if kv.startswith(pre):
+            return kv[len(pre):].decode(errors="replace")
+    return None
+
+def in_partition(e):                              # see the comment above collect()
+    if partition == "all":
+        return True
+    part, dom = var(e, "GZ_PARTITION"), var(e, "ROS_DOMAIN_ID")
+    if partition == "default":
+        return not part and dom in (None, "", "0")
+    return part == partition
+
+wsb = ws.encode()
+for pid in sorted(env):
+    if pid in exclude or mypid in chain(pid) or not cmd.get(pid, "").strip():
+        continue                                  # us, our tree, rviz, kernel threads
+    if any(wsb in kv for kv in env[pid]) and in_partition(env[pid]):
+        print(pid)
+PY
 }
 
 if [ "$MODE" = "list" ]; then
