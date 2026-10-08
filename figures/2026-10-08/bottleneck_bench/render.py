@@ -143,3 +143,65 @@ fig.suptitle(f"Plain TVLQR, Gazebo bench: robot hull every 0.4 s around the base
              f"(first {min(3, len(fixed))} shown, largest door gain first) and added it on {len(new)} "
              f"(right column: in the final turn to the goal, 5.7 m from any door)", fontsize=10)
 fig.tight_layout(); fig.savefig(os.path.join(OUT, "door_tracks.png"), dpi=85); plt.close(fig)
+
+# --- door_story.png: all four arms at the same jamb, for sharing --------------------------------
+STORY = ["floor_6_v2_00302", "floor_6_v2_00249", "floor_6_v2_00291"]
+ROWS = [("tvlqr", "base", "plain TVLQR, FM2 plan"),
+        ("tvlqr", "align", "plain TVLQR, door-aligned plan"),
+        ("tvlqr_slip", "base", "TVLQR + sideslip model, FM2 plan"),
+        ("tvlqr_slip", "align", "TVLQR + sideslip model, door-aligned plan")]
+COLS = {"base": "tab:blue", "align": "tab:red"}
+BNS = find_bottlenecks(arr >= 65, res, ox, oy)
+fig, axs = plt.subplots(len(ROWS), len(STORY), figsize=(4.3 * len(STORY), 4.5 * len(ROWS)), squeeze=False)
+for j, p in enumerate(STORY):
+    ar = B[(p, "tvlqr")]["a"]
+    kk = int(np.argmin(hull_clear(ar)))
+    cx, cy = ar["true_x"][kk], ar["true_y"][kk]
+    bn = min(BNS, key=lambda b: np.hypot(b.x - cx, b.y - cy))
+    for i, (corr, lib, label) in enumerate(ROWS):
+        S = B if lib == "base" else A
+        r = S[(p, corr)]
+        a = r["a"]
+        ax = axs[i, j]
+        ax.imshow(np.where(wall, 0.0, np.where(arr < 0, 0.75, 1.0)), cmap="gray", origin="lower", extent=EXT,
+                  vmin=0, vmax=1)
+        col = COLS[lib]
+        win = np.hypot(a["true_x"] - cx, a["true_y"] - cy) < 1.6
+        for k in np.nonzero(win)[0][::4]:
+            ax.add_patch(Polygon(hull(a["true_x"][k], a["true_y"][k], a["true_theta"][k]), closed=True,
+                                 fc="none", ec=col, lw=0.6, alpha=0.6))
+        ax.plot(a["plan_x"], a["plan_y"], c="k", lw=1.2, ls="--", label="plan (robot centre)")
+        ax.plot(a["true_x"], a["true_y"], c=col, lw=1.8, label="actual robot centre")
+        hc = hull_clear(a)
+        kw = int(np.argmin(np.where(win, hc, np.inf)))
+        ax.add_patch(Polygon(hull(a["true_x"][kw], a["true_y"][kw], a["true_theta"][kw]), closed=True,
+                             fc="crimson" if hc[kw] <= 0 else col, ec="k", lw=1.0, alpha=0.5, zorder=5,
+                             label="closest approach to a wall"))
+        hit = hc[kw] <= 0
+        # the hull point that comes closest, marked
+        c_, s_ = np.cos(a["true_theta"][kw]), np.sin(a["true_theta"][kw])
+        bx = a["true_x"][kw] + _BODY[:, 0] * c_ - _BODY[:, 1] * s_
+        by = a["true_y"][kw] + _BODY[:, 0] * s_ + _BODY[:, 1] * c_
+        dd_ = _d[np.clip(((by - _oy) / _r).astype(int), 0, _d.shape[0] - 1),
+                 np.clip(((bx - _ox) / _r).astype(int), 0, _d.shape[1] - 1)]
+        q = int(np.argmin(dd_))
+        ax.plot(bx[q], by[q], marker="x", c="k", ms=9, mew=2, zorder=6)
+        ax.set_title(f"{label}\n" + (f"TOUCHES THE DOOR FRAME" if hit else f"clears by ~{hc[kw] * 100:.0f} cm"),
+                     fontsize=9, color="crimson" if hit else "k", fontweight="bold" if hit else "normal")
+        ax.set_xlim(cx - 1.0, cx + 1.0); ax.set_ylim(cy - 1.0, cy + 1.0); ax.set_aspect("equal")
+        ax.set_xticks([]); ax.set_yticks([])
+        if i == 0:
+            ax.text(0.02, 0.98, f"run {p[11:]}\ndoor {bn.width:.2f} m, robot {2 * HW:.2f} m wide:\n"
+                    f"{(bn.width - 2 * HW) / 2 * 100:.0f} cm each side if dead centre and square",
+                    transform=ax.transAxes, va="top", fontsize=7.5,
+                    bbox=dict(fc="white", ec="0.6", alpha=0.9))
+        if i == 0 and j == 0:
+            ax.legend(fontsize=7, loc="lower right")
+fig.suptitle("Why the robot hits door frames, and the two fixes (Gazebo, flat floor; robot outline every 0.4 s, "
+             "filled = closest approach, x = the point of the outline that comes closest;\n2 m x 2 m around the door; clearances are measured on the 5 cm map grid, so 'touches' is a graze of one grid cell and '~10 cm' means 10 +- 5)\n"
+             "Rows 1-2: the controller does not model the sideways slide in a moving turn, so the robot drifts "
+             "~15-20 cm to the outside of the turn and its corner clips the frame.\n"
+             "Door-aligned plan: turn before the door, pass through it square.  Sideslip model: the controller "
+             "steers into the slide in advance.",
+             fontsize=10)
+fig.tight_layout(rect=(0, 0, 1, 0.95)); fig.savefig(os.path.join(OUT, "door_story.png"), dpi=90); plt.close(fig)
