@@ -1,0 +1,9 @@
+# Job 242 (#50): stop-and-aim (b), door-aligned plans in the full stack. Base and align
+# libraries were re-solved fresh in one tools/solve_field_variant.py run
+# (run_data/2026-10-08_nojob_bottleneck-bench/libs); 32 pairs both solved. Each cell
+# overrides the harness's --plans (the last --plans wins). The bench gave door max|e|
+# 0.192 -> 0.169 (plain) and 0.102 -> 0.077 (sideslip), contacts 22 -> 13 and 2 -> 1.
+LTN   --arm ours-lib --localization truth --phantom-walls --plans __REPO__/tools/jobs/bottleneck32_base.txt
+LTNa  --arm ours-lib --localization truth --phantom-walls --plans __REPO__/tools/jobs/bottleneck32_align.txt
+LTNg  --arm ours-lib --localization truth --phantom-walls --plans __REPO__/tools/jobs/bottleneck32_base.txt --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
+LTNga --arm ours-lib --localization truth --phantom-walls --plans __REPO__/tools/jobs/bottleneck32_align.txt --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
