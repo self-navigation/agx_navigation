@@ -1,0 +1,6 @@
+GMPC (KTN): orig contacts 28, at a turn 25; track inside the turn at contact 24/25; median max inward offset orig 0.283 m -> slow 0.023 m; slow smaller 21/25, sign p=0.000911
+GMPC (KTN) at first contact (turning: 26): touching hull point on the INNER side 20/26; median centre offset toward the turn +0.108 m; median heading error toward the turn +24.2 deg; median plan hull clearance there 0.150 m
+GMPC (KTN) all tight turns (clear<0.4 m, |kappa|>0.8/m): 33 plans, 69 turns; median per-plan mean inward orig 0.187 -> slow 0.009 m; slow smaller 32/33, sign p=7.92e-09
+ours-lib (LTN): orig contacts 27, at a turn 24; track inside the turn at contact 2/24; median max inward offset orig -0.035 m -> slow -0.036 m; slow smaller 12/24, sign p=1
+ours-lib (LTN) at first contact (turning: 26): touching hull point on the INNER side 3/26; median centre offset toward the turn -0.198 m; median heading error toward the turn +6.7 deg; median plan hull clearance there 0.150 m
+ours-lib (LTN) all tight turns (clear<0.4 m, |kappa|>0.8/m): 32 plans, 108 turns; median per-plan mean inward orig -0.035 -> slow -0.027 m; slow smaller 14/32, sign p=0.597
