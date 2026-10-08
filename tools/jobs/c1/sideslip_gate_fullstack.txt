@@ -1,0 +1,12 @@
+# Job 241 (#50, track D): the speed-gated sideslip TVLQR (sideslip_v_gate 0.3 m/s,
+# 4395ad8) in the full stack. Job 240 showed the un-gated model cutting contact runs
+# 25 -> 9 but regressing 4 plans in the final turn into the goal; the gate removes
+# the crab offset while turning in place. The gated bench
+# (2026-10-08_nojob_sideslip-gate-bench) kept the door gain (max|e| 0.211 -> 0.137,
+# contacts 23 -> 2) and cut the start transient vs un-gated on 34/34. The un-gated
+# arm is carried here (v_gate 0) so gated vs un-gated is paired in one job.
+LTN  --arm ours-lib --localization truth --phantom-walls
+LTNk --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_k=__K__,sideslip_v_gate=0
+LTNg --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_k=__K__,sideslip_v_gate=__VG__
+LTS  --arm ours-lib --localization truth --phantom-walls --supervisor
+LTSg --arm ours-lib --localization truth --phantom-walls --supervisor --tvlqr-params sideslip_k=__K__,sideslip_v_gate=__VG__

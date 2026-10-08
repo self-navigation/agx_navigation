@@ -1,0 +1,29 @@
+n = 34 plans; arms: tvlqr (plain), tvlqr_slip (un-gated, k=-0.33), gated (v_gate 0.3 m/s)
+start = max|e| over the first 3.0 m, end = over the last 1.0 m, mid = in between
+
+gated vs tvlqr:
+  max    tvlqr 0.211  gated 0.137  delta mean -0.074 median -0.079  gated better 33/34  p=4.1e-09
+  start  tvlqr 0.112  gated 0.126  delta mean +0.015 median +0.021  gated better 8/34  p=0.0029
+  mid    tvlqr 0.206  gated 0.108  delta mean -0.098 median -0.099  gated better 34/34  p=1.2e-10
+  end    tvlqr 0.108  gated 0.082  delta mean -0.025 median -0.003  gated better 19/34  p=0.61
+  final  tvlqr 0.090  gated 0.082  delta mean -0.008 median +0.003  gated better 14/34  p=0.39
+  clear  tvlqr -0.007  gated 0.093  delta mean +0.101 median +0.100  gated better 29/29  p=3.7e-09
+  contact plans tvlqr 23  gated 2  (fixed 21, new 0)
+
+gated vs tvlqr_slip:
+  max    tvlqr_slip 0.155  gated 0.137  delta mean -0.017 median -0.019  gated better 32/34  p=6.9e-08
+  start  tvlqr_slip 0.150  gated 0.126  delta mean -0.023 median -0.023  gated better 34/34  p=1.2e-10
+  mid    tvlqr_slip 0.109  gated 0.108  delta mean -0.000 median -0.000  gated better 19/34  p=0.61
+  end    tvlqr_slip 0.075  gated 0.082  delta mean +0.007 median +0.004  gated better 8/34  p=0.0029
+  final  tvlqr_slip 0.071  gated 0.082  delta mean +0.011 median +0.010  gated better 4/34  p=6.2e-06
+  clear  tvlqr_slip 0.102  gated 0.093  delta mean -0.008 median +0.000  gated better 1/5  p=0.38
+  contact plans tvlqr_slip 0  gated 2  (fixed 0, new 2)
+
+tvlqr_slip vs tvlqr:
+  max    tvlqr 0.211  tvlqr_slip 0.155  delta mean -0.057 median -0.057  tvlqr_slip better 34/34  p=1.2e-10
+  start  tvlqr 0.112  tvlqr_slip 0.150  delta mean +0.038 median +0.042  tvlqr_slip better 6/34  p=0.0002
+  mid    tvlqr 0.206  tvlqr_slip 0.109  delta mean -0.097 median -0.098  tvlqr_slip better 34/34  p=1.2e-10
+  end    tvlqr 0.108  tvlqr_slip 0.075  delta mean -0.032 median -0.011  tvlqr_slip better 24/34  p=0.024
+  final  tvlqr 0.090  tvlqr_slip 0.071  delta mean -0.019 median -0.007  tvlqr_slip better 23/34  p=0.058
+  clear  tvlqr -0.007  tvlqr_slip 0.102  delta mean +0.109 median +0.100  tvlqr_slip better 32/32  p=4.7e-10
+  contact plans tvlqr 23  tvlqr_slip 0  (fixed 23, new 0)
