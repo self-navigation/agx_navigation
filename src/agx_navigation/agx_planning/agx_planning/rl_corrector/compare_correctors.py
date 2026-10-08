@@ -41,7 +41,8 @@ def _identity_wheels(left: float, right: float, cfg) -> list:
 def _tvlqr_wheels(left, right, planned_pose, actual_pose, cfg, tvcfg, cache, k):
     """TVLQR's own deployment path: nominal twist -> feedback -> wheels."""
     v_ref, omega_ref = tvlqr_mod.wheels_to_twist(left, right, cfg)
-    err = tvlqr_mod.tracking_error(planned_pose, actual_pose)
+    err = tvlqr_mod.slip_error(tvlqr_mod.tracking_error(planned_pose, actual_pose),
+                               omega_ref, tvcfg)
     K = cache.get(v_ref, omega_ref)
     v_cmd, omega_cmd, diag = tvlqr_mod.correct(K, err, v_ref, omega_ref, tvcfg, k)
     wl, wr = tvlqr_mod.twist_to_wheels(v_cmd, omega_cmd, cfg)
@@ -56,7 +57,7 @@ def main() -> None:
     ap.add_argument("--trajectories", nargs="+", required=True,
                     help=".npz trajectory files to replay (pick different SHAPES)")
     ap.add_argument("--correctors", nargs="+", default=["identity", "tvlqr", "rl"],
-                    choices=("identity", "tvlqr", "rl"))
+                    choices=("identity", "tvlqr", "tvlqr_slip", "rl"))
     ap.add_argument("--policy", default="", help="SB3 .zip, required for --correctors rl")
     ap.add_argument("--bridge", choices=("kinematic", "gazebo", "dynamic"), default="gazebo")
     ap.add_argument("--params", default="",
@@ -67,6 +68,9 @@ def main() -> None:
     ap.add_argument("--world", default="rl_corrector")
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--sideslip-k", type=float, default=-0.33,
+                    help="tvlqr_slip's TVLQRConfig.sideslip_k [s] (lateral skid "
+                         "v_lat = k v omega; -0.33 fitted on Gazebo, tools/yaw_response.py)")
     ap.add_argument("--out-dir", default="/tmp/compare")
     # The corridor exists to cut short a hopeless TRAINING episode; here it would
     # truncate exactly the divergent runs we want to see drawn in full.
@@ -108,6 +112,7 @@ def main() -> None:
             raise SystemExit("policy action_dim disagrees with config")
 
     tvcfg = tvlqr_mod.TVLQRConfig(enabled=True)
+    tvcfg_slip = tvlqr_mod.TVLQRConfig(enabled=True, sideslip_k=args.sideslip_k)
 
     if args.bridge == "kinematic":
         from .kinematic_bridge import KinematicBridge
@@ -128,6 +133,7 @@ def main() -> None:
             nom = load_recorded(traj_path)
             name = Path(traj_path).stem
             cache = tvlqr_mod.GainCache(tvcfg, nom.dt)
+            cache_slip = tvlqr_mod.GainCache(tvcfg_slip, nom.dt)
 
             terrain = None
             if args.terrain:
@@ -156,6 +162,10 @@ def main() -> None:
                     elif corrector == "tvlqr":
                         wheels, _diag = _tvlqr_wheels(
                             left, right, planned_pose, st.pose, cfg, tvcfg, cache, k)
+                    elif corrector == "tvlqr_slip":
+                        wheels, _diag = _tvlqr_wheels(
+                            left, right, planned_pose, st.pose, cfg, tvcfg_slip,
+                            cache_slip, k)
                     else:
                         obs, err_obs = build_observation(
                             cfg, planned_pose, st.pose, prev_err,

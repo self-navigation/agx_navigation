@@ -424,7 +424,8 @@ class WheelCorrectorNode(Node):
         kin = self._rl_cfg
         try:
             v_ref, omega_ref = tvlqr_mod.wheels_to_twist(left, right, kin)
-            err = tvlqr_mod.tracking_error(planned_pose, actual_pose)
+            err = tvlqr_mod.slip_error(tvlqr_mod.tracking_error(planned_pose, actual_pose),
+                                       omega_ref, self._tvlqr_cfg)
             K = self._tvlqr_gains.get(v_ref, omega_ref)
             v_cmd, omega_cmd, diag = tvlqr_mod.correct(
                 K, err, v_ref, omega_ref, self._tvlqr_cfg
