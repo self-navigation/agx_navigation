@@ -30,6 +30,13 @@ for ax, r in zip(axs.flat, rows):
     ax.plot(T[hit, 1], T[hit, 2], ".", color="tab:red", ms=4); ax.plot(cx, cy, "X", color="red", ms=12)
     ax.set_xlim(cx - 2.5, cx + 2.5); ax.set_ylim(cy - 2.5, cy + 2.5); ax.set_aspect("equal"); ax.axis("on")
     ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(f"{r['plan'][-5:]} {r['outcome']} overlap {r['wall_overlap_s']} s", fontsize=9)
-fig.suptitle("Job 237 orig, ours-lib: 5x5 m around first wall contact. blue plan, black truth, red hull on wall", fontsize=12)
-fig.tight_layout(); out = os.path.join(os.path.dirname(__file__), "contacts.png"); fig.savefig(out, dpi=70); print(out)
+    ax.set_title(f"{r['plan'][-5:]}: {'доехал' if r['outcome']=='arrived' else 'не доехал'}, касание {r['wall_overlap_s']} с", fontsize=9)
+from matplotlib.lines import Line2D
+fig.legend(handles=[Line2D([], [], color="tab:blue", lw=2, label="план (PMP)"),
+                    Line2D([], [], color="k", lw=1.5, label="фактическая траектория (Gazebo)"),
+                    Line2D([], [], color="tab:red", marker=".", ls="", ms=10, label="корпус касается стены"),
+                    Line2D([], [], color="red", marker="X", ls="", ms=12, label="первое касание")],
+           loc="upper center", ncol=4, fontsize=13, frameon=False, bbox_to_anchor=(0.5, 0.995))
+fig.suptitle("Касания стен (ours-lib, задание 237): окно 5x5 м вокруг первого касания; подпись: план, исход, время касания",
+             fontsize=13, y=0.965)
+fig.tight_layout(rect=(0, 0, 1, 0.95)); out = os.path.join(os.path.dirname(__file__), "contacts.png"); fig.savefig(out, dpi=70); print(out)
