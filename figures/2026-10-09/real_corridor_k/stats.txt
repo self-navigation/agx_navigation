@@ -1,0 +1,4 @@
+rendered at ab8d414
+wood (slalom2): n=234 k=-0.030 s SE 0.053 c0 +0.0032 resid sd 0.0437 m/s
+linoleum (slalom1, before the door hit): n=112 k=-0.162 s SE 0.107 c0 -0.0020 resid sd 0.0554 m/s
+slalom2 end position along the corridor: features 7.05 m (half-max 7.01-7.11), ICP 5.850 m (0.830x), odometer+gyro 6.927 m (0.982x)
