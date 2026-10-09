@@ -8,8 +8,10 @@ arrive; updates whose NIS exceeds the gate_p bound correct the pose only and
 are flagged as gated. covariance_along_plan evaluates the covariance along a
 plan before the drive. SurfaceSwitch sets the k used by TVLQR's sideslip
 model: k_plan until |k_hat - k_plan| > switch_sigma * sigma_k, then k_hat for
-the rest of the drive. Never feed the chassis /odom omega as the gyro, and set
-pose noise to the real localizer's values even in sim.
+the rest of the drive. tracking_covariance_along_plan gives the closed-loop
+cross-track covariance (with loop noise q_loop_cross) for an off-plan test.
+Never feed the chassis /odom omega as the gyro, and set pose noise to the
+real localizer's values even in sim.
 """
 
 from dataclasses import dataclass
@@ -110,6 +112,16 @@ class TVLQGConfig:
     k_bucket: float = 0.02
     # LQR on the filter's pose (LQG) instead of the raw measured pose.
     control_on_estimate: bool = False
+
+    # --- Deviation threshold (module docstring, DEVIATION THRESHOLD) -------
+    # Closed-loop cross-track disturbance density the filter model has no
+    # term for (control step, saturation, crab transients). FITTED 2026-10-09
+    # by consistency: cross-track NEES = 1 on job 243's seed-0 clean TVLQG
+    # runs (moving ticks, before any contact). Held out on seed 1: 0.0% of
+    # ticks outside 3.29 sigma; 3.29 sigma comes to a median 0.49 m along the
+    # plans, the supervisor's bench-chosen offplan_dist (0.5). The same fit
+    # on a heading density gives 0.37 rad/s and the same calibration.
+    q_loop_cross: float = 0.106    # [m / sqrt(s)]
 
     def p0(self) -> np.ndarray:
         return np.diag([
@@ -356,3 +368,96 @@ def covariance_along_plan(
                 P = IKH @ P @ IKH.T + K @ R @ K.T
         out[i] = 0.5 * (P + P.T)
     return out
+
+
+def tracking_covariance_along_plan(
+    v_ref: Sequence[float],
+    omega_ref: Sequence[float],
+    dt: float,
+    sigma_k: Sequence[float],
+    cfg: TVLQGConfig,
+    tvlqr_cfg,
+    k_bar: float = 0.0,
+    q_loop: Sequence[float] = (0.0, 0.0, 0.0),
+    gains: Optional[Sequence[np.ndarray]] = None,
+) -> np.ndarray:
+    """Sigma_e(t) of the CLOSED-LOOP tracking error [e_along, e_cross,
+    e_heading] along a plan, before any drive (DEVIATION THRESHOLD).
+
+    Joint state z = [e, dk], dk = k_true - k_bar the slide the controller gets
+    wrong. e' = (Ad - Bd K) e + b dk + w with b = [0, v_ref omega_ref, 0] dt
+    (the unmodelled slide pushes cross-track), K the gain the node uses
+    (frozen-time, ``tvlqr_cfg`` at ``k_bar``, steering faded below
+    min_speed_for_steering), w the filter's process noise in the error frame
+    plus ``q_loop`` (densities on [along, cross, heading]): disturbances of
+    the closed loop that the filter's model has no term for (the 0.1 s
+    control step, saturation, crab-offset transients), fitted by consistency.
+    dk is a persistent bias, not white noise, hence the augmented state; its
+    variance is pinned every tick to the filter's sigma_k(t)^2
+    (``covariance_along_plan``), keeping its correlation with e: the
+    controller's slide error IS the filter's estimation error. Saturation,
+    and the start-of-drive transient of the crab offset, are not modelled.
+    ``gains``: the per-tick gains from ``plan_gains`` (they do not depend on
+    the noise, so a fit over q_loop computes them once). Returns (N, 3, 3).
+    """
+    from . import tvlqr
+    if gains is None:
+        gains = plan_gains(v_ref, omega_ref, dt, tvlqr_cfg, k_bar)
+    n = len(v_ref)
+    W = np.diag([cfg.q_v ** 2 + cfg.q_pos ** 2, cfg.q_pos ** 2,
+                 cfg.q_omega ** 2 + cfg.q_theta ** 2, cfg.q_k ** 2]) * dt
+    W[:3, :3] += np.diag(np.asarray(q_loop, dtype=float) ** 2) * dt
+    Z = np.zeros((4, 4))
+    Z[3, 3] = sigma_k[0] ** 2
+    out = np.empty((n, 3, 3))
+    for i in range(n):
+        v, w = float(v_ref[i]), float(omega_ref[i])
+        K = gains[i]
+        A, B = tvlqr.error_dynamics(v, w, 0.0)
+        Ad, Bd = tvlqr.discretize(A, B, dt)
+        M = np.zeros((4, 4))
+        M[:3, :3] = Ad - Bd @ K
+        M[1, 3] = v * w * dt
+        M[3, 3] = 1.0
+        Z = M @ Z @ M.T + W
+        s2 = float(sigma_k[i]) ** 2
+        if Z[3, 3] > 0.0 and s2 > 0.0:
+            s = np.sqrt(s2 / Z[3, 3])
+            Z[3, :] *= s
+            Z[:, 3] *= s
+        Z = 0.5 * (Z + Z.T)
+        out[i] = Z[:3, :3]
+    return out
+
+
+def plan_gains(v_ref: Sequence[float], omega_ref: Sequence[float], dt: float,
+               tvlqr_cfg, k_bar: float = 0.0) -> list:
+    """The gain the node applies at each tick of a plan (GainCache at k_bar,
+    steering row zeroed below min_speed_for_steering, as tvlqr.correct)."""
+    from dataclasses import replace
+
+    from . import tvlqr
+    tc = replace(tvlqr_cfg, sideslip_k=float(k_bar))
+    cache = tvlqr.GainCache(tc, dt)
+    out = []
+    for v, w in zip(v_ref, omega_ref):
+        K = cache.get(float(v), float(w)).copy()
+        if abs(v) < tc.min_speed_for_steering:
+            K[1, :] = 0.0
+        out.append(K)
+    return out
+
+
+def deviation_bound_along_plan(poses: np.ndarray, v_ref: Sequence[float],
+                               omega_ref: Sequence[float], dt: float,
+                               cfg: TVLQGConfig, tvlqr_cfg,
+                               n_sigma: float) -> np.ndarray:
+    """Per plan sample: n_sigma * sigma_cross(t), the cross-track error beyond
+    which TVLQG's model does not explain the deviation (scenario b). From the
+    plan alone: the filter's sigma_k(t) (``covariance_along_plan``) feeds the
+    closed-loop error covariance (``tracking_covariance_along_plan``)."""
+    P = covariance_along_plan(poses, v_ref, omega_ref, dt, cfg)
+    sk = np.sqrt(P[:, IK, IK])
+    S = tracking_covariance_along_plan(v_ref, omega_ref, dt, sk, cfg, tvlqr_cfg,
+                                       q_loop=(0.0, cfg.q_loop_cross, 0.0))
+    return n_sigma * np.sqrt(S[:, 1, 1])

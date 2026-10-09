@@ -281,3 +281,28 @@ def test_offplan_trigger_fires_on_schedule_once_per_segment():
         s = SupervisorCore(cfg)
         s.set_plan(poses, t)
         assert not any(s.update(poses[k, 0], y, 0.0, t[k]).trigger for k in range(5))
+
+
+def test_offplan_bound_per_sample_replaces_offplan_dist():
+    # Covariance bound (scenario b): 0.3 m on the first half, 0.8 m after.
+    poses, t = straight()
+    bound = np.where(np.arange(len(poses)) < 100, 0.3, 0.8)
+    sup = SupervisorCore()
+    sup.set_plan(poses, t, offplan_bound=bound)
+    d = sup.update(poses[10, 0], 0.4, 0.0, t[10])
+    assert d.trigger and d.reason == "offplan" and d.offplan_at == pytest.approx(0.3)
+    s2 = SupervisorCore()
+    s2.set_plan(poses, t, offplan_bound=bound)
+    # 0.6 m off where the bound is 0.8: no trigger, though offplan_dist is 0.5.
+    assert not any(s2.update(poses[k, 0], 0.6, 0.0, t[k]).trigger for k in range(150, 155))
+    with pytest.raises(ValueError):
+        SupervisorCore().set_plan(poses, t, offplan_bound=bound[:-1])
+
+
+def test_wall_layer_off_neither_slows_nor_stops_but_keeps_gate_thresholds():
+    poses, t = straight()
+    sup = SupervisorCore(SupervisorConfig(wall_layer=False))
+    sup.set_plan(poses, t)
+    d = sup.update(poses[5, 0], 0.0, 0.0, t[5], clearance=0.0)
+    assert not d.stop and d.speed_scale == 1.0 and d.reason != "wall"
+    assert sup.wall_thresholds(5)[1] == pytest.approx(SupervisorConfig().stop_dist)

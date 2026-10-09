@@ -603,7 +603,7 @@ class WheelCorrectorNode(Node):
         self._goal_xyth = (pos.x, pos.y, yaw)
         self._sup_full_replans_goal = 0
         if self._sup is not None:
-            self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
+            self._sup_counts = {k: 0 for k in self._SUP_COUNTS}
             self._sup.replans = self._sup.stops = 0
         self._wall_retry_ok = 0
         self.get_logger().info(
@@ -913,7 +913,7 @@ class WheelCorrectorNode(Node):
         self._rejoin_not_before = -math.inf
         self._rejoin_retries = 0
         self._sup_full_replans_goal = 0
-        self._sup_counts = {k: 0 for k in self._SUP_EXTRA[2:-1]}
+        self._sup_counts = {k: 0 for k in self._SUP_COUNTS}
         self._wall_retry_ok = 0
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -931,7 +931,13 @@ class WheelCorrectorNode(Node):
                 c.trigger_ratio, c.rejoin))
 
     _SUP_EXTRA = ("overlay", "pending", "rejoin_ok", "rejoin_fail", "rejoin_blocked",
-                  "rejoin_stale", "full_replans", "plan_clearance")
+                  "rejoin_stale", "full_replans", "plan_clearance",
+                  # 2026-10-09: which trigger fired (_SUP_REASONS index, 0 =
+                  # none) and the off-plan threshold at k* [m].
+                  "trigger_reason", "offplan_at")
+    _SUP_COUNTS = ("rejoin_ok", "rejoin_fail", "rejoin_blocked", "rejoin_stale",
+                   "full_replans")
+    _SUP_REASONS = ("", "wall", "lag", "near_wall", "offplan")
     _MAX_FULL_REPLANS = 3
 
     def _now_s(self) -> float:
@@ -958,6 +964,26 @@ class WheelCorrectorNode(Node):
         except KeyError:
             pass
 
+    def _offplan_bound(self, poses, dt: float):
+        """Scenario (b)'s threshold along this plan, from TVLQG's model
+        (SupervisorConfig.offplan_sigma; None = the fixed offplan_dist)."""
+        n_sigma = self._sup_cfg.offplan_sigma
+        if n_sigma <= 0.0:
+            return None
+        try:
+            tw = [tvlqr_mod.wheels_to_twist(s.left, s.right, self._rl_cfg)
+                  for s in self._buf.plan_samples()]
+            b = tvlqg_mod.deviation_bound_along_plan(
+                np.asarray(poses, dtype=float), [t[0] for t in tw], [t[1] for t in tw],
+                dt, self._tvlqg_cfg, self._tvlqr_cfg, n_sigma)
+        except Exception as exc:  # noqa: BLE001 -- fall back, never block playback
+            self.get_logger().error("offplan bound failed (%s); using offplan_dist" % exc)
+            return None
+        self.get_logger().info(
+            "supervisor: off-plan bound %.1f sigma: median %.3f m (min %.3f, max %.3f)"
+            % (n_sigma, float(np.median(b)), float(b.min()), float(b.max())))
+        return b
+
     def _sup_start(self) -> None:
         """Playback begins: hand the plan to the core and build the re-join solver."""
         if self._sup is None:
@@ -973,7 +999,7 @@ class WheelCorrectorNode(Node):
         if self._sup_swd is not None:
             c_plan = [self._sup_swd.body_clearance(*p) for p in poses]
         self._sup.set_plan(poses, [i * dt for i in range(len(poses))], 0.0,
-                           clearance=c_plan)
+                           clearance=c_plan, offplan_bound=self._offplan_bound(poses, dt))
         self._sup_scale = 1.0
         if c_plan is None:
             self.get_logger().warn("supervisor: no /map yet; ABSOLUTE wall "
@@ -1236,9 +1262,12 @@ class WheelCorrectorNode(Node):
     def _publish_sup_state(self, d) -> None:
         msg = Float64MultiArray()
         extra = [float(self._buf.overlay_active), float(self._rejoin_future is not None)]
-        extra += [float(self._sup_counts[k]) for k in self._SUP_EXTRA[2:-1]]
+        extra += [float(self._sup_counts[k]) for k in self._SUP_COUNTS]
         extra.append(float(self._sup.c_plan[min(d.k_star, len(self._sup.c_plan) - 1)])
                      if self._sup.c_plan is not None else math.inf)
+        extra.append(float(self._SUP_REASONS.index(d.reason))
+                     if d.trigger and d.reason in self._SUP_REASONS else 0.0)
+        extra.append(float(d.offplan_at))
         msg.data = d.as_array() + extra
         self._sup_pub.publish(msg)
 
