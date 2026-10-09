@@ -1,0 +1,9 @@
+# Job 243 (TVLQG step 2, 2026-10-09): the slide k ESTIMATED by the surface filter
+# (tvlqg.py) instead of typed in. LTN and LTNg are job 241's plain and typed-in
+# cells, carried so the comparison is paired in one job. LTNq: k = 0 until the
+# filter rejects it at 3 sigma, then k_hat. LTNqe: the same with the LQR on the
+# filter's pose (LQG proper) instead of the raw truth pose.
+LTN   --arm ours-lib --localization truth --phantom-walls
+LTNg  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
+LTNq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+LTNqe --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true
