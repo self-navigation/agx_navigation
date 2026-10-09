@@ -154,6 +154,13 @@ class CorrectionDiagnostics:
     gain_norm: float = 0.0         # ||K||_F, for spotting ill-conditioned solves
     index: int = -1                # trajectory tick this correction used
     valid: bool = True             # False -> caller should fall back to identity
+    # TVLQG surface filter (tvlqg.py), nan when it is off. Appended 2026-10-09.
+    k_hat: float = float("nan")    # estimated slide [s]
+    sigma_k: float = float("nan")
+    k_bar: float = float("nan")    # surface level the gains are linearized at
+    rho_hat: float = float("nan")  # estimated yaw-gain error
+    nis_pose: float = float("nan") # last pose update's NIS (3 dof)
+    gated: float = float("nan")    # 1 if that update failed the chi^2 gate
 
     def as_array(self) -> np.ndarray:
         """Flat float vector for publishing on a Float64MultiArray.
@@ -168,6 +175,8 @@ class CorrectionDiagnostics:
             float(self.saturated_v), float(self.saturated_omega),
             float(self.steering_faded), self.gain_norm,
             float(self.index), float(self.valid),
+            self.k_hat, self.sigma_k, self.k_bar, self.rho_hat,
+            self.nis_pose, self.gated,
         ], dtype=float)
 
     # Field order of as_array(), for log headers and offline analysis.
@@ -177,6 +186,7 @@ class CorrectionDiagnostics:
         "dv", "domega", "dv_raw", "domega_raw",
         "saturated_v", "saturated_omega",
         "steering_faded", "gain_norm", "index", "valid",
+        "k_hat", "sigma_k", "k_bar", "rho_hat", "nis_pose", "gated",
     )
 
 

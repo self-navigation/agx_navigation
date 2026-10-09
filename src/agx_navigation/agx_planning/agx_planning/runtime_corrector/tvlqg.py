@@ -1,14 +1,15 @@
-"""Surface-estimating Kalman filter for the TVLQG corrector. Pure (numpy only).
+"""Surface-estimating Kalman filter and switch for the TVLQG corrector.
 
-An EKF on x = [p_x, p_y, theta, omega, k, rho, b_g]: omega follows
+Pure numpy. An EKF on x = [p_x, p_y, theta, omega, k, rho, b_g]: omega follows
 (1 + rho) omega_cmd with first-order lag yaw_tau, the body slides sideways by
 v_lat = k v omega, and k, rho, b_g are random walks. v is an input (commanded
 speed or odometer). Pose and gyro (omega + b_g) updates are applied as they
-arrive. covariance_along_plan evaluates the covariance along a plan before the
-drive. Updates whose NIS exceeds the gate_p bound still correct the pose but
-not k, rho or b_g, and are flagged as gated. Never feed the chassis /odom
-omega as the gyro (it echoes the command), and set pose noise to the real
-localizer's values even when the sim provides ground truth.
+arrive; updates whose NIS exceeds the gate_p bound correct the pose only and
+are flagged as gated. covariance_along_plan evaluates the covariance along a
+plan before the drive. SurfaceSwitch sets the k used by TVLQR's sideslip
+model: k_plan until |k_hat - k_plan| > switch_sigma * sigma_k, then k_hat for
+the rest of the drive. Never feed the chassis /odom omega as the gyro, and set
+pose noise to the real localizer's values even in sim.
 """
 
 from dataclasses import dataclass
@@ -96,6 +97,19 @@ class TVLQGConfig:
     # Tail probability of the chi^2 bound beyond which an update may not move
     # k / rho / b_g (module docstring, INNOVATION GATE). A key of CHI2_GATE.
     gate_p: float = 0.001
+
+    # --- Control (module docstring, CONTROL) -----------------------------------
+    # Master switch on runtime_corrector (with corrector:=tvlqr). OFF by
+    # default: TVLQR then uses its own sideslip_k, exactly as before.
+    enabled: bool = False
+    # The slide the controller assumes until the filter rejects it.
+    k_plan: float = 0.0            # [s]
+    # ... rejected when k_hat is this many sigma_k away from it.
+    switch_sigma: float = 3.0
+    # Gain-cache bucket of k_bar [s]: gains are re-solved per bucket.
+    k_bucket: float = 0.02
+    # LQR on the filter's pose (LQG) instead of the raw measured pose.
+    control_on_estimate: bool = False
 
     def p0(self) -> np.ndarray:
         return np.diag([
@@ -278,6 +292,28 @@ class SurfaceFilter:
         """|k_hat - k_surface| in units of sigma_k: the surface-switch statistic."""
         k, s = self.k
         return abs(k - k_surface) / s if s > 0 else float("inf")
+
+
+class SurfaceSwitch:
+    """Scenario (a), two levels (module docstring, CONTROL): k_bar = k_plan
+    until the filter rejects it at n_sigma, then k_bar = k_hat for good.
+    ``update`` returns True on the tick the switch activates."""
+
+    def __init__(self, k_plan: float, n_sigma: float) -> None:
+        self.k_plan = float(k_plan)
+        self.n_sigma = float(n_sigma)
+        self.active = False
+        self.k_bar = self.k_plan
+
+    def update(self, k_hat: float, sigma_k: float) -> bool:
+        if not (np.isfinite(k_hat) and np.isfinite(sigma_k)) or sigma_k <= 0.0:
+            return False
+        fired = False
+        if not self.active and abs(k_hat - self.k_plan) > self.n_sigma * sigma_k:
+            self.active = fired = True
+        if self.active:
+            self.k_bar = float(k_hat)
+        return fired
 
 
 def covariance_along_plan(
