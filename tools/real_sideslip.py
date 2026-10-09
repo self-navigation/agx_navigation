@@ -42,6 +42,8 @@ def main():
     ap.add_argument("--odo-scale", type=float, default=1.023)
     ap.add_argument("--win", type=float, default=0.6)
     ap.add_argument("--vmin", type=float, default=0.1)
+    ap.add_argument("--until", type=float, default=None,
+                    help="use only samples up to this many seconds after the first IMU sample")
     a = ap.parse_args()
     d = a.run_dir
     icp = np.loadtxt(os.path.join(d, "icp.csv"), delimiter=",")
@@ -71,6 +73,8 @@ def main():
     v_odo = np.interp(t, od[:, 0], 0.5 * (vl + vr))
 
     ok = np.isfinite(v_lat) & np.isfinite(v_odo) & (np.abs(v_odo) > a.vmin)
+    if a.until is not None:  # e.g. cut a run off before a collision
+        ok &= t <= imu[0, 0] + a.until
     print(f"{ok.sum()} moving samples of {len(t)}; v_lon/v_odo median {np.median(v_lon[ok] / v_odo[ok]):.3f}")
     if ok.sum() < 20:
         return
