@@ -1,0 +1,14 @@
+window: from 60 s after the first IMU sample
+IMU: n=113568, span 1136.1 s, median dt 10.00 ms, max gap 76.0 ms
+odom: n=56808, median dt 20.00 ms
+wx: mean +0.00000 rad/s, sd 0.00110, density N 1.19e-04 rad/s/sqrt(Hz), bias instability 4.70e-06 at tau 126 s, linear drift +1.81e-07 rad/s/min
+wy: mean -0.00000 rad/s, sd 0.00110, density N 7.61e-05 rad/s/sqrt(Hz), bias instability 3.13e-06 at tau 126 s, linear drift -2.50e-07 rad/s/min
+wz: mean -0.00000 rad/s, sd 0.00076, density N 7.02e-05 rad/s/sqrt(Hz), bias instability 3.18e-06 at tau 126 s, linear drift +8.36e-08 rad/s/min
+ax: mean +0.43349 m/s^2, sd 0.01963, density N 1.45e-03 m/s^2/sqrt(Hz), bias instability 5.09e-04 at tau 126 s, linear drift -5.47e-05 m/s^2/min
+ay: mean +0.04116 m/s^2, sd 0.01902, density N 1.45e-03 m/s^2/sqrt(Hz), bias instability 7.14e-04 at tau 48 s, linear drift -2.20e-05 m/s^2/min
+az: mean +9.83257 m/s^2, sd 0.06625, density N 2.11e-03 m/s^2/sqrt(Hz), bias instability 3.14e-04 at tau 126 s, linear drift +2.36e-05 m/s^2/min
+wz mean in deg/h: -0.1; integrated yaw over the run -0.04 deg; after removing the mean bias -0.000 deg
+wz bias first 5 min -1.49e-06, last 5 min -1.67e-07 rad/s
+odom at rest: v nonzero samples 5, w nonzero 5; v range [0.0000, 0.0040], w range [-0.0100, 0.0000]
+odom pose drift: dx +0.00036 m, dy +0.00017 m, dyaw -0.0573 deg
+az sd per 10 s window: min 0.0626, median 0.0647, max 0.1309 m/s^2
