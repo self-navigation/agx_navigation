@@ -268,3 +268,31 @@ def test_tvlqg_leaves_a_no_slide_plant_alone():
     plain, _ = _closed_loop("plain", k_true=-0.03)
     assert k_bar == 0.0
     assert est == pytest.approx(plain, abs=0.01)
+
+
+def test_deviation_bound_widens_while_k_is_unknown_and_sits_near_half_a_metre():
+    # Straight 3 s, a moving turn 4 s, straight 6 s at 0.5 m/s, 0.1 s ticks.
+    import dataclasses
+
+    from agx_planning.runtime_corrector import tvlqr
+    dt = 0.1
+    w = np.r_[np.zeros(30), np.full(40, 0.6), np.zeros(60)]
+    v = np.full_like(w, 0.5)
+    th = np.cumsum(w) * dt
+    poses = np.c_[np.cumsum(v * np.cos(th)) * dt, np.cumsum(v * np.sin(th)) * dt, th]
+
+    def bound(**kw):
+        cfg = dataclasses.replace(tvlqg.TVLQGConfig(), **kw)
+        return tvlqg.deviation_bound_along_plan(poses, v, w, dt, cfg, tvlqr.TVLQRConfig(), 3.29)
+
+    b = bound()
+    assert b.shape == (len(w),) and np.all(b > 0)
+    # The slide's prior (k unknown, sigma 0.3) widens the bound in the first
+    # moving turn against a surface known in advance; the effect is large
+    # without the fitted loop noise and small (~5 cm) with it.
+    known = bound(sigma_k0=0.001)
+    assert b[40:60].max() - known[40:60].max() > 0.03
+    assert (bound(q_loop_cross=0.0)[40:60].max()
+            > 1.5 * bound(q_loop_cross=0.0, sigma_k0=0.001)[40:60].max())
+    # Same size as the bench-chosen offplan_dist (0.5 m) -- the fit's finding.
+    assert 0.4 < np.median(b) < 0.6

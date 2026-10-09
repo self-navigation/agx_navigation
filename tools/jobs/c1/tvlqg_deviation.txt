@@ -1,0 +1,16 @@
+# Job 244 (TVLQG scenario b, 2026-10-09): the DEVIATION scenario. Small
+# deviation -> TVLQG corrects; large -> PMP re-join. "Large" is derived from the
+# model: 3.29 sigma (99.9%) of TVLQG's predicted cross-track error at each plan
+# sample (tvlqg.deviation_bound_along_plan, SupervisorConfig.offplan_sigma).
+# The supervisor runs with ONLY that trigger: lag and near-wall re-plans off,
+# wall slow/stop off (wall_layer=false; the re-join's wall gate stays).
+# D = deviation layer, Df = the same with the bench-chosen fixed 0.5 m.
+# A* cells = (C) the same under amcl, where the pose is realistic: raw pose vs
+# the filter's pose in the LQR (control_on_estimate).
+LTNq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+LTDq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,wall_layer=false,offplan_sigma=3.29
+LTDf  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,wall_layer=false,offplan_dist=0.5
+LAN   --arm ours-lib --localization amcl  --phantom-walls
+LANq  --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+LANqe --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true
+LADq  --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,wall_layer=false,offplan_sigma=3.29

@@ -1154,6 +1154,16 @@ def run_one(args, plan_path: str) -> dict:
                  "full_replans"), [int(x) for x in last[13:18]]))
             row["sup_triggers"] = int(sum(1 for _, d in st["sup"] if d[10] > 0.5))
             row["sup_stop_ticks"] = int(sum(1 for _, d in st["sup"] if d[9] > 0.5))
+            if len(last) >= 21:
+                # trigger_reason (node._SUP_REASONS) per tick; latched triggers
+                # fire on one tick, "wall" on every stopped tick.
+                names = ("", "wall", "lag", "near_wall", "offplan")
+                codes = [int(d[19]) for _, d in st["sup"]]
+                row["sup_reason_ticks"] = {names[c]: codes.count(c) for c in range(1, 5)
+                                           if codes.count(c)}
+                t0 = st["sup"][0][0]
+                row["sup_offplan_t"] = [round(t - t0, 2) for t, d in st["sup"] if int(d[19]) == 4]
+                row["sup_offplan_at_med"] = float(np.median([d[20] for _, d in st["sup"]]))
         if st["nsup"] or st["nsup_term"]:
             # nav2/gmpc layer (#42). /supervisor/state = Decision.as_array()
             # (same first 11 fields as the vec-pmp one) + [replans, stops,

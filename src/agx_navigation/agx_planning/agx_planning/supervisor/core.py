@@ -10,7 +10,8 @@ once per segment, when lag >= trigger_ratio * prev_lag and lag * v_seg >
 reach_radius.
 
 Reason "offplan" fires when the cross-track distance at k* exceeds offplan_dist
-(0 disables it).
+(0 disables it). With offplan_sigma > 0 a per-sample bound offplan_sigma *
+sigma_cross(t) from tvlqg replaces offplan_dist.
 
 Walls: speed is scaled by clip((d - stop_at) / (slow_at - stop_at), 0, 1) on
 the signed hull clearance d (walls.py). At stop_at the robot stops and a
@@ -46,6 +47,10 @@ class SupervisorConfig:
     min_band: float = 0.05          # [m] smallest slow band above stop_at
     trigger_ratio: float = 2.0      # lag must at least double the previous segment's
     offplan_dist: float = 0.5       # [m] cross-track error that requests a re-join; 0 = off
+    # > 0: the off-plan threshold is this many sigma of TVLQG's predicted
+    # cross-track error at each plan sample instead (module docstring,
+    # "Covariance bound"); the adapter computes it. 3.29 = 99.9% two-sided.
+    offplan_sigma: float = 0.0
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
     min_seg_speed: float = 0.05     # [m/s] floor for v_seg (turn-in-place segments)
@@ -53,6 +58,10 @@ class SupervisorConfig:
     # switches"). Walls always stop and slow whatever these say.
     lag_trigger: bool = True
     near_wall_trigger: bool = True
+    # False: no wall slow-down and no wall stop (so no "wall" re-plans
+    # either); the re-join's wall gate keeps its thresholds. For measuring the
+    # deviation scenario alone (2026-10-09, job 244).
+    wall_layer: bool = True
     # Adapter-side (runtime corrector): the PMP re-join answering a trigger.
     rejoin: bool = True             # False = trigger is logged only (and walls still stop)
     rejoin_max_age: float = 0.5     # [s] discard a re-join that arrives later than this
@@ -98,7 +107,8 @@ class Decision:
     speed_scale: float              # multiply the outgoing command by this
     stop: bool                      # publish zero this tick
     trigger: bool                   # request a re-plan this tick
-    reason: str = ""                # "lag" | "wall" | "near_wall" | ""
+    reason: str = ""                # "lag" | "wall" | "near_wall" | "offplan" | ""
+    offplan_at: float = float("inf")  # [m] the off-plan threshold at k*
 
     FIELDS = ("k_star", "waypoint", "n_waypoints", "reached", "lag_s", "prev_lag_s",
               "lag_m", "clearance", "speed_scale", "stop", "trigger")
@@ -112,20 +122,22 @@ class SupervisorCore:
     def __init__(self, cfg: Optional[SupervisorConfig] = None):
         self.cfg = cfg or SupervisorConfig()
         self.poses = np.zeros((0, 3))
+        self.offplan_bound = None
         self.replans = 0
         self.stops = 0
         self._stopped = False
 
     # ---- plan ---------------------------------------------------------
     def set_plan(self, poses, times=None, t_now: float = 0.0,
-                 clearance=None) -> None:
+                 clearance=None, offplan_bound=None) -> None:
         """Install a plan: (N,3) poses (x, y, yaw), optional (N,) times [s].
 
         Without times the plan is an arc-length path (as Nav2 FollowPath
         receives) and ``cruise_speed`` supplies the time law. Resets all
         per-plan state; call it again after every re-plan. ``clearance`` is
         the plan's own (N,) hull clearance; given, the wall thresholds are
-        relative to it (module docstring).
+        relative to it (module docstring). ``offplan_bound`` is the (N,)
+        per-sample off-plan threshold (module docstring, "Covariance bound").
         """
         p = np.asarray(poses, dtype=float).reshape(-1, 3)
         if len(p) == 0:
@@ -144,6 +156,10 @@ class SupervisorCore:
                        else np.asarray(clearance, dtype=float).reshape(-1))
         if self.c_plan is not None and len(self.c_plan) != len(p):
             raise ValueError("clearance and poses differ in length")
+        self.offplan_bound = (None if offplan_bound is None
+                              else np.asarray(offplan_bound, dtype=float).reshape(-1))
+        if self.offplan_bound is not None and len(self.offplan_bound) != len(p):
+            raise ValueError("offplan_bound and poses differ in length")
         total = self.s[-1]
         n = max(1, int(round(1.0 / self.cfg.waypoint_frac)))
         if total <= 0:
@@ -210,6 +226,13 @@ class SupervisorCore:
         slow_at = max(min(cfg.slow_dist, cp - cfg.slow_margin), stop_at + cfg.min_band)
         return slow_at, stop_at
 
+    def offplan_at(self, k: int) -> float:
+        """Off-plan threshold at plan index k [m]; 0 = trigger off."""
+        b = self.offplan_bound
+        if b is not None:
+            return float(b[min(k, len(b) - 1)])
+        return float(self.cfg.offplan_dist)
+
     def _progress(self, x: float, y: float) -> int:
         lo = self.k_star
         hi = min(len(self.poses), lo + self.cfg.window + 1)
@@ -263,7 +286,10 @@ class SupervisorCore:
         span = max(slow_at - stop_at, 1e-9)
         scale = float(np.clip((clearance - stop_at) / span, 0.0, 1.0)) if math.isfinite(clearance) else 1.0
         stop = math.isfinite(clearance) and clearance <= stop_at
+        if not cfg.wall_layer:
+            scale, stop = 1.0, False
 
+        offplan_at = self.offplan_at(self.k_star)
         trigger, reason = False, ""
         if stop:
             # Counted once per stop episode, but the trigger stays up every
@@ -280,9 +306,9 @@ class SupervisorCore:
                 trigger, reason = True, "lag"
             elif cfg.near_wall_trigger and scale < 1.0:
                 trigger, reason = True, "near_wall"
-            elif cfg.offplan_dist > 0 and math.hypot(
+            elif offplan_at > 0 and math.hypot(
                     self.poses[self.k_star, 0] - x,
-                    self.poses[self.k_star, 1] - y) > cfg.offplan_dist:
+                    self.poses[self.k_star, 1] - y) > offplan_at:
                 trigger, reason = True, "offplan"
             if trigger:
                 self.latched = True
@@ -294,4 +320,4 @@ class SupervisorCore:
                         reached=reached, retime_index=retime, lag_s=float(lag),
                         prev_lag_s=float(self.prev_lag), lag_m=float(lag_m),
                         clearance=float(clearance), speed_scale=scale, stop=bool(stop),
-                        trigger=trigger, reason=reason)
+                        trigger=trigger, reason=reason, offplan_at=float(offplan_at))
