@@ -185,3 +185,86 @@ def test_covariance_along_plan_shrinks_in_turns_grows_on_straights():
     assert sk[99] == pytest.approx(cfg.sigma_k0, rel=0.1)   # nothing learned yet
     assert sk[199] < 0.5 * sk[99]                          # the turns taught it
     assert sk[299] > sk[199]                               # straight: random walk
+
+
+# ---------------------------------------------------------------- control (CONTROL)
+
+
+def test_surface_switch_activates_on_rejection_then_follows_k_hat():
+    sw = tvlqg.SurfaceSwitch(0.0, 3.0)
+    assert not sw.update(-0.2, 0.1)           # 2 sigma: plan's surface kept
+    assert sw.k_bar == 0.0 and not sw.active
+    assert sw.update(-0.31, 0.1)              # 3.1 sigma: rejected, fires once
+    assert sw.k_bar == pytest.approx(-0.31)
+    assert not sw.update(-0.05, 0.03)         # latched: follows k_hat
+    assert sw.active and sw.k_bar == pytest.approx(-0.05)
+    assert not sw.update(float("nan"), 0.1)
+
+
+def _closed_loop(mode: str, k_true=-0.33, seed=0, T=40.0):
+    """Track a plan made for k = 0 (moving turns both ways) on a plant that
+    skids with k_true. mode: 'plain' (sideslip_k 0), 'typed' (sideslip_k =
+    k_true), 'tvlqg' (k_bar from the filter). Returns (max |e_cross|, final
+    k_bar or nan)."""
+    from agx_planning.runtime_corrector import tvlqr
+    rng = np.random.default_rng(seed)
+
+    def ref_cmd(t):
+        return 0.5, 0.8 * math.sin(2.0 * math.pi * t / 8.0)
+
+    n = int(round(T / DT))
+    plan = [np.zeros(tvlqg.N_S)]
+    for i in range(n):
+        plan.append(tvlqg.propagate(plan[-1], *ref_cmd(i * DT), DT))
+    cfg = tvlqr.TVLQRConfig(enabled=True,
+                            sideslip_k=k_true if mode == "typed" else 0.0)
+    gains = tvlqr.GainCache(cfg, DT)
+    fcfg = tvlqg.TVLQGConfig()
+    truth = np.array([0.0, 0.0, 0.0, 0.0, k_true, 0.0, 0.0])
+    f = tvlqg.SurfaceFilter(fcfg, truth[:3]) if mode == "tvlqg" else None
+    sw = tvlqg.SurfaceSwitch(0.0, 3.0)
+    caches = {}
+    worst, cmd = 0.0, (0.0, 0.0)
+    for i in range(n):
+        if f is not None:
+            if i:
+                f.predict(*cmd, DT)
+            f.update_pose(truth[:3] + rng.normal(0, [fcfg.r_pos, fcfg.r_pos, fcfg.r_theta]))
+            f.update_gyro(truth[tvlqg.IW] + rng.normal(0, fcfg.r_gyro))
+            sw.update(*f.k)
+            kq = round(sw.k_bar / fcfg.k_bucket) * fcfg.k_bucket
+            gains = caches.setdefault(kq, tvlqr.GainCache(
+                tvlqr.TVLQRConfig(enabled=True, sideslip_k=kq), DT))
+            cfg = tvlqr.TVLQRConfig(enabled=True, sideslip_k=sw.k_bar)
+        v_ref, w_ref = ref_cmd(i * DT)
+        err = tvlqr.slip_error(tvlqr.tracking_error(plan[i][:3], truth[:3]), v_ref, w_ref, cfg)
+        v, w, _ = tvlqr.correct(gains.get(v_ref, w_ref), err, v_ref, w_ref, cfg)
+        cmd = (v, w)
+        for _ in range(SUB):
+            truth = tvlqg.propagate(truth, v, w, DT / SUB)
+        e = tvlqr.tracking_error(plan[i + 1][:3], truth[:3])
+        if i * DT > 10.0:                     # after the filter's first turns
+            worst = max(worst, abs(e[1]))
+    return worst, (sw.k_bar if f is not None else float("nan"))
+
+
+def test_tvlqg_closes_most_of_the_gap_to_the_typed_in_slide():
+    """The control step's acceptance test: with k ESTIMATED, the steady
+    cross-track error is near what typing in the true k gives, and well below
+    plain TVLQR's."""
+    plain, _ = _closed_loop("plain")
+    typed, _ = _closed_loop("typed")
+    assert typed < 0.7 * plain
+    for seed in range(3):
+        est, k_bar = _closed_loop("tvlqg", seed=seed)
+        assert abs(k_bar + 0.33) < 0.1
+        assert est < typed + 0.3 * (plain - typed)
+
+
+def test_tvlqg_leaves_a_no_slide_plant_alone():
+    """Real wood (k ~ -0.03): the level k = 0 is never rejected, so TVLQG is
+    plain TVLQR exactly."""
+    est, k_bar = _closed_loop("tvlqg", k_true=-0.03)
+    plain, _ = _closed_loop("plain", k_true=-0.03)
+    assert k_bar == 0.0
+    assert est == pytest.approx(plain, abs=0.01)

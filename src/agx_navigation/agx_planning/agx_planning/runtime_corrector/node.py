@@ -46,6 +46,7 @@ from agx_planning.rl_corrector.coeff import apply_residual, clipped_action
 from agx_planning.rl_corrector.config import RLCorrectorConfig
 from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
+from agx_planning.runtime_corrector import tvlqg as tvlqg_mod
 from agx_planning.runtime_corrector import tvlqr as tvlqr_mod
 from agx_planning.supervisor.core import SupervisorConfig, SupervisorCore
 from agx_planning.supervisor.recovery import backoff_and_face
@@ -256,6 +257,32 @@ class WheelCorrectorNode(Node):
             self._tvlqr_max_cross = 0.0
             self.create_timer(2.0, self._log_tvlqr_summary)
 
+        # TVLQG (tvlqg.py, CONTROL): a surface filter estimates the slide k;
+        # TVLQR's sideslip model uses the plan's k until the filter rejects it,
+        # then k_hat. Needs tvlqr.enabled; replaces tvlqr.sideslip_k (the
+        # typed-in constant) with that k_bar.
+        self._tvlqg_cfg = declare_and_load_dataclass(
+            self, tvlqg_mod.TVLQGConfig(), prefix="tvlqg."
+        )
+        self._tvlqg_on = bool(self._tvlqr_cfg.enabled and self._tvlqg_cfg.enabled)
+        self._tvlqg_filter: Optional[tvlqg_mod.SurfaceFilter] = None
+        self._tvlqg_switch: Optional[tvlqg_mod.SurfaceSwitch] = None
+        self._tvlqg_t: Optional[float] = None          # sim time of the filter state
+        self._tvlqg_nis, self._tvlqg_gated = float("nan"), False
+        self._tvlqg_cmd: Tuple[float, float] = (0.0, 0.0)   # twist applied since then
+        self._gyro: Optional[Tuple[float, float]] = None    # (sim t, gyro z)
+        self._tvlqg_caches: dict = {}                       # k bucket -> GainCache
+        if self._tvlqg_on:
+            self._tvlqg_switch = tvlqg_mod.SurfaceSwitch(
+                self._tvlqg_cfg.k_plan, self._tvlqg_cfg.switch_sigma)
+            self._set_surface_level(self._tvlqg_switch.k_bar)
+            self.create_subscription(Imu, "/imu/data", self._on_gyro, 50)
+            self.get_logger().info(
+                "TVLQG surface filter ACTIVE (k_plan=%.3g, switch at %.3g sigma, "
+                "control_on_estimate=%s); tvlqr.sideslip_k is overridden"
+                % (self._tvlqg_cfg.k_plan, self._tvlqg_cfg.switch_sigma,
+                   self._tvlqg_cfg.control_on_estimate))
+
         # Per-trajectory obs state: previous tracking error (for error rates) and
         # previous action (smoothness feature). Reset on each new traj.
         self._prev_err = None
@@ -341,6 +368,9 @@ class WheelCorrectorNode(Node):
         msg = Float64MultiArray()
         msg.data = [float(w) for w in wheels]
         self._pub.publish(msg)
+        # The surface filter's input is what actually went out (after any
+        # correction and clipping), on every path.
+        self._tvlqg_set_cmd(*tvlqr_mod.wheels_to_twist(wheels[0], wheels[2], self._rl_cfg))
         self._last_cmd_time = self.get_clock().now()
 
     def _correct(
@@ -424,6 +454,8 @@ class WheelCorrectorNode(Node):
         kin = self._rl_cfg
         try:
             v_ref, omega_ref = tvlqr_mod.wheels_to_twist(left, right, kin)
+            if self._tvlqg_on:
+                actual_pose = self._tvlqg_step(actual_pose)
             err = tvlqr_mod.slip_error(tvlqr_mod.tracking_error(planned_pose, actual_pose),
                                        v_ref, omega_ref, self._tvlqr_cfg)
             K = self._tvlqr_gains.get(v_ref, omega_ref)
@@ -437,6 +469,13 @@ class WheelCorrectorNode(Node):
             m = kin.wheel_cmd_max
             wl = float(np.clip(wl, -m, m))
             wr = float(np.clip(wr, -m, m))
+            if self._tvlqg_on:
+                f = self._tvlqg_filter
+                diag.k_hat, diag.sigma_k = f.k
+                diag.rho_hat = f.rho[0]
+                diag.k_bar = self._tvlqg_switch.k_bar
+                diag.nis_pose = self._tvlqg_nis
+                diag.gated = float(self._tvlqg_gated)
 
             self._accumulate_tvlqr(diag)
             if self._tvlqr_diag_pub is not None:
@@ -450,6 +489,70 @@ class WheelCorrectorNode(Node):
                 throttle_duration_sec=2.0,
             )
             return [left, left, right, right]
+
+    # ----------------------- TVLQG surface filter --------------------------
+
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _on_gyro(self, msg: Imu) -> None:
+        self._gyro = (self._now_s(), float(msg.angular_velocity.z))
+
+    def _set_surface_level(self, k_bar: float) -> None:
+        """TVLQR at slide k_bar (tvlqg.py, CONTROL): the crab offset uses k_bar
+        as is, the gains come from a frozen-time cache per k_bucket."""
+        b = self._tvlqg_cfg.k_bucket
+        kq = round(k_bar / b) * b if b > 0 else k_bar
+        self._tvlqr_cfg = dataclasses.replace(self._tvlqr_cfg, sideslip_k=float(k_bar))
+        g = self._tvlqg_caches.get(kq)
+        if g is None:
+            g = tvlqr_mod.GainCache(dataclasses.replace(self._tvlqr_cfg, sideslip_k=float(kq)),
+                                    self._rl_cfg.control_dt)
+            self._tvlqg_caches[kq] = g
+        self._tvlqr_gains = g
+
+    def _tvlqg_advance(self, now: float) -> None:
+        """Propagate the filter to ``now`` under the twist applied since its
+        last step. Every emitted command (corrected or zero) ends an interval."""
+        f = self._tvlqg_filter
+        if f is None or self._tvlqg_t is None:
+            return
+        dt = now - self._tvlqg_t
+        if dt > 0.0:
+            # A long gap (paused sim, no playback) carries no input knowledge:
+            # cap it rather than integrate a stale command for seconds.
+            f.predict(self._tvlqg_cmd[0], self._tvlqg_cmd[1], min(dt, 0.5))
+        self._tvlqg_t = now
+
+    def _tvlqg_set_cmd(self, v: float, omega: float) -> None:
+        if getattr(self, "_tvlqg_on", False):
+            self._tvlqg_advance(self._now_s())
+            self._tvlqg_cmd = (float(v), float(omega))
+
+    def _tvlqg_step(self, actual_pose) -> Tuple[float, float, float]:
+        """Filter time + measurement update at this tick, then the surface
+        switch. Returns the pose the LQR should use."""
+        now = self._now_s()
+        if self._tvlqg_filter is None:
+            self._tvlqg_filter = tvlqg_mod.SurfaceFilter(self._tvlqg_cfg, actual_pose)
+            self._tvlqg_t = now
+        else:
+            self._tvlqg_advance(now)
+        f = self._tvlqg_filter
+        f.update_pose(actual_pose)
+        self._tvlqg_nis, self._tvlqg_gated = f.nis, f.gated
+        if self._gyro is not None and now - self._gyro[0] < 0.2:
+            f.update_gyro(self._gyro[1])
+        k, sk = f.k
+        if self._tvlqg_switch.update(k, sk):
+            self.get_logger().info(
+                "TVLQG: plan's slide k = %.3f rejected (k_hat %.3f +- %.3f s); "
+                "controller now follows k_hat" % (self._tvlqg_switch.k_plan, k, sk))
+        if self._tvlqg_switch.active:
+            self._set_surface_level(self._tvlqg_switch.k_bar)
+        if self._tvlqg_cfg.control_on_estimate:
+            return tuple(float(a) for a in f.pose)
+        return actual_pose
 
     def _accumulate_tvlqr(self, diag) -> None:
         """Fold one tick into the running summary tallies."""
@@ -485,6 +588,7 @@ class WheelCorrectorNode(Node):
         msg = Float64MultiArray()
         msg.data = [0.0, 0.0, 0.0, 0.0]
         self._pub.publish(msg)
+        self._tvlqg_set_cmd(0.0, 0.0)
 
     # ----------------------- Offline goal / action ------------------------
 
