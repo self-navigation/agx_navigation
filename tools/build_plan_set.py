@@ -13,7 +13,8 @@ Stages, each reading the previous one's files under --out:
 
 A plan's type comes from segmenting its (v, omega) series with Foote's
 checkerboard novelty into SPIN/REV/STR/L/R segments. Trivial means no turning
-segment and under 45 deg of end spin.
+segment, under 45 deg of end spin and under 90 deg of heading change while
+moving.
 
     python3 tools/build_plan_set.py sample --out D --floors 6,2 --per-band 250
     python3 tools/build_plan_set.py solve  --out D --jobs 36
@@ -52,6 +53,7 @@ FIELD = dict(speed_profile="exponential", inflation_radius=0.5, centring=True, c
 V_MAX, W_MAX = 0.448, 1.049
 HL, HW = 0.315, 0.2925
 END_SPIN_M = 0.5
+CORNER_RAD = math.radians(45)  # a 'straight' segment turning more than this is a corner
 LEN_BANDS = {"short": (0, 8.0), "medium": (8.0, 20.0), "long": (20.0, 1e9)}  # solved path length [m]
 
 
@@ -278,6 +280,10 @@ def describe(path, floor_edt=None):
     for s0, s1 in zip(b, b[1:]):
         lab = seg_label(v[s0:s1], w[s0:s1])
         turn = float(np.sum(w[s0:s1]) * dt)
+        # A long straight with one smooth corner has a low MEAN curvature, so
+        # seg_label calls it STR; the corner shows in the integrated heading.
+        if lab == "STR" and abs(turn) > CORNER_RAD:
+            lab = "L" if turn > 0 else "R"
         if segs and segs[-1]["lab"] == lab:
             segs[-1].update(s1=s1, turn=segs[-1]["turn"] + turn)
         else:
@@ -360,7 +366,8 @@ def describe(path, floor_edt=None):
                 rev_frac=round(float(np.mean(v < -0.05)), 3), min_hull_clear=round(float(e.min()), 3),
                 peak_omega=round(float(np.max(np.abs(w))), 3), seq="-".join(seq), type=typ,
                 segs=[[s_["lab"], s_["s0"], s_["s1"], round(s_["turn"], 3)] for s_ in segs],
-                trivial=bool(not core and not mid_spins and spin0 + spin1 < math.radians(45)))
+                trivial=bool(not core and not mid_spins and spin0 + spin1 < math.radians(45)
+                             and abs_turn - spin0 - spin1 < math.radians(90)))  # gentle S-bends are not trivial
 
 
 FEATS = ["log_length", "abs_turn", "abs_net_turn", "n_turns", "sign_changes", "spin_start",
