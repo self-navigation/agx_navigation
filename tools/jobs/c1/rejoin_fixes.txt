@@ -1,0 +1,14 @@
+# Job 245 (2026-10-10, weekend plan J1): re-join fixes under the truth pose, with
+# plain TVLQR carried as the baseline for the wall-strike target.
+# Since dc2ef3c the re-join wall gate also rejects wall CROSSINGS (was vacuous
+# for a robot already touching a wall, figures/2026-10-10/rejoin_runs), so LTDq
+# here is NOT job 244's LTDq: job 244 is the old-gate reference.
+# LTDh = + hold the off-plan trigger above 0.5 rad heading error and in the
+# last 10% of the plan. LTDhW = LTDh with the wall slow/stop layer back on.
+# LANq = recording check for the new localizer npz keys (amcl, odom, map_odom).
+LTN   --arm ours-lib --localization truth --phantom-walls
+LTNq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+LTDq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,wall_layer=false,offplan_sigma=3.29
+LTDh  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,wall_layer=false,offplan_sigma=3.29,offplan_max_heading=0.5,offplan_hold_tail_frac=0.1
+LTDhW --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --supervisor --supervisor-params lag_trigger=false,near_wall_trigger=false,offplan_sigma=3.29,offplan_max_heading=0.5,offplan_hold_tail_frac=0.1
+LANq  --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
