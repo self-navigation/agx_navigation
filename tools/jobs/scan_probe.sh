@@ -11,7 +11,7 @@ POSES=${POSES:-"-12,-1.7,0 -6,-1.7,0 2,-1.7,0 8,-1.7,0 14,-1.7,0 20,-1.7,0 26,-1
 for p in $POSES; do
     IFS=, read -r x y th <<<"$p"
     echo "[probe] $(date -Is) pose $x $y $th"
-    bash tools/fixture_up.sh --worker "$W" --localization amcl --patches false --corrector tvlqr \
+    bash tools/fixture_up.sh --worker "$W" --floor 6 --localization amcl --patches false --corrector tvlqr \
         --spawn "$x" "$y" "$th" >"$OUT_DIR/up_${x}_${y}_${th}.log" 2>&1
     echo "[probe] up rc=$?"
     ( set +u; source /opt/ros/jazzy/setup.bash; source install/setup.bash
