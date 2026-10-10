@@ -16,14 +16,14 @@ import argparse, json, math, os, statistics as st
 from scipy.stats import binomtest
 
 
-def load(d, c, seed):
-    f = os.path.join(d, c, f"rows.s{seed}.jsonl")
-    out = {}
-    for line in open(f):
-        r = json.loads(line)
-        if r.get("stack_up_ok") is False:
-            continue
-        out[r["plan"]] = r
+def load(d, c, seeds):
+    out = {}  # (seed, plan) -> row; --seed 0,1,2 pools the seeds as paired units
+    for seed in str(seeds).split(","):
+        for line in open(os.path.join(d, c, f"rows.s{seed}.jsonl")):
+            r = json.loads(line)
+            if r.get("stack_up_ok") is False:
+                continue
+            out[(seed, r["plan"])] = r
     return out
 
 
@@ -38,7 +38,7 @@ def p2(a, b):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dir"); ap.add_argument("pairs", nargs="+"); ap.add_argument("--seed", default="0")
+    ap.add_argument("dir"); ap.add_argument("pairs", nargs="+"); ap.add_argument("--seed", default="0", help="one seed, or a comma list to pool")
     a = ap.parse_args()
     print("A -> B | n | arrived A->B (+gained/-lost, p) | contact runs A->B (fixed/new, p) | "
           "final_err med A/B, B better/worse >2cm (p) | max_cross med A/B, better/worse >2cm (p)")

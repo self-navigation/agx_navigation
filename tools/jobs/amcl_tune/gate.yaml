@@ -1,0 +1,6 @@
+# Update every 5 cm / 0.05 rad instead of 25 cm / 0.2 rad: attacks the lag
+# (0.35 gain at 1.4 s), not the bias.
+amcl:
+  ros__parameters:
+    update_min_d: 0.05
+    update_min_a: 0.05

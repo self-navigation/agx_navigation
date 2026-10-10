@@ -1,0 +1,6 @@
+# Omni motion model: alpha5 is a lateral (strafe) noise channel the
+# differential model does not have -- the skid is lateral (v_lat = k v omega).
+amcl:
+  ros__parameters:
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    alpha5: 0.5

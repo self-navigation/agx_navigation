@@ -1,0 +1,12 @@
+# Job 246 (2026-10-10): amcl tuning for the TVLQG claim. The floor-6 scan probe
+# (figures/2026-10-10/scan_map_offset) showed the lidar matches the baked map to
+# <= 1 cm at rest, so the 0.12-0.17 m corridor bias
+# is amcl's own: motion model / update gate / likelihood. All cells TVLQG under
+# amcl (= job 245 LANq); A0 is the in-process control. Whatever wins is applied to
+# EVERY amcl arm (nav2 baselines included), not just ours.
+A0 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/base.yaml
+Aa --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/hi_alpha.yaml
+Ao --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/omni.yaml
+Ag --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/gate.yaml
+As --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/sharp.yaml
+Aogs --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/omni_gate_sharp.yaml
