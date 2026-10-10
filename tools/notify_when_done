@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# notify_when_done [--detach] <runner.log> [title]
+#
+# Wait for a job's runner.log to get its `[fac] finished` line, then push to
+# ntfy (https://ntfy.danya02.ru/agx-jobs; server docs in Danya's
+# homelab-admin repo). The push carries the finished line, the
+# count of `rc=` lines whose rc is not 0, and the first few of them. Priority
+# is high if any worker failed.
+#
+# Polls every $POLL_INTERVAL s (default 120). Gives up with a push after
+# $MAX_AGE_H hours (default 72), or if the log never appears in 10 polls.
+#
+# --detach runs it as a transient systemd user unit (lingering is on for
+# this user, so it survives logout):
+#   ~/bin/notify_when_done --detach ~/run_data/<job dir>/runner.log
+#   journalctl --user -u notify-when-done-<job dir> -f      # follow
+#   systemctl --user stop notify-when-done-<job dir>        # cancel
+#
+# Token: ~/.config/ntfy/agx-jobs.token (write-only to agx-jobs, mode 0600).
+set -u
+
+usage() { echo "usage: $0 [--detach] <runner.log> [title]" >&2; exit 2; }
+
+if [[ ${1:-} == --detach ]]; then
+    shift; [[ $# -ge 1 ]] || usage
+    log=$(realpath -m "$1"); shift
+    job=$(basename "$(dirname "$log")")
+    unit="notify-when-done-$(tr -c 'A-Za-z0-9_.-' '_' <<<"$job" | sed 's/_$//')"
+    exec systemd-run --user --collect --unit="$unit" \
+        --description="ntfy when $job finishes" -- "$(realpath "$0")" "$log" "$@"
+fi
+[[ $# -ge 1 ]] || usage
+
+log=$1
+title=${2:-"agx: $(basename "$(dirname "$(realpath -m "$log")")") finished"}
+url=${NTFY_URL:-https://ntfy.danya02.ru/agx-jobs}
+token_file=${NTFY_TOKEN_FILE:-$HOME/.config/ntfy/agx-jobs.token}
+interval=${POLL_INTERVAL:-120}
+deadline=$(( $(date +%s) + ${MAX_AGE_H:-72} * 3600 ))
+
+token=$(<"$token_file") || { echo "cannot read $token_file" >&2; exit 1; }
+
+say() { echo "$(date -u +%FT%TZ) $*"; }
+
+# push <title> <priority> <tags> <message>, with retries.
+push() {
+    local i
+    for i in 1 2 3 4 5; do
+        if curl -fsS --max-time 30 -o /dev/null \
+            -H "Authorization: Bearer $token" -H "Title: $1" \
+            -H "Priority: $2" -H "Tags: $3" --data-binary "$4" "$url"; then
+            say "pushed: $1"; return 0
+        fi
+        sleep 30
+    done
+    say "PUSH FAILED: $1"; return 1
+}
+
+say "watching $log -> $url"
+missing=0
+while :; do
+    if [[ ! -r $log ]]; then
+        missing=$((missing + 1))
+        say "log not readable ($missing)"
+        if (( missing >= 10 )); then
+            push "agx: watcher gave up" high warning "$log did not appear in $missing polls."
+            exit 1
+        fi
+    elif fin=$(grep -m1 '^\[fac\] finished' "$log"); then
+        all=$(grep -c 'rc=' "$log")
+        bad=$(grep 'rc=' "$log" | grep -cvE 'rc=0([^0-9]|$)')
+        lines=$(grep 'rc=' "$log" | grep -vE 'rc=0([^0-9]|$)' | head -5)
+        msg="$fin"$'\n'"workers with rc!=0: $bad of $all"
+        [[ -n $lines ]] && msg+=$'\n\n'"$lines"
+        if (( bad > 0 )); then
+            push "$title" high warning "$msg"
+        else
+            push "$title" default white_check_mark "$msg"
+        fi
+        exit
+    fi
+    if (( $(date +%s) > deadline )); then
+        push "agx: watcher gave up" high hourglass "No '[fac] finished' in $log after ${MAX_AGE_H:-72}h."
+        exit 1
+    fi
+    sleep "$interval"
+done
