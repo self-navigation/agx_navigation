@@ -40,8 +40,13 @@ mkdir -p "$OUT_DIR"
 PLANS=$(mktemp /tmp/factor_plans.XXXXXX)
 sed "s|__HOME__|$HOME|" "${PLAN_FILE:-tools/jobs/broad40.txt}" | head -n "${N_PLANS:-1000}" >"$PLANS"
 
+source tools/jobs/lib_ntfy.sh
+JOB_NAME=${JOB_NAME:-$(basename "$OUT_DIR")}
+rm -f "$OUT_DIR/failed_units.txt"
+
 cleanup() {
-    local w
+    local rc=$? w
+    ntfy_job_exit "$rc"
     for w in "${WORKERS[@]}"; do
         bash tools/kill_stack.sh "$PWD" kill "agx$w" >/dev/null 2>&1
     done
@@ -51,6 +56,12 @@ trap cleanup EXIT
 UNITS=()
 for s in "${SEEDS[@]}"; do for c in "${ORDER[@]}"; do UNITS+=("$c:$s"); done; done
 echo "[fac] starting at $(date -Is); ${#UNITS[@]} units x $(grep -c . "$PLANS") plans on ${#WORKERS[@]} workers; out=$OUT_DIR"
+N_TOTAL=$(( ${#UNITS[@]} * $(grep -c . "$PLANS") ))
+progress() {
+    local n; n=$(cat "$OUT_DIR"/*/rows.s*.jsonl 2>/dev/null | grep -c .)
+    echo "rows $n of $N_TOTAL ($(( 100 * n / (N_TOTAL > 0 ? N_TOTAL : 1) ))%); ${#WORKERS[@]} workers; $OUT_DIR"
+}
+ntfy_job_begin "$JOB_NAME" progress
 
 run_worker() {  # $1 = worker, rest = units
     local w=$1; shift
@@ -66,6 +77,7 @@ run_worker() {  # $1 = worker, rest = units
             >>"$OUT_DIR/w$w.log" 2>&1
         local rc=$?
         echo "[fac] $(date -Is) worker $w done $c seed $s rc=$rc rows $(grep -c . "$OUT_DIR/$c/rows.s$s.jsonl" 2>/dev/null)"
+        [ "$rc" -ne 0 ] && echo "$c seed $s worker $w rc=$rc" >>"$OUT_DIR/failed_units.txt"
     done
     # Tear down our own last stack HERE, before "finished at": a job launched
     # on these workers after that line must find them idle. (The EXIT-trap
@@ -91,4 +103,6 @@ for p in "${PIDS[@]}"; do wait "$p"; done
 trap - EXIT  # workers already cleaned up; the trap is for aborts only
 cat "$OUT_DIR"/*/rows.s*.jsonl >"$OUT_DIR/all_rows.jsonl" 2>/dev/null
 echo "[fac] finished at $(date -Is); rows $(grep -c . "$OUT_DIR/all_rows.jsonl" 2>/dev/null || echo 0)"
+ntfy_job_finished "$(progress; head -n 5 "$OUT_DIR/failed_units.txt" 2>/dev/null)" \
+    "$(grep -c . "$OUT_DIR/failed_units.txt" 2>/dev/null || echo 0)"
 rm -f "$PLANS"
