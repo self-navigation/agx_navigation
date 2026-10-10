@@ -38,16 +38,25 @@ sys.path[:0] = [os.path.join(R, "tools"), os.path.join(R, "src/agx_navigation/ag
 # campaign's Gazebo runs score against (frozen). Floor 2 is the full-extent bake
 # (run_data/2026-10-10_nojob_full-floor-bake, not installed yet): its two halves
 # are disconnected, so plans stay in the half with the robot's room (x ~47, y ~2).
+def _full_bake(n):
+    return next((p for p in (os.path.join(R, f"run_data/2026-10-10_nojob_full-floor-bake/floor_{n}.yaml"),
+                             os.path.expanduser(f"~/run_data/2026-10-10_nojob_full-floor-bake/floor_{n}.yaml"))
+                 if os.path.exists(p)), f"floor_{n}.yaml: full bake not found")
+
+
+# Floor 6 = the INSTALLED (cropped) map, frozen for the campaign; the others are the full-extent
+# bakes, not installed yet. Floor 1 is left out: its only area reachable from the spawn is the
+# entrance hall, which the source model does not contain (it bakes as empty floor).
 MAPS = {
     6: (os.path.join(R, "src/rudn-ordjo-building/maps/floor_6.yaml"), (0.0, 0.0)),
-    2: (next((p for p in (os.path.join(R, "run_data/2026-10-10_nojob_full-floor-bake/floor_2.yaml"),
-                          os.path.expanduser("~/run_data/2026-10-10_nojob_full-floor-bake/floor_2.yaml"))
-              if os.path.exists(p)), "floor_2.yaml: full bake not found"), (32.0, -1.0)),
+    2: (_full_bake(2), (32.0, -1.0)),
+    **{n: (_full_bake(n), (0.0, 0.0)) for n in (3, 4, 5, 7, 8)},
 }
 BANDS = {"short": (2.0, 6.0), "medium": (6.0, 15.0), "long": (15.0, 50.0),  # start-goal distance [m]
          "corridor": (3.0, 40.0)}  # both endpoints in the corridor (doors are actuated in reality)
 CORRIDOR_CLEAR = 0.6  # doors are ~1.0-1.1 m (centre clearance 0.50-0.55): >= 0.6 cuts the rooms off
-END_CLEAR = 0.50   # endpoint centre clearance [m]: room to spin the 0.43 m-radius hull
+END_CLEAR = 0.60   # endpoint centre clearance [m]: the 0.43 m-radius hull spins with 0.17 m to spare
+                   # (0.50 for floors 6 + 2 of plan set v3: half its <0.10 m plans were endpoint spins)
 FIELD = dict(speed_profile="exponential", inflation_radius=0.5, centring=True, centring_cap=0.8,
              speed_decay_rate=1.5, speed_v_min=0.1)
 V_MAX, W_MAX = 0.448, 1.049
@@ -138,7 +147,7 @@ def cmd_sample(a):
                 k = np.flatnonzero((cells[:, 0] == rr) & (cells[:, 1] == c))
                 if not len(k):
                     continue
-                out.append(dict(id=f"f{floor}_{band}_{got:04d}", floor=floor, band=band,
+                out.append(dict(id=f"f{floor}_{band}_{got:04d}", floor=floor, band=band, end_clear=END_CLEAR,
                                 start=[round(float(s[0]), 3), round(float(s[1]), 3),
                                        round(float(rng.uniform(-math.pi, math.pi)), 4)],
                                 goal=[round(float(g[0]), 3), round(float(g[1]), 3),
@@ -146,6 +155,13 @@ def cmd_sample(a):
                 got += 1
             print(f"floor {floor} {band}: {got} pairs ({tries} draws)")
     os.makedirs(a.out, exist_ok=True)
+    cand = os.path.join(a.out, "candidates.json")
+    if a.append and os.path.exists(cand):
+        old = json.load(open(cand))["candidates"]
+        clash = {c["id"] for c in old} & {c["id"] for c in out}
+        if clash:
+            sys.exit(f"--append: {len(clash)} ids already sampled, e.g. {sorted(clash)[0]}")
+        out = old + out
     json.dump(dict(maps={f: MAPS[f][0] for f in MAPS}, bands=BANDS, end_clear=END_CLEAR,
                    seed=a.seed, candidates=out), open(os.path.join(a.out, "candidates.json"), "w"), indent=1)
     print(f"{len(out)} candidates -> {a.out}/candidates.json")
@@ -535,6 +551,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("sample"); s.add_argument("--out", required=True); s.add_argument("--floors", default="6,2")
     s.add_argument("--per-band", type=int, default=250); s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--append", action="store_true", help="add to an existing candidates.json (new floors)")
     s = sp.add_parser("solve"); s.add_argument("--out", required=True); s.add_argument("--jobs", type=int, default=8)
     s.add_argument("--limit", type=int, default=0); s.add_argument("--only", default="")
     s.add_argument("--crop-margin", type=float, default=12.0)
