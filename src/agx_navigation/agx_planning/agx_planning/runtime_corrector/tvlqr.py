@@ -152,7 +152,9 @@ class CorrectionDiagnostics:
     saturated_omega: bool = False
     steering_faded: bool = False   # v_ref below min_speed_for_steering
     gain_norm: float = 0.0         # ||K||_F, for spotting ill-conditioned solves
-    index: int = -1                # trajectory tick this correction used
+    # Plan sample this correction tracked; -1 = an overlay sample or unset.
+    # Filled in by the node since 2026-10-10 (was always -1 before).
+    index: int = -1
     valid: bool = True             # False -> caller should fall back to identity
     # TVLQG surface filter (tvlqg.py), nan when it is off. Appended 2026-10-09.
     k_hat: float = float("nan")    # estimated slide [s]

@@ -11,7 +11,10 @@ reach_radius.
 
 Reason "offplan" fires when the cross-track distance at k* exceeds offplan_dist
 (0 disables it). With offplan_sigma > 0 a per-sample bound offplan_sigma *
-sigma_cross(t) from tvlqg replaces offplan_dist.
+sigma_cross(t) from tvlqg replaces offplan_dist. offplan_max_heading and
+offplan_hold_tail_frac optionally hold the off-plan trigger while the heading
+error is large or k* is near the plan's end; held episodes are counted in
+offplan_held and Decision.held says why.
 
 Walls: speed is scaled by clip((d - stop_at) / (slow_at - stop_at), 0, 1) on
 the signed hull clearance d (walls.py). At stop_at the robot stops and a
@@ -51,6 +54,12 @@ class SupervisorConfig:
     # cross-track error at each plan sample instead (module docstring,
     # "Covariance bound"); the adapter computes it. 3.29 = 99.9% two-sided.
     offplan_sigma: float = 0.0
+    # Off-plan hold (module docstring): 0 = off. [rad] hold the off-plan
+    # trigger while |heading error vs the plan at k*| exceeds this.
+    offplan_max_heading: float = 0.0
+    # Hold the off-plan trigger while k* is in the last this-fraction of the
+    # plan's samples (0 = off).
+    offplan_hold_tail_frac: float = 0.0
     window: int = 400               # forward search window for k* [samples]
     cruise_speed: float = 0.4       # [m/s] time law for plans given without times
     min_seg_speed: float = 0.05     # [m/s] floor for v_seg (turn-in-place segments)
@@ -109,6 +118,8 @@ class Decision:
     trigger: bool                   # request a re-plan this tick
     reason: str = ""                # "lag" | "wall" | "near_wall" | "offplan" | ""
     offplan_at: float = float("inf")  # [m] the off-plan threshold at k*
+    held: str = ""                  # off-plan trigger held this tick: "heading" | "tail" | ""
+    heading_err: float = 0.0        # [rad] wrapped yaw - plan yaw at k*
 
     FIELDS = ("k_star", "waypoint", "n_waypoints", "reached", "lag_s", "prev_lag_s",
               "lag_m", "clearance", "speed_scale", "stop", "trigger")
@@ -125,7 +136,9 @@ class SupervisorCore:
         self.offplan_bound = None
         self.replans = 0
         self.stops = 0
+        self.offplan_held = 0       # held off-plan episodes (module docstring)
         self._stopped = False
+        self._held = False
 
     # ---- plan ---------------------------------------------------------
     def set_plan(self, poses, times=None, t_now: float = 0.0,
@@ -290,7 +303,9 @@ class SupervisorCore:
             scale, stop = 1.0, False
 
         offplan_at = self.offplan_at(self.k_star)
-        trigger, reason = False, ""
+        py = self.poses[self.k_star, 2]
+        heading_err = math.atan2(math.sin(yaw - py), math.cos(yaw - py))
+        trigger, reason, held = False, "", ""
         if stop:
             # Counted once per stop episode, but the trigger stays up every
             # tick while stopped: the adapter must not resume until a re-plan
@@ -309,15 +324,31 @@ class SupervisorCore:
             elif offplan_at > 0 and math.hypot(
                     self.poses[self.k_star, 0] - x,
                     self.poses[self.k_star, 1] - y) > offplan_at:
-                trigger, reason = True, "offplan"
+                held = self._offplan_hold(heading_err)
+                if not held:
+                    trigger, reason = True, "offplan"
             if trigger:
                 self.latched = True
                 self.replans += 1
         if not stop:
             self._stopped = False
+        if held and not self._held:
+            self.offplan_held += 1
+        self._held = bool(held)
 
         return Decision(k_star=self.k_star, waypoint=self.next_wp, n_waypoints=self.n_waypoints,
                         reached=reached, retime_index=retime, lag_s=float(lag),
                         prev_lag_s=float(self.prev_lag), lag_m=float(lag_m),
                         clearance=float(clearance), speed_scale=scale, stop=bool(stop),
-                        trigger=trigger, reason=reason, offplan_at=float(offplan_at))
+                        trigger=trigger, reason=reason, offplan_at=float(offplan_at),
+                        held=held, heading_err=float(heading_err))
+
+    def _offplan_hold(self, heading_err: float) -> str:
+        """Why an off-plan condition is held this tick ("" = not held)."""
+        cfg = self.cfg
+        if cfg.offplan_max_heading > 0.0 and abs(heading_err) > cfg.offplan_max_heading:
+            return "heading"
+        n = len(self.poses)
+        if cfg.offplan_hold_tail_frac > 0.0 and self.k_star >= n * (1.0 - cfg.offplan_hold_tail_frac):
+            return "tail"
+        return ""

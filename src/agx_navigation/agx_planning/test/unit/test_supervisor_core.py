@@ -306,3 +306,148 @@ def test_wall_layer_off_neither_slows_nor_stops_but_keeps_gate_thresholds():
     d = sup.update(poses[5, 0], 0.0, 0.0, t[5], clearance=0.0)
     assert not d.stop and d.speed_scale == 1.0 and d.reason != "wall"
     assert sup.wall_thresholds(5)[1] == pytest.approx(SupervisorConfig().stop_dist)
+
+
+# ---- Wall-crossing re-join gate (2026-10-10, job 244) ----
+
+def _thin_wall():
+    # One-cell wall across a 4 m x 4 m map, vertical at x in [0.5, 0.55), 5 cm cells.
+    wall = np.zeros((80, 80), bool)
+    wall[:, 50] = True             # origin_x = -2.0 -> x = 0.5
+    return SignedWallDistance.from_wall_mask(wall, 0.05, -2.0, -2.0)
+
+
+def _xs(xs, y=0.0, yaw=0.0):
+    return [PlaybackSample(0.0, 0.0, (x, y, yaw)) for x in xs]
+
+
+def test_hull_penetration_grows_through_a_thin_wall():
+    swd = _thin_wall()
+    assert swd.hull_penetration(-0.5, 0.0, 0.0) == 0.0
+    edge = swd.hull_penetration(0.2, 0.0, 0.0)      # front edge 0.515: on the wall
+    deep = swd.hull_penetration(0.5, 0.0, 0.0)      # wall under the body's middle
+    assert 0.0 < edge < 0.06 and deep > 0.25
+
+
+def test_rejoin_gate_rejects_a_path_through_a_wall_from_a_touching_start():
+    swd = _thin_wall()
+    c0 = swd.body_clearance(0.2, 0.0, 0.0)
+    assert c0 < 0.0                                 # touching: the old gate was vacuous
+    path = _xs(np.arange(0.2, 1.31, 0.1))
+    assert not rejoin_clear(path, swd, c0, 0.03)
+
+
+def test_rejoin_gate_lets_a_touching_robot_back_away():
+    swd = _thin_wall()
+    c0 = swd.body_clearance(0.2, 0.0, 0.0)
+    path = _xs(np.arange(0.2, -0.61, -0.1))
+    assert rejoin_clear(path, swd, c0, 0.03)
+
+
+def test_rejoin_gate_rejects_touching_again_after_clearing():
+    swd = _thin_wall()
+    c0 = swd.body_clearance(0.2, 0.0, 0.0)
+    # Back off, then drive back onto the wall, then away again to a clear end.
+    xs = list(np.arange(0.2, -0.31, -0.1)) + [0.2, 0.0, -0.3, -0.6]
+    assert not rejoin_clear(_xs(xs), swd, c0, 0.03)
+
+
+def test_rejoin_gate_rejects_stepping_over_a_wall_between_samples():
+    swd = _thin_wall()
+    # Clear start well left of the wall, then one sample 1.3 m on: neither
+    # sample overlaps, but the body passes over the wall in between.
+    start, end = -0.5, 1.6
+    assert swd.hull_penetration(start, 0.0, 0.0) == 0.0
+    assert swd.hull_penetration(end, 0.0, 0.0) == 0.0
+    c0 = swd.body_clearance(start, 0.0, 0.0)
+    assert not rejoin_clear(_xs([start, end]), swd, c0, 0.03)
+    # The same two samples without the wall pass.
+    empty = SignedWallDistance.from_wall_mask(np.zeros((80, 80), bool) | _corner(), 0.05,
+                                              -2.0, -2.0)
+    assert rejoin_clear(_xs([start, end]), empty, empty.body_clearance(start, 0, 0), 0.03)
+
+
+def _corner():
+    m = np.zeros((80, 80), bool)
+    m[0, 0] = True                 # one far-away wall cell so the EDT is finite
+    return m
+
+
+def test_interpolation_bounds_hull_motion_to_half_a_cell():
+    swd = _thin_wall()
+    fine = swd.interpolate([(0.0, 0.0, 0.0), (1.0, 0.0, math.pi / 2)])
+    r = float(np.hypot(swd.body[:, 0], swd.body[:, 1]).max())
+    d = np.hypot(np.diff(fine[:, 0]), np.diff(fine[:, 1])) + np.abs(np.diff(fine[:, 2])) * r
+    assert d.max() <= 0.025 + 1e-9
+    assert fine[-1] == pytest.approx([1.0, 0.0, math.pi / 2])
+
+
+# ---- Off-plan trigger hold (2026-10-10) ----
+
+def _offplan_sup(**kw):
+    sup = SupervisorCore(SupervisorConfig(lag_trigger=False, near_wall_trigger=False, **kw))
+    poses, t = straight()
+    sup.set_plan(poses, t)
+    return sup
+
+
+def test_offplan_hold_defaults_off():
+    sup = _offplan_sup()
+    d = sup.update(0.0, 0.8, 2.0, 0.0)           # 2 rad off the plan's heading
+    assert d.trigger and d.reason == "offplan" and d.held == ""
+    assert sup.offplan_held == 0
+
+
+def test_offplan_hold_on_heading_error_then_fires_when_aligned():
+    sup = _offplan_sup(offplan_max_heading=0.5)
+    for i in range(3):
+        d = sup.update(0.0, 0.8, 1.0, 0.1 * i)
+        assert not d.trigger and d.held == "heading"
+        assert d.heading_err == pytest.approx(1.0)
+    assert sup.offplan_held == 1                 # one episode, not one per tick
+    d = sup.update(0.0, 0.8, 0.2, 0.3)           # turned back towards the plan
+    assert d.trigger and d.reason == "offplan" and d.held == ""
+    # Heading wraps: yaw 2pi - 0.1 is 0.1 rad off, not held.
+    sup2 = _offplan_sup(offplan_max_heading=0.5)
+    assert sup2.update(0.0, 0.8, 2 * math.pi - 0.1, 0.0).trigger
+
+
+def test_offplan_hold_counts_separate_episodes():
+    sup = _offplan_sup(offplan_max_heading=0.5)
+    sup.update(0.0, 0.8, 1.0, 0.0)
+    sup.update(0.0, 0.0, 0.0, 0.1)               # back on the plan: not off-plan, not held
+    sup.update(0.0, 0.8, -1.0, 0.2)
+    assert sup.offplan_held == 2
+
+
+def test_offplan_hold_in_the_plan_tail():
+    sup = _offplan_sup(offplan_hold_tail_frac=0.1)
+    # Plan is 201 samples along x in [0, 10]: the last 10% starts at k >= 180.9.
+    sup.k_star = 185
+    d = sup.update(9.25, 0.8, 0.0, 46.0)
+    assert not d.trigger and d.held == "tail" and sup.offplan_held == 1
+    sup2 = _offplan_sup(offplan_hold_tail_frac=0.1)
+    sup2.k_star = 100
+    d = sup2.update(5.0, 0.8, 0.0, 25.0)
+    assert d.trigger and d.reason == "offplan"
+
+
+def test_offplan_hold_leaves_wall_stops_alone():
+    sup = SupervisorCore(SupervisorConfig(offplan_max_heading=0.1, offplan_hold_tail_frac=1.0))
+    poses, t = straight()
+    sup.set_plan(poses, t)
+    d = sup.update(0.0, 0.8, 1.0, 0.0, clearance=0.0)
+    assert d.stop and d.trigger and d.reason == "wall"
+
+
+def test_buffer_last_index_tracks_plan_samples_and_marks_overlay():
+    buf = _buffer()
+    assert buf.last_index == -1
+    buf.advance()
+    buf.advance()
+    assert buf.last_index == 1
+    buf.splice([PlaybackSample(0.0, 0.0, (9.0, 1.0, 0.0))], 30)
+    buf.advance()
+    assert buf.last_index == -1
+    buf.advance()
+    assert buf.last_index == 30

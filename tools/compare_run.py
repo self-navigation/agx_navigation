@@ -19,7 +19,8 @@ planner-timeout, planner-failed, stack-failed), stack_terminal, path_length,
 travel_time, max_curvature (Menger, on a 0.1 m resampled track), control_energy
 (sum of squared per-wheel accelerations of the published commands,
 zero-order-hold resampled to ctrl_grid_dt) and max_cross_track to the plan
-polyline.
+polyline. The track npz also holds the localizer streams amcl, odom,
+odom_filtered and map_odom.
 
 With --plans FILE the plans run in sequence and rows already in --skip-from
 (default --out) are skipped, so rerunning the same command resumes a batch.
@@ -181,6 +182,11 @@ def _sim(stamp) -> float:
     return stamp.sec + stamp.nanosec * 1e-9
 
 
+def _rows(rows, ncol: int) -> np.ndarray:
+    """A list of equal-length tuples as an (N, ncol) float array; (0, ncol) when empty."""
+    return np.array(rows, dtype=float).reshape(-1, ncol)
+
+
 def _yaw_quat(yaw: float):
     return 0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)
 
@@ -236,6 +242,14 @@ class CompareDriver:
             "nsup_retime": [],  # (sim_t, /supervisor/retime index)
             "nsup_term": None,  # latest /supervisor/terminal JSON (dict)
             "live_plan": None,  # (N, 3) x, y, yaw from the latest Path
+            # The localizer, so a run can be read without reconstructing the
+            # believed pose from diag.
+            # t is sim time at reception/sampling; *_stamp the header stamp.
+            "amcl": [],     # (t, x, y, yaw, cov_xx, cov_yy, cov_yawyaw, stamp)
+            "odom": [],     # /odom wheel odometry, 20 Hz: (t, x, y, yaw, v, omega, stamp)
+            "odom_f": [],   # /odom/filtered (EKF = odom->base_link), same layout
+            "map_odom": [],  # map->odom sampled at 10 Hz: (t, x, y, yaw, stamp)
+            "map_odom_latest": None,  # (x, y, yaw, stamp) from /tf or /tf_static
             "sentinel": False,
             "n_plan_paths": 0,
             "plan_goal_ids": set(),  # PlanToGoal goals the planner has seen
@@ -243,8 +257,17 @@ class CompareDriver:
         st = self.state
 
         self.node = Node("compare_run_driver")
-        self.node.create_subscription(
-            Clock, "/clock", lambda m: st.__setitem__("sim_t", _sim(m.clock)), 10)
+
+        def _on_clock(m):
+            t = _sim(m.clock)
+            st["sim_t"] = t
+            # map->odom at 10 Hz of SIM time, whichever source provides it
+            # (amcl / truth_localization on /tf, the identity on /tf_static).
+            lat, mo = st["map_odom_latest"], st["map_odom"]
+            if lat is not None and (not mo or t - mo[-1][0] >= 0.1):
+                mo.append((t,) + lat)
+        self.node.create_subscription(Clock, "/clock", _on_clock, 10)
+        self._subscribe_localizer(st)
         # The plan the stack is following: the corrector's ~/plan remap
         # (/optimal_trajectory) for `ours`, nav2 planner_server's /plan for the
         # nav2 arms. Either flowing after the goal means a plan EXISTED -- the
@@ -339,6 +362,59 @@ class CompareDriver:
         self.topic_pose = f"/world/{world}/pose/info"
         if not self._gz.subscribe(Pose_V, self.topic_pose, _on_truth):
             raise RuntimeError(f"could not subscribe to {self.topic_pose}")
+
+    def _subscribe_localizer(self, st) -> None:
+        """/amcl_pose, /odom, /odom/filtered and map->odom into ``st``.
+
+        Every source is optional: a topic nobody publishes (no amcl under
+        truth) just leaves its list empty. map->odom is filtered out of /tf
+        and /tf_static directly rather than through a tf2 Buffer: the driver
+        only needs this one edge, and the latest value is sampled in the
+        /clock callback.
+        """
+        from geometry_msgs.msg import PoseWithCovarianceStamped
+        from nav_msgs.msg import Odometry
+        from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                               ReliabilityPolicy)
+        from tf2_msgs.msg import TFMessage
+
+        def _yaw(q) -> float:
+            return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
+
+        def _on_amcl(m):
+            if st["sim_t"] is None:
+                return
+            p, c = m.pose.pose, m.pose.covariance
+            st["amcl"].append((st["sim_t"], p.position.x, p.position.y, _yaw(p.orientation),
+                               c[0], c[7], c[35], _sim(m.header.stamp)))
+
+        def _odom_cb(key):
+            def cb(m):
+                t, rows = st["sim_t"], st[key]
+                if t is None or (rows and t - rows[-1][0] < 0.05):
+                    return
+                p = m.pose.pose
+                rows.append((t, p.position.x, p.position.y, _yaw(p.orientation),
+                             m.twist.twist.linear.x, m.twist.twist.angular.z,
+                             _sim(m.header.stamp)))
+            return cb
+
+        def _on_tf(m):
+            for tf in m.transforms:
+                if tf.header.frame_id.lstrip("/") == "map" and tf.child_frame_id.lstrip("/") == "odom":
+                    tr = tf.transform.translation
+                    st["map_odom_latest"] = (tr.x, tr.y, _yaw(tf.transform.rotation),
+                                             _sim(tf.header.stamp))
+
+        self.node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", _on_amcl, 10)
+        self.node.create_subscription(Odometry, "/odom", _odom_cb("odom"), 10)
+        self.node.create_subscription(Odometry, "/odom/filtered", _odom_cb("odom_f"), 10)
+        self.node.create_subscription(TFMessage, "/tf", _on_tf, 50)
+        self.node.create_subscription(
+            TFMessage, "/tf_static", _on_tf,
+            QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                       reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
     # -- spinning -----------------------------------------------------------
     def spin(self, dur: float) -> None:
@@ -1142,6 +1218,11 @@ def run_one(args, plan_path: str) -> dict:
                  # Decision.as_array() + the node's _SUP_EXTRA counters.
                  sup=(np.array([c[1] for c in st["sup"]], dtype=float)
                       if st["sup"] else np.zeros((0, 19))),
+                 # The localizer (CompareDriver._subscribe_localizer); empty
+                 # when its source was absent. Column 0 is sim time.
+                 amcl=_rows(st["amcl"], 8), odom=_rows(st["odom"], 7),
+                 odom_filtered=_rows(st["odom_f"], 7),
+                 map_odom=_rows(st["map_odom"], 5),
                  goal_t=goal_t, plan_poses=plan["poses"],
                  goal_xy=np.asarray(plan["goal"], dtype=float))
         row["track_path"] = track_path
@@ -1152,6 +1233,10 @@ def run_one(args, plan_path: str) -> dict:
             row["sup_counts"] = dict(zip(
                 ("rejoin_ok", "rejoin_fail", "rejoin_blocked", "rejoin_stale",
                  "full_replans"), [int(x) for x in last[13:18]]))
+            if len(last) >= 22:
+                # 2026-10-10: held off-plan episodes (SupervisorConfig
+                # offplan_max_heading / offplan_hold_tail_frac).
+                row["sup_counts"]["offplan_held"] = int(last[21])
             row["sup_triggers"] = int(sum(1 for _, d in st["sup"] if d[10] > 0.5))
             row["sup_stop_ticks"] = int(sum(1 for _, d in st["sup"] if d[9] > 0.5))
             if len(last) >= 21:

@@ -77,6 +77,9 @@ class TrajectoryBuffer:
         # Fractional time-cursor phase for advance(rate=...) (#41 slow-down).
         self._phase: float = 0.0
         self._overlay_phase: float = 0.0
+        # Plan index of the sample advance() last returned; -1 for an overlay
+        # sample or before the first advance().
+        self._last_index: int = -1
 
     # ------------------------------------------------------------------
     # State
@@ -114,6 +117,12 @@ class TrajectoryBuffer:
         return self._cursor
 
     @property
+    def last_index(self) -> int:
+        """Plan index of the sample the last advance() returned, -1 when it
+        was a re-join/recovery overlay sample (not a plan sample) or none."""
+        return self._last_index
+
+    @property
     def overlay_active(self) -> bool:
         return bool(self._overlay)
 
@@ -147,6 +156,7 @@ class TrajectoryBuffer:
         self._resume = None
         self._phase = 0.0
         self._overlay_phase = 0.0
+        self._last_index = -1
 
     # ------------------------------------------------------------------
     # Incoming data
@@ -230,6 +240,7 @@ class TrajectoryBuffer:
 
         if self._overlay:
             sample = self._overlay[0]
+            self._last_index = -1
             self._overlay_phase += rate
             steps = int(self._overlay_phase)
             self._overlay_phase -= steps
@@ -246,6 +257,7 @@ class TrajectoryBuffer:
             if self._cursor >= len(self._samples):
                 return None
             sample = self._samples[self._cursor]
+            self._last_index = self._cursor
             self._phase += rate
             steps = int(self._phase)
             self._phase -= steps
@@ -258,6 +270,7 @@ class TrajectoryBuffer:
             # playback timeout bounds the wait if it never does.
             self._cursor = min(self._cursor, len(self._samples) - 1)
             sample = self._samples[self._cursor]
+            self._last_index = self._cursor
             self._proj = self._project(actual_xy)
             # Step only while the reference is within `max_lead` of the robot.
             # When it is not, re-serve the same sample: the robot is behind, and

@@ -346,6 +346,7 @@ class WheelCorrectorNode(Node):
         # being told to be at right now. Drawn as an arrow so a screenshot shows
         # where the reference is, not just where the path goes.
         self._ref_pose: Optional[Tuple[float, float, float]] = None
+        self._ref_index: int = -1  # plan index of _ref_pose; -1 = overlay sample
         self._marker_pub = self.create_publisher(MarkerArray, "~/debug_markers", 10)
         #   ~/plan <- planner nav_msgs/Path (debug viz only)
         self._plan_sub = self.create_subscription(Path, "~/plan", self._on_plan, 10)
@@ -459,8 +460,12 @@ class WheelCorrectorNode(Node):
             err = tvlqr_mod.slip_error(tvlqr_mod.tracking_error(planned_pose, actual_pose),
                                        v_ref, omega_ref, self._tvlqr_cfg)
             K = self._tvlqr_gains.get(v_ref, omega_ref)
+            # index: the plan sample this tick tracks (-1 = an overlay
+            # sample), so a run can be re-aligned to its plan after a re-join
+            # splice breaks the tick == sample assumption.
             v_cmd, omega_cmd, diag = tvlqr_mod.correct(
-                K, err, v_ref, omega_ref, self._tvlqr_cfg
+                K, err, v_ref, omega_ref, self._tvlqr_cfg,
+                index=self._ref_index,
             )
             if not diag.valid:
                 return [left, left, right, right]
@@ -604,7 +609,7 @@ class WheelCorrectorNode(Node):
         self._sup_full_replans_goal = 0
         if self._sup is not None:
             self._sup_counts = {k: 0 for k in self._SUP_COUNTS}
-            self._sup.replans = self._sup.stops = 0
+            self._sup.replans = self._sup.stops = self._sup.offplan_held = 0
         self._wall_retry_ok = 0
         self.get_logger().info(
             "New goal: (%.2f, %.2f), yaw=%.2f" % (pos.x, pos.y, yaw)
@@ -816,6 +821,7 @@ class WheelCorrectorNode(Node):
             return
 
         self._ref_pose = sample.pose
+        self._ref_index = self._buf.last_index
         s = self._sup_scale
         self._emit(sample.left * s, sample.right * s, sample.pose, pose, sample.costates)
 
@@ -876,12 +882,18 @@ class WheelCorrectorNode(Node):
         * trigger (lag doubled and over the robot radius, or a wall) -> a PMP
           re-join to the next waypoint is solved OFF the executor thread
           (a failed solve takes 1-6 s), gated by wall clearance along it
-          (the re-join cost ignores walls) and spliced into the buffer
+          and by a wall-crossing test (the re-join cost ignores walls;
+          walls.rejoin_clear, "Crossing") and spliced into the buffer
           (TrajectoryBuffer.splice), where the corrector tracks it. With
           ``rejoin_wall_w_fp`` > 0 a HELD robot's re-join that fails the gate
           is re-solved with the footprint barrier (rejoin_service "Wall
           retry"); a moving robot's is not (the retry outlives
           ``rejoin_max_age``);
+        * an off-plan trigger may be HELD (no re-join requested, the
+          corrector keeps tracking) while the heading error exceeds
+          ``offplan_max_heading`` or k* is in the plan's last
+          ``offplan_hold_tail_frac`` (SupervisorCore docstring, "Off-plan
+          hold"); held episodes are logged and counted;
         * a wall stop whose re-join fails, or is blocked by the gate, falls
           back to a full PlanToGoal from the current pose (tier 3), at most
           ``_MAX_FULL_REPLANS`` times per goal before the goal is abandoned.
@@ -934,7 +946,11 @@ class WheelCorrectorNode(Node):
                   "rejoin_stale", "full_replans", "plan_clearance",
                   # 2026-10-09: which trigger fired (_SUP_REASONS index, 0 =
                   # none) and the off-plan threshold at k* [m].
-                  "trigger_reason", "offplan_at")
+                  "trigger_reason", "offplan_at",
+                  # 2026-10-10: held off-plan episodes this goal
+                  # (SupervisorConfig.offplan_max_heading / _hold_tail_frac)
+                  # and the heading error vs the plan at k* [rad].
+                  "offplan_held", "heading_err")
     _SUP_COUNTS = ("rejoin_ok", "rejoin_fail", "rejoin_blocked", "rejoin_stale",
                    "full_replans")
     _SUP_REASONS = ("", "wall", "lag", "near_wall", "offplan")
@@ -1063,7 +1079,14 @@ class WheelCorrectorNode(Node):
         # Dilated plan clock (see _sup_start), using last tick's scale.
         self._sup_t += (now - self._sup_last_now) * self._sup_scale
         self._sup_last_now = now
+        n_held = self._sup.offplan_held
         d = self._sup.update(pose[0], pose[1], pose[2], self._sup_t, clearance=clearance)
+        if self._sup.offplan_held > n_held:
+            self.get_logger().info(
+                "supervisor: off-plan trigger HELD (%s): k*=%d/%d heading error %.2f rad"
+                " (max %.2f), TVLQR keeps tracking" % (
+                    d.held, d.k_star, len(self._sup.poses), d.heading_err,
+                    self._sup_cfg.offplan_max_heading))
         overlay = self._buf.overlay_active
         if d.retime_index is not None and self._playback_index == "time":
             self._buf.retime(d.retime_index)
@@ -1254,10 +1277,11 @@ class WheelCorrectorNode(Node):
         self.get_logger().info(
             "supervisor summary traj %d: waypoints %d/%d, triggers %d, wall stops %d, "
             "re-joins ok %d fail %d blocked %d stale %d, full replans %d, "
-            "wall-retried ok %d" % (
+            "wall-retried ok %d, off-plan held %d" % (
                 traj_id, self._sup.next_wp, self._sup.n_waypoints, self._sup.replans,
                 self._sup.stops, c["rejoin_ok"], c["rejoin_fail"], c["rejoin_blocked"],
-                c["rejoin_stale"], c["full_replans"], self._wall_retry_ok))
+                c["rejoin_stale"], c["full_replans"], self._wall_retry_ok,
+                self._sup.offplan_held))
 
     def _publish_sup_state(self, d) -> None:
         msg = Float64MultiArray()
@@ -1268,6 +1292,8 @@ class WheelCorrectorNode(Node):
         extra.append(float(self._SUP_REASONS.index(d.reason))
                      if d.trigger and d.reason in self._SUP_REASONS else 0.0)
         extra.append(float(d.offplan_at))
+        extra.append(float(self._sup.offplan_held))
+        extra.append(float(d.heading_err))
         msg.data = d.as_array() + extra
         self._sup_pub.publish(msg)
 
