@@ -17,7 +17,7 @@ for p in $POSES; do
     ( set +u; source /opt/ros/jazzy/setup.bash; source install/setup.bash
       export GZ_PARTITION=agx$W ROS_DOMAIN_ID=$((40 + W))
       timeout 300 python3 tools/scan_map_offset.py --truth "$x" "$y" "$th" --n 20 \
-          --out "$OUT_DIR/pose_${x}_${y}_${th}.json" ) >>"$OUT_DIR/probe.log" 2>&1
+          --out "$OUT_DIR/pose_${x}_${y}_${th}.json" --dump "$OUT_DIR/pts_${x}_${y}_${th}.npz" ) >>"$OUT_DIR/probe.log" 2>&1
     echo "[probe] probe rc=$?"
     systemctl --user stop "agx-w$W.scope" >/dev/null 2>&1 || true
 done

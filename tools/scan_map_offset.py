@@ -45,9 +45,19 @@ def wall_dist(d, res, ox, oy, x, y):
 
 
 class Probe(Node):
-    def __init__(self, n):
+    def __init__(self, n, world="ordjo_world", model="scout_mini"):
         super().__init__("scan_map_offset")
-        self.n, self.scans, self.amcl = n, [], []
+        self.n, self.scans, self.amcl, self.gz_pose = n, [], [], None
+        # The Gazebo pose itself, the same source truth_localization uses: the
+        # spawn arguments are what we ASKED for, not necessarily where it is.
+        try:
+            import gz.transport13 as gzt
+            from gz.msgs10.pose_v_pb2 import Pose_V
+            self._gz = gzt.Node()
+            self._model = model
+            self._gz.subscribe(Pose_V, f"/world/{world}/pose/info", self._on_gz)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"no gz pose ({exc}); using --truth")
         self.create_subscription(LaserScan, "/scan", self._scan, qos_profile_sensor_data)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", self._amcl, 10)
 
@@ -57,6 +67,14 @@ class Probe(Node):
             r = np.asarray(m.ranges, dtype=float)
             ok = np.isfinite(r) & (r > m.range_min) & (r < min(m.range_max, 15.0))
             self.scans.append(np.c_[r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])])
+
+    def _on_gz(self, msg):
+        for p in msg.pose:
+            if p.name == self._model:
+                q = p.orientation
+                self.gz_pose = (p.position.x, p.position.y,
+                                math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+                return
 
     def _amcl(self, m):
         p, q = m.pose.pose.position, m.pose.pose.orientation
@@ -85,6 +103,7 @@ def main():
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--timeout", type=float, default=120.0, help="wall-clock seconds")
     ap.add_argument("--out", default="")
+    ap.add_argument("--dump", default="", help="npz of the body-frame scan points")
     a = ap.parse_args()
     rclpy.init()
     node = Probe(a.n)
@@ -99,13 +118,16 @@ def main():
         return 2
     d, res, ox, oy = load_map()
     pts = np.vstack(node.scans)
-    truth = tuple(a.truth)
+    truth = tuple(node.gz_pose) if node.gz_pose else tuple(a.truth)
+    if a.dump:
+        np.savez(a.dump, pts=pts, amcl=np.array(node.amcl).reshape(-1, 3), truth=np.array(truth),
+                 spawn=np.array(a.truth))
     c, s = math.cos(truth[2]), math.sin(truth[2])
     wx = truth[0] + c * pts[:, 0] - s * pts[:, 1]
     wy = truth[1] + s * pts[:, 0] + c * pts[:, 1]
     e0 = wall_dist(d, res, ox, oy, wx, wy)
     cost, dx, dy, dth = best_shift(pts[:: max(1, len(pts) // 4000)], truth, d, res, ox, oy)
-    out = dict(truth=truth, n_scans=len(node.scans), n_pts=int(len(pts)),
+    out = dict(truth=truth, spawn=tuple(a.truth), truth_from_gz=node.gz_pose is not None, n_scans=len(node.scans), n_pts=int(len(pts)),
                scan_wall_dist_median=float(np.median(e0)), scan_wall_dist_p90=float(np.percentile(e0, 90)),
                frac_within_5cm=float(np.mean(e0 <= 0.05)),
                best_shift=dict(dx=round(dx, 3), dy=round(dy, 3), dyaw=round(dth, 4), cost=cost),
