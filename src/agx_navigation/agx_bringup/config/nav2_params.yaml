@@ -4,7 +4,7 @@ amcl:
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
-    alpha5: 0.2
+    alpha5: 0.5  # Omni only: lateral slip noise (the skid-steer plant slides sideways)
     base_frame_id: "base_link"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -12,11 +12,11 @@ amcl:
     do_beamskip: false
     global_frame_id: "map"
     lambda_short: 0.1
-    laser_likelihood_max_dist: 2.0
+    laser_likelihood_max_dist: 1.0
     laser_max_range: 100.0
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 60
+    max_beams: 180
     max_particles: 2000
     min_particles: 500
     odom_frame_id: "odom"
@@ -25,20 +25,25 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    # Job 246 (2026-10-10, figures/2026-10-10/job246_amcl_tune): Omni motion
+    # model + 5 cm/0.05 rad update gate + sharp likelihood (sigma_hit 0.1,
+    # z_hit 0.9, z_rand 0.05, 180 beams, max_dist 1.0) took the median
+    # |amcl - truth| 0.143 -> 0.062 m (p90 0.33 -> 0.13) under TVLQG and the
+    # largest map->odom correction per run 0.39 -> 0.16 m. Shared by every amcl arm.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
     save_pose_rate: 0.5
-    sigma_hit: 0.2
+    sigma_hit: 0.1
     tf_broadcast: true
     # 2.0, not the stock 1.0: with 3 sims on the VM (RTF ~0.65) the rendered
     # lidar stalls for >1 s of sim time, map->odom goes stale, and one failed
     # lookup aborts a nav2 goal (2026-09-29, compare stage 1). Shared by every
     # arm that runs amcl, ours included.
     transform_tolerance: 2.0
-    update_min_a: 0.2
-    update_min_d: 0.25
-    z_hit: 0.5
+    update_min_a: 0.05
+    update_min_d: 0.05
+    z_hit: 0.9
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.05
     z_short: 0.05
     scan_topic: LASERSCAN_TOPIC
 
