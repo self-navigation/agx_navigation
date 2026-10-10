@@ -1,0 +1,8 @@
+# Job 247 (2026-10-10): the Monday claim, DEV half. Frozen TVLQG (= job 245 LTNq/LANq)
+# vs TVLQR on the 41 dev plans of plan set v3 floor 6 (tools/jobs/v3f6_dev.txt;
+# the other 42, v3f6_test.txt, are HELD OUT: never run until the config is frozen).
+# amcl = the job-246 Aogs settings, now in nav2_params.yaml.
+LTN   --arm ours-lib --localization truth --phantom-walls
+LTNq  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+LAN   --arm ours-lib --localization amcl  --phantom-walls
+LANq  --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
