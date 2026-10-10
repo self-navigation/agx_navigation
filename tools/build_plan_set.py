@@ -53,6 +53,10 @@ FIELD = dict(speed_profile="exponential", inflation_radius=0.5, centring=True, c
 V_MAX, W_MAX = 0.448, 1.049
 HL, HW = 0.315, 0.2925
 END_SPIN_M = 0.5
+EASY_TURN = math.radians(90)  # heading change WHILE MOVING (end spins excluded) below this ...
+EASY_CLEAR = 0.50              # ... with the hull never within this of a wall [m] = 'easy': open-space, no manoeuvre
+TIGHT_CLEAR = 0.10             # min hull clearance below this [m] = 'tight': dropped (doorway contacts happen at 0.10-0.20)
+N_BASELINE = 3                 # per floor: trivial/easy plans kept on purpose as a sanity baseline
 CORNER_RAD = math.radians(45)  # a 'straight' segment turning more than this is a corner
 LEN_BANDS = {"short": (0, 8.0), "medium": (8.0, 20.0), "long": (20.0, 1e9)}  # solved path length [m]
 
@@ -250,6 +254,14 @@ def foote_boundaries(F, half=10, sigma=0.35, min_gap=8, thresh=0.15):
     return sorted(out)
 
 
+def is_easy(d):
+    return d["abs_turn"] - d["spin_start"] - d["spin_end"] < EASY_TURN and d["min_hull_clear"] > EASY_CLEAR
+
+
+def is_tight(d):
+    return d["min_hull_clear"] < TIGHT_CLEAR
+
+
 def seg_label(v, w):
     mv, mw = float(np.mean(v)), float(np.mean(w))
     if abs(mv) < 0.08 and abs(mw) > 0.2:
@@ -420,15 +432,23 @@ def cmd_select(a):
     sel = []
     for fl in sorted({d["floor"] for d in D}):
         for band in BANDS:
-            pool = [d for d in D if d["floor"] == fl and d["band"] == band and not d["trivial"]]
-            ntriv = sum(d["floor"] == fl and d["band"] == band and d["trivial"] for d in D)
+            here = [d for d in D if d["floor"] == fl and d["band"] == band]
+            pool = [d for d in here if not (d["trivial"] or is_easy(d) or is_tight(d))]
+            ntriv = sum(d["trivial"] for d in here)
+            neasy = sum(is_easy(d) and not d["trivial"] for d in here)
+            ntight = sum(is_tight(d) for d in here)
             pick = maxmin_select(pool, a.per_band)
             sel += pick
             types = {}
             for d in pool:
                 types[d["type"]] = types.get(d["type"], 0) + 1
-            print(f"floor {fl} {band}: {len(pool)} non-trivial ({ntriv} trivial) -> {len(pick)} picked; "
+            print(f"floor {fl} {band}: {len(pool)} kept ({ntriv} trivial, {neasy} easy, {ntight} tight dropped) "
+                  f"-> {len(pick)} picked; "
                   f"types {dict(sorted(types.items(), key=lambda kv: -kv[1])[:10])}")
+        base = maxmin_select([dict(d, band="baseline") for d in D
+                              if d["floor"] == fl and (d["trivial"] or is_easy(d)) and not is_tight(d)], N_BASELINE)
+        sel += base
+        print(f"floor {fl} baseline: {len(base)} trivial/easy plans kept as a sanity check")
     json.dump(sel, open(os.path.join(a.out, "set.json"), "w"), indent=1)
     for fl in sorted({d["floor"] for d in sel}):
         with open(os.path.join(a.out, f"set_floor{fl}.txt"), "w") as fh:
@@ -451,10 +471,14 @@ def cmd_gallery(a):
     sel = json.load(open(os.path.join(a.out, "set.json")))
     D = [json.loads(l) for l in open(os.path.join(a.out, "descriptors.jsonl"))]
     pages = [(f"floor{fl}_{band}", [d for d in sel if d["floor"] == fl and d["band"] == band])
-             for fl in sorted({d["floor"] for d in sel}) for band in BANDS]
+             for fl in sorted({d["floor"] for d in sel}) for band in [*BANDS, "baseline"]]
     triv = [d for d in D if d["trivial"]]
     if triv:
         pages.append(("trivial_rejected", triv[:30]))
+    for name, f in (("easy_rejected", lambda d: is_easy(d) and not d["trivial"]), ("tight_rejected", is_tight)):
+        rej = sorted([d for d in D if f(d)], key=lambda d: d["id"])
+        if rej:
+            pages.append((name, rej[:: max(1, len(rej) // 30)][:30]))
     col = dict(SPIN="tab:purple", REV="tab:brown", STR="0.35", L="tab:blue", R="tab:red")
     for name, ds in pages:
         if not ds:
