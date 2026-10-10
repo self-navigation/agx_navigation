@@ -11,12 +11,12 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 R = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-D = os.path.join(R, "run_data/2026-10-10_nojob_scan-map-offset")
+D = os.path.join(R, "run_data/2026-10-10_nojob_scan-map-offset/floor6")
 MAP = os.path.join(R, "src/rudn-ordjo-building/maps/floor_6")
 meta = yaml.safe_load(open(MAP + ".yaml"))
 img = np.asarray(Image.open(MAP + ".png").convert("L"))[::-1]
 res, ox, oy = meta["resolution"], meta["origin"][0], meta["origin"][1]
-files = sorted(set(glob.glob(D + "/pts_*.npz")) | set(glob.glob(D + "/debug/pts_*.npz")))
+files = sorted(glob.glob(D + "/pts_*.npz"))
 files = list({os.path.basename(f): f for f in files}.values())
 fig, axes = plt.subplots(len(files), 1, figsize=(12, 4.5 * len(files)), squeeze=False)
 for ax, f in zip(axes[:, 0], files):

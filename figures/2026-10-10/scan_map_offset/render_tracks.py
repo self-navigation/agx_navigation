@@ -2,7 +2,7 @@
 
 If the baked map were exact, scan endpoints would lie on the black wall lines and no
 robot centre could sit within ~0.3 m of a wall line. Data:
-run_data/2026-10-10_nojob_scan-map-offset/gz_truth/pts_*.npz (tools/scan_map_offset.py
+run_data/2026-10-10_nojob_scan-map-offset/floor6/pts_*.npz (tools/scan_map_offset.py
 --dump, truth read from gz pose/info) and the job 244 track npz files (Gazebo truth).
 """
 import glob, os
@@ -22,7 +22,7 @@ fig, ax = plt.subplots(figsize=(13, 6))
 ax.imshow(img, origin="lower", extent=ext, cmap="gray", vmin=0, vmax=255)
 ax.plot(T[:, 1], T[:, 2], ",", color="tab:blue", alpha=0.3)
 ax.plot([], [], ".", color="tab:blue", label="robot centre, job 244 truth tracks (all arms)")
-for f, col in zip(sorted(glob.glob(R + "/run_data/2026-10-10_nojob_scan-map-offset/gz_truth/pts_*.npz")), ["r", "m"]):
+for f, col in zip(sorted(glob.glob(R + "/run_data/2026-10-10_nojob_scan-map-offset/floor6/pts_*.npz"))[:2], ["r", "m"]):
     z = np.load(f); x0, y0, th = z["truth"]; p = z["pts"]
     c, s = np.cos(th), np.sin(th)
     ax.scatter(x0 + c * p[:, 0] - s * p[:, 1], y0 + s * p[:, 0] + c * p[:, 1], s=1, c=col,
