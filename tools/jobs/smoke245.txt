@@ -1,0 +1,2 @@
+__HOME__/run_data/2026-10-07_nojob_centred-library/traj_data_v2c/floor_6_v2_00152.npz
+__HOME__/run_data/2026-10-07_nojob_centred-library/traj_data_v2c/floor_6_v2_00355.npz
