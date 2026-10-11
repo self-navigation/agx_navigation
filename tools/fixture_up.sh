@@ -193,6 +193,8 @@ READY_MODE=vec-pmp
 # amcl publishes map->odom before it has localized; wait for its pose too.
 AMCL_FLAG=""
 [ "$LOCALIZATION" = "amcl" ] && AMCL_FLAG="--require-amcl"
+# rtabmap: the static map->rtab_map anchor exists before rtabmap does.
+[ "$LOCALIZATION" = "rtab" ] && AMCL_FLAG="--require-tf rtab_map->odom"
 
 cd "$WORKSPACE" || exit 2
 

@@ -1,0 +1,63 @@
+# rtabmap for localization:=rtab (static_map.launch.py): LIDAR ONLY, mapping
+# from an empty database every run, odometry from the EKF's odom->base_link TF.
+#
+# Not slam.launch.py's config: that one fuses the RGB-D camera and flattens the
+# aggregated cloud to /scan. Here rtabmap takes the raw 3-D lidar cloud
+# (subscribe_scan_cloud) and registers it by ICP, so it keeps the 3-D structure
+# the 2-D flattening throws away. Its map frame is `rtab_map`, pinned to the
+# spawn pose by a static map->rtab_map transform, so its pose is in the baked
+# map's frame and its drift vs Gazebo truth is directly measurable. It does NOT
+# publish /map: the planner keeps the baked grid.
+rtabmap:
+  ros__parameters:
+    frame_id: base_link
+    map_frame_id: rtab_map
+    odom_frame_id: odom          # odometry from TF (the EKF)
+    publish_tf: true
+    tf_delay: 0.05
+
+    subscribe_depth: false
+    subscribe_rgb: false
+    subscribe_rgbd: false
+    subscribe_stereo: false
+    subscribe_scan: false
+    subscribe_scan_cloud: true
+    subscribe_odom_info: false
+    approx_sync: false
+    wait_for_transform: 0.2
+    sync_queue_size: 10
+
+    # The cloud is large; voxelize before anything else touches it.
+    scan_cloud_max_points: 0
+    scan_voxel_size: 0.05
+
+    Reg/Strategy: "1"            # ICP
+    Reg/Force3DoF: "true"
+    RGBD/Enabled: "true"
+    RGBD/NeighborLinkRefining: "true"   # ICP-correct odometry between nodes (the skid-speed fix)
+    RGBD/ProximityBySpace: "true"
+    RGBD/ProximityMaxGraphDepth: "0"
+    RGBD/ProximityPathMaxNeighbors: "1"
+    RGBD/AngularUpdate: "0.05"
+    RGBD/LinearUpdate: "0.05"
+    RGBD/CreateOccupancyGrid: "false"
+    RGBD/OptimizeFromGraphEnd: "false"
+    Rtabmap/DetectionRate: "5.0"
+    Rtabmap/TimeThr: "0"
+    Kp/MaxFeatures: "-1"         # no visual words: lidar-only
+    Mem/NotLinkedNodesKept: "false"
+    Mem/STMSize: "30"
+    Optimizer/Slam2D: "true"
+
+    Icp/VoxelSize: "0.05"
+    Icp/PointToPlane: "true"
+    Icp/PointToPlaneK: "10"
+    Icp/PointToPlaneRadius: "0.0"
+    Icp/Iterations: "30"
+    Icp/MaxCorrespondenceDistance: "0.2"
+    Icp/MaxTranslation: "1.0"
+    Icp/CorrespondenceRatio: "0.2"
+    Icp/Epsilon: "0.001"
+    Icp/Strategy: "0"            # PCL
+
+    DbSqlite3/InMemory: "true"

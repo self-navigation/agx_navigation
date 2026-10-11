@@ -79,8 +79,9 @@ class Report:
 
 class StackProbe(Node):
     def __init__(self, expect_planner: bool, mode: str = "vec-pmp", require_amcl: bool = False,
-                 supervisor: bool = False):
+                 supervisor: bool = False, require_tf: tuple = ()):
         super().__init__("stack_ready_probe")
+        self.require_tf = tuple(require_tf)
         self.expect_planner = expect_planner
         self.mode = mode
         self.supervisor = supervisor
@@ -212,6 +213,11 @@ class StackProbe(Node):
             )
         )
         checks.append(Check("tf odom->base", has_odom_base, "present" if has_odom_base else "MISSING"))
+        # e.g. localization:=rtab: the static map->rtab_map anchor satisfies
+        # 'map->' long before rtabmap publishes rtab_map->odom.
+        for edge in self.require_tf:
+            checks.append(Check(f"tf {edge}", edge in self._tf_frames,
+                                "present" if edge in self._tf_frames else "MISSING"))
 
         checks.append(
             Check(
@@ -425,10 +431,10 @@ class StackProbe(Node):
 
 
 def probe(timeout: float, settle: float, expect_planner: bool, mode: str = "vec-pmp",
-          require_amcl: bool = False, supervisor: bool = False) -> Report:
+          require_amcl: bool = False, supervisor: bool = False, require_tf: tuple = ()) -> Report:
     rclpy.init()
     node = StackProbe(expect_planner=expect_planner, mode=mode, require_amcl=require_amcl,
-                      supervisor=supervisor)
+                      supervisor=supervisor, require_tf=require_tf)
     t0 = time.monotonic()
     checks: list = []
     try:
@@ -467,13 +473,16 @@ def main() -> int:
     ap.add_argument("--require-amcl", action="store_true",
                     help="require /amcl_pose (localization:=amcl, either mode): "
                          "map->odom alone exists before amcl has localized")
+    ap.add_argument("--require-tf", action="append", default=[], metavar="PARENT->CHILD",
+                    help="also require this /tf edge (repeatable), e.g. rtab_map->odom")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
     try:
         report = probe(timeout=args.wait, settle=args.settle,
                        expect_planner=args.expect_planner, mode=args.mode,
-                       require_amcl=args.require_amcl, supervisor=args.supervisor)
+                       require_amcl=args.require_amcl, supervisor=args.supervisor,
+                       require_tf=tuple(args.require_tf))
     except Exception as exc:  # noqa: BLE001 -- a probe must never traceback at a caller
         print(json.dumps({"ready": False, "error": str(exc)}) if args.json else f"probe failed: {exc}")
         return 2
