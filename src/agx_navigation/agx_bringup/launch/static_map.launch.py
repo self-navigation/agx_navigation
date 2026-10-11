@@ -16,6 +16,8 @@ The map never updates; use localization:=slam to test navigation itself.
 
 import math
 
+RTAB_CLOUD = "/lidar/points/wall_band"   # localization:=rtab's ICP input
+
 from agx_bringup import Topics, cfg_file, launch_file
 from launch import LaunchDescription
 from launch.actions import (
@@ -27,7 +29,8 @@ from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
                                   PathJoinSubstitution, PythonExpression)
-from launch_ros.actions import Node
+from launch_ros.actions import ComposableNodeContainer, Node
+from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -250,7 +253,7 @@ def generate_launch_description():
             },
         ],
         remappings=[
-            ("scan_cloud", Topics.LIDAR_POINTS),
+            ("scan_cloud", RTAB_CLOUD),
             # never clobber the baked /map the planner uses
             ("map", "/rtabmap/grid_map"),
         ],
@@ -258,6 +261,31 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals("localization", "rtab"),
     )
 
+    # Floor and ceiling returns make the 3-D cloud look structurally rich
+    # (rtabmap's complexity ~0.2 on a bare corridor) while constraining nothing
+    # in x/y, so the low-complexity safeguard (Icp/PointToPlaneMinComplexity)
+    # never fires and ICP slides along corridors (smoke 2026-10-11: 0.18 m short
+    # over 5 m). Keep the wall band in the lidar frame (mounted level, 0.26 m
+    # above base_link, floor at z ~ -0.43): still 3-D, not flattened.
+    rtab_cloud = ComposableNodeContainer(
+        name="rtab_cloud_container",
+        namespace="",
+        package="rclcpp_components",
+        executable="component_container",
+        composable_node_descriptions=[ComposableNode(
+            package="pcl_ros",
+            plugin="pcl_ros::PassThrough",
+            name="rtab_wall_band",
+            parameters=[{
+                "filter_field_name": "z",
+                "filter_limit_min": -0.30,
+                "filter_limit_max": 1.5,
+                "use_sim_time": sim,
+            }],
+            remappings=[("input", Topics.LIDAR_POINTS), ("output", RTAB_CLOUD)],
+        )],
+        condition=LaunchConfigurationEquals("localization", "rtab"),
+    )
     icp_odometry = Node(
         package="rtabmap_odom",
         executable="icp_odometry",
@@ -265,7 +293,7 @@ def generate_launch_description():
         output="screen",
         parameters=[cfg_file("rtabmap_lidar_params.yaml"), {"use_sim_time": sim}],
         remappings=[
-            ("scan_cloud", Topics.LIDAR_POINTS),
+            ("scan_cloud", RTAB_CLOUD),
             # its default "odom" topic would collide with wheel odometry's /odom
             ("odom", "/icp_odom"),
             ("odom_info", "/icp_odom/info"),
@@ -292,6 +320,7 @@ def generate_launch_description():
             amcl,
             amcl_lifecycle,
             rtab_anchor,
+            rtab_cloud,
             icp_odometry,
             rtabmap,
             delayed_nav_launch,

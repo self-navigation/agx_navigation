@@ -3,6 +3,10 @@
 # truth, each under TVLQG and TVLQR, on the DEV half of plan set v3 floor 6
 # (41 plans x seeds 0-2 x 6 cells = 738 runs, ~2 h on 12 workers). Config
 # tools/jobs/c1/rtab.txt. The held-out half (tools/jobs/v3f6_test.txt) stays untouched.
+# FastDDS shared memory on the VM wedged at 18:41 MSK (every participant hangs in
+# SharedMemTransport::OpenInputChannel; `fastdds shm clean` finds nothing). UDP only,
+# for every cell, so the cells stay comparable with each other (not with SHM jobs).
+export FASTDDS_BUILTIN_TRANSPORTS=${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}
 CONFIG_FILE=${CONFIG_FILE:-tools/jobs/c1/rtab.txt} \
 OUT_DIR=${OUT_DIR:-$HOME/run_data/2026-10-11_job251_rtab-dev} \
 PLAN_FILE=${PLAN_FILE:-tools/jobs/v3f6_dev.txt} \
