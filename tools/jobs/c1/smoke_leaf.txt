@@ -1,0 +1,4 @@
+# Door-leaf smoke: one leaf plan under each localizer, TVLQG.
+Q0 --arm ours-lib --localization amcl  --phantom-walls --record-scan --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+RQ --arm ours-lib --localization rtab  --phantom-walls --record-scan --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+T  --arm ours-lib --localization truth --phantom-walls --record-scan --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
