@@ -1,0 +1,8 @@
+# Job 252: job 251's cells re-run with the corrector's pose-lag fix (odom_frame: latest
+# map->odom composed with latest odom->base_link). Truth's pose is unchanged by the fix;
+# T is carried as the ceiling. TR dropped (job 251 has it).
+Q0 --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+QR --arm ours-lib --localization amcl  --phantom-walls
+RQ --arm ours-lib --localization rtab  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+RR --arm ours-lib --localization rtab  --phantom-walls
+T  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
