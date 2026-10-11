@@ -62,7 +62,7 @@ progress() {
     local n; n=$(count_rows)
     local el=$(( $(date +%s) - T_START )) eta=""
     [ "$n" -gt 0 ] && [ "$n" -lt "$N_TOTAL" ] && \
-        eta="; ETA $(date -d "@$(( $(date +%s) + el * (N_TOTAL - n) / n ))" '+%H:%M %Z')"
+        eta="; ETA $(TZ=Europe/Moscow date -d "@$(( $(date +%s) + el * (N_TOTAL - n) / n ))" '+%H:%M MSK')"
     echo "rows $n of $N_TOTAL ($(( 100 * n / (N_TOTAL > 0 ? N_TOTAL : 1) ))%)$eta; ${#WORKERS[@]} workers; $OUT_DIR"
 }
 T_START=$(date +%s)
