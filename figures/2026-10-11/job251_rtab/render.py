@@ -20,7 +20,7 @@ JOB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(R, "run_data/2026-10-11
 CONFIG = os.path.join(R, "tools/jobs/c1/rtab.txt")
 cells = [l.split()[0] for l in open(CONFIG) if l.strip() and l[0] != "#"]
 # (cell, reference) pairs to test; the first is the pre-registered primary.
-PAIRS = [("RQ", "Q0"), ("RQ", "RR"), ("Q0", "QR"), ("RQ", "T")]
+PAIRS = [("RQ", "Q0"), ("RQ", "RR"), ("Q0", "QR"), ("RQ", "T"), ("T", "TR")]
 
 
 def loc_error(z):

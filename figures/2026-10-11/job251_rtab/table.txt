@@ -1,0 +1,14 @@
+cell     n   exc>0.3 exc>0.5  med|e| p90 max|e|  contact  arrived
+Q0     123   87  71%      51   0.093      1.029       50       95
+QR     123   83  67%      42   0.088      0.918       50      105
+RQ     123   59  48%      19   0.041      0.762       76       86
+RR     123   41  33%       8   0.044      0.463       80       87
+T      123    0   0%       0   0.007      0.073       43      106
+TR     122    0   0%       0   0.007      0.075       55      107
+
+paired (cell vs ref): fixed/new, sign-test p  [fixed = bad in ref, good in cell]
+RQ  vs Q0  n 123 | exc  39/11  p 9.02e-05 | contact   6/32  p 2.43e-05 | arr  18/27  p 0.233 | max|e| wilcoxon p 7.73e-05 (median d -0.118)
+RQ  vs RR  n 123 | exc   5/23  p 0.000912 | contact   9/5   p 0.424 | arr  17/18  p 1 | max|e| wilcoxon p 2.6e-06 (median d +0.027)
+Q0  vs QR  n 123 | exc   8/12  p 0.503 | contact   8/8   p 1 | arr   5/15  p 0.0414 | max|e| wilcoxon p 0.00533 (median d +0.015)
+RQ  vs T   n 123 | exc   0/59  p 3.47e-18 | contact   3/36  p 3.61e-08 | arr  10/30  p 0.00222 | max|e| wilcoxon p 6.33e-22 (median d +0.243)
+T   vs TR  n 122 | exc   0/0   p 1 | contact  19/7   p 0.029 | arr   5/7   p 0.774 | max|e| wilcoxon p 0.362 (median d -0.000)

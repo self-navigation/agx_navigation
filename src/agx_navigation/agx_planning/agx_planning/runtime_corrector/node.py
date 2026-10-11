@@ -75,6 +75,14 @@ class WheelCorrectorNode(Node):
         # Frames for TF lookups (offline goal start pose + debug state text).
         self.declare_parameter("planning_frame", "map")
         self.declare_parameter("robot_frame", "base_link")
+        # The pose is planning->odom at ITS latest stamp composed with
+        # odom->robot at ITS latest stamp, not one lookup of the whole chain:
+        # that returns the chain at its oldest edge's latest time, and under
+        # localization:=rtab icp_odometry stamps icp_odom->odom with the scan
+        # time, so the corrector acted on a pose 0.16 s old (median; p90 0.23,
+        # max 0.5 s; 0.02 s under truth). amcl/truth future-date map->odom, so
+        # for them the two are the same pose. "" = the old single lookup.
+        self.declare_parameter("odom_frame", "odom")
         # Offline playback: action name and the fallback tick rate used before
         # the first chunk reveals the planner's committed sample dt.
         self.declare_parameter("action_name", "pmp_planner/plan_to_goal")
@@ -120,6 +128,7 @@ class WheelCorrectorNode(Node):
         self._expected_size = int(self.get_parameter("expected_size").value)
         self._planning_frame = str(self.get_parameter("planning_frame").value)
         self._robot_frame = str(self.get_parameter("robot_frame").value)
+        self._odom_frame = str(self.get_parameter("odom_frame").value)
         self._publish_debug = bool(self.get_parameter("publish_debug").value)
         self._corridor_epsilon = float(self.get_parameter("corridor_epsilon").value)
         self._idle_after = float(self.get_parameter("idle_after").value)
@@ -1300,19 +1309,25 @@ class WheelCorrectorNode(Node):
     # ----------------------- Pose lookup -----------------------------------
 
     def _robot_pose(self) -> Optional[Tuple[float, float, float]]:
-        """(x, y, theta) of robot_frame in planning_frame, or None on TF failure."""
-        try:
-            t = self._tf_buffer.lookup_transform(
-                self._planning_frame, self._robot_frame, rclpy.time.Time()
-            )
-        except (LookupException, ConnectivityException, ExtrapolationException,
-                TransformException):
-            return None
-        tx = t.transform.translation.x
-        ty = t.transform.translation.y
-        q = t.transform.rotation
-        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        return tx, ty, yaw
+        """(x, y, theta) of robot_frame in planning_frame, or None on TF failure.
+
+        With odom_frame set: latest planning->odom composed with the latest
+        odom->robot (see the odom_frame parameter for why)."""
+        frames = ([(self._planning_frame, self._odom_frame), (self._odom_frame, self._robot_frame)]
+                  if self._odom_frame else [(self._planning_frame, self._robot_frame)])
+        x = y = yaw = 0.0
+        for parent, child in frames:
+            try:
+                t = self._tf_buffer.lookup_transform(parent, child, rclpy.time.Time())
+            except (LookupException, ConnectivityException, ExtrapolationException,
+                    TransformException):
+                return None
+            q = t.transform.rotation
+            _, _, eyaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+            ex, ey = t.transform.translation.x, t.transform.translation.y
+            c, s = math.cos(yaw), math.sin(yaw)
+            x, y, yaw = x + c * ex - s * ey, y + s * ex + c * ey, yaw + eyaw
+        return x, y, math.atan2(math.sin(yaw), math.cos(yaw))
 
     # ----------------------- Debug visualization ---------------------------
 
