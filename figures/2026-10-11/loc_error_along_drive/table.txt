@@ -1,0 +1,26 @@
+runs 1931; believed-pose samples 614862 (10 Hz); amcl updates 457838
+
+|error| percentiles      median    p90    p99   | signed mean
+believed along               0.036  0.110  0.587   | +0.016
+believed lateral             0.038  0.094  0.350   | +0.002
+believed yaw [deg]           0.303  0.855  1.829   | +0.080
+amcl along (at update)       0.035  0.097  0.556   | +0.016
+amcl lateral                 0.037  0.089  0.325   | +0.001
+amcl yaw [deg]               0.304  0.856  1.835   | +0.080
+drift along (since upd)      0.004  0.018  0.087   | +0.001
+drift lateral                0.002  0.016  0.044   | +0.001
+drift yaw [deg]              0.027  0.273  0.610   | +0.000
+
+time since last amcl update: median 0.07 s, p90 0.17 s
+map->odom corrections: n 432324, |dxy| median 0.019 p90 0.070 m; |dyaw| median 0.14 p90 0.37 deg
+
+by |turn rate| (truth)      n     lat med  lat p90 | yaw med  yaw p90 [deg] | drift lat p90  drift yaw p90
+[0.0,0.1) rad/s      417621   0.038   0.080  |  0.28   0.75        | 0.008          0.23
+[0.1,0.3) rad/s       77468   0.036   0.110  |  0.34   0.98        | 0.017          0.27
+[0.3,0.6) rad/s       54025   0.047   0.138  |  0.38   1.12        | 0.028          0.32
+[0.6,1.0) rad/s       31162   0.053   0.149  |  0.39   1.17        | 0.034          0.42
+[1.0,9.0) rad/s       34586   0.031   0.168  |  0.40   1.23        | 0.036          0.54
+
+amcl consistency: |error| / reported sigma (a calibrated filter: median ~0.67, p90 ~1.6)
+  x/along-ish  median 0.42  p90 0.73  (reported sigma median 0.104)
+  yaw          median 0.08  p90 0.22  (reported sigma median 0.062)
