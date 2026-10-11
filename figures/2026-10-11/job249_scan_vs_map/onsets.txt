@@ -1,0 +1,3 @@
+excursion onset (3 s before): n 848; wheel over-report median -0.219 m (p90 0.488); contact in window 20%; skid |w_wheel-w_true| median 0.86 rad/s; over-report>0.2 m: 26%
+calm windows: n 14370; wheel over-report median 0.037 m (p90 0.174); contact in window 4%; skid |w_wheel-w_true| median 0.03 rad/s; over-report>0.2 m: 7%
+onsets with over-report>0.2 m and contact: 5.778301886792453 % ; over-report>0.2 no contact: 20.047169811320757 %

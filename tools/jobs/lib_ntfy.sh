@@ -62,7 +62,7 @@ ntfy_job_begin() {
               m=$(( 4 * n / $4 ))
               if [ "$m" -gt "$milestone" ] && [ "$m" -lt 4 ]; then
                   milestone=$m
-                  ntfy_push "agx: $_NTFY_JOB $(( 25 * m ))% ($mins min)" low hourglass "$(eval "$2")"
+                  ntfy_push "agx: $_NTFY_JOB past $(( 25 * m ))% ($mins min)" low hourglass "$(eval "$2")"
                   next_hb=$(( now + hb_s ))   # a milestone is a heartbeat
               fi
           fi

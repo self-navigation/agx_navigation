@@ -1,0 +1,7 @@
+scans 21229 in 119 runs; amcl pose matched by stamp for 76%
+excursion scans (|amcl-truth| > 0.3 m): 1433 (6.8%)
+normal (<0.15 m)   n  18282: score(amcl)/score(truth) median 0.829; amcl pose scores >= truth in 2%; median scan-wall dist at truth 0.019 m, at amcl 0.035 m
+0.15-0.3 m         n   1514: score(amcl)/score(truth) median 0.459; amcl pose scores >= truth in 0%; median scan-wall dist at truth 0.021 m, at amcl 0.084 m
+excursion >0.3 m   n   1433: score(amcl)/score(truth) median 0.345; amcl pose scores >= truth in 0%; median scan-wall dist at truth 0.021 m, at amcl 0.126 m
+best pose in a +-0.6 m grid around truth, normal (<0.15 m): n 3659; offset from truth median 0.000 m (p90 0.000); nearer amcl's pose than truth in 3%; score gain over truth median 1.000
+best pose in a +-0.6 m grid around truth, excursion >0.3 m: n 1433; offset from truth median 0.000 m (p90 0.050); nearer amcl's pose than truth in 0%; score gain over truth median 1.000
