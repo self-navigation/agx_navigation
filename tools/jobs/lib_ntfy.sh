@@ -4,7 +4,8 @@
 # Server: https://ntfy.danya02.ru/agx-jobs; token ~/.config/ntfy/agx-jobs.token
 # on the VM (write-only). No token -> every call is a silent no-op, so runs on
 # a machine without it still work. Env: NTFY_URL, NTFY_TOKEN_FILE,
-# NTFY_HEARTBEAT_H (default 1; 0 disables), NTFY_DISABLE=1.
+# NTFY_HEARTBEAT_H (default 1; 0 disables), NTFY_POLL_S, NTFY_STALL_MIN,
+# NTFY_DISABLE=1.
 
 _NTFY_URL=${NTFY_URL:-https://ntfy.danya02.ru/agx-jobs}
 _NTFY_TOKEN_FILE=${NTFY_TOKEN_FILE:-$HOME/.config/ntfy/agx-jobs.token}
@@ -25,20 +26,52 @@ ntfy_push() {  # <title> <priority> <tags> <message>; never fails the caller
     return 0
 }
 
-# ntfy_job_begin <job name> <progress-cmd>: push "started" and fork a heartbeat
-# that pushes `eval <progress-cmd>` every NTFY_HEARTBEAT_H hours.
+# ntfy_job_begin <job name> <progress-cmd> [<count-cmd> <total>]: push
+# "started" and fork a watcher that wakes every NTFY_POLL_S seconds (default
+# 300). With a count-cmd (prints rows done so far) it pushes on CONDITIONS:
+#   - each 25% milestone crossed;
+#   - STALLED when the count has not moved for NTFY_STALL_MIN minutes (default
+#     20; a 12-worker job adds a row every ~10 s), and "resumed" when it moves;
+# plus the plain heartbeat every NTFY_HEARTBEAT_H hours (default 1; 0
+# disables), so silence for longer than that means the watcher itself is gone.
 ntfy_job_begin() {
     _NTFY_JOB=$1; _NTFY_T0=$(date +%s)
     ntfy_push "agx: $_NTFY_JOB started" low arrow_forward "$(eval "$2")"
-    local h=${NTFY_HEARTBEAT_H:-1}
-    if [ "$h" != 0 ]; then
-        ( trap - EXIT
-          while sleep "$(awk "BEGIN{print int($h*3600)}")"; do
-              ntfy_push "agx: $_NTFY_JOB running $(( ($(date +%s) - _NTFY_T0) / 60 )) min" \
-                  min hourglass "$(eval "$2")"
-          done ) &
-        _NTFY_HB_PID=$!
-    fi
+    local h=${NTFY_HEARTBEAT_H:-1} poll=${NTFY_POLL_S:-300} stall=${NTFY_STALL_MIN:-20}
+    ( trap - EXIT
+      local hb_s next_hb last_n=-1 last_move milestone=0 stalled=0 n m now
+      hb_s=$(awk "BEGIN{print int($h*3600)}"); next_hb=$(( _NTFY_T0 + hb_s ))
+      local stall_s; stall_s=$(awk "BEGIN{print int($stall*60)}")
+      last_move=$(date +%s)
+      while sleep "$poll"; do
+          now=$(date +%s)
+          local mins=$(( (now - _NTFY_T0) / 60 ))
+          if [ -n "${3:-}" ] && [ "${4:-0}" -gt 0 ]; then
+              n=$(eval "$3" 2>/dev/null); n=${n:-0}
+              if [ "$n" != "$last_n" ]; then
+                  last_n=$n; last_move=$now
+                  if [ "$stalled" = 1 ]; then
+                      stalled=0
+                      ntfy_push "agx: $_NTFY_JOB resumed ($mins min)" default arrow_forward "$(eval "$2")"
+                  fi
+              elif [ "$stalled" = 0 ] && [ $(( now - last_move )) -ge "$stall_s" ]; then
+                  stalled=1
+                  ntfy_push "agx: $_NTFY_JOB STALLED: no new rows for $(( (now - last_move) / 60 )) min" \
+                      high warning "$(eval "$2")"
+              fi
+              m=$(( 4 * n / $4 ))
+              if [ "$m" -gt "$milestone" ] && [ "$m" -lt 4 ]; then
+                  milestone=$m
+                  ntfy_push "agx: $_NTFY_JOB $(( 25 * m ))% ($mins min)" low hourglass "$(eval "$2")"
+                  next_hb=$(( now + hb_s ))   # a milestone is a heartbeat
+              fi
+          fi
+          if [ "$hb_s" -gt 0 ] && [ "$now" -ge "$next_hb" ]; then
+              next_hb=$(( now + hb_s ))
+              ntfy_push "agx: $_NTFY_JOB running $mins min" min hourglass "$(eval "$2")"
+          fi
+      done ) &
+    _NTFY_HB_PID=$!
 }
 
 _ntfy_stop_heartbeat() {

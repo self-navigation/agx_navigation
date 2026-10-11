@@ -57,15 +57,16 @@ UNITS=()
 for s in "${SEEDS[@]}"; do for c in "${ORDER[@]}"; do UNITS+=("$c:$s"); done; done
 echo "[fac] starting at $(date -Is); ${#UNITS[@]} units x $(grep -c . "$PLANS") plans on ${#WORKERS[@]} workers; out=$OUT_DIR"
 N_TOTAL=$(( ${#UNITS[@]} * $(grep -c . "$PLANS") ))
+count_rows() { cat "$OUT_DIR"/*/rows.s*.jsonl 2>/dev/null | grep -c .; }
 progress() {
-    local n; n=$(cat "$OUT_DIR"/*/rows.s*.jsonl 2>/dev/null | grep -c .)
+    local n; n=$(count_rows)
     local el=$(( $(date +%s) - T_START )) eta=""
     [ "$n" -gt 0 ] && [ "$n" -lt "$N_TOTAL" ] && \
         eta="; ETA $(date -d "@$(( $(date +%s) + el * (N_TOTAL - n) / n ))" '+%H:%M %Z')"
     echo "rows $n of $N_TOTAL ($(( 100 * n / (N_TOTAL > 0 ? N_TOTAL : 1) ))%)$eta; ${#WORKERS[@]} workers; $OUT_DIR"
 }
 T_START=$(date +%s)
-ntfy_job_begin "$JOB_NAME" progress
+ntfy_job_begin "$JOB_NAME" progress count_rows "$N_TOTAL"
 
 run_worker() {  # $1 = worker, rest = units
     local w=$1; shift

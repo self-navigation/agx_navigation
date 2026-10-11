@@ -1,0 +1,2 @@
+SEp2c5 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.2,q_cross=5.0
+Sg15 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.15,tvlqg.enabled=true
