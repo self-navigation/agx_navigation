@@ -7,7 +7,8 @@ Per run: max and median |localizer - truth|, excursion = max > 0.3 m; contact
 (wall_overlap_s > 0) and arrival from the rows. Paired over (plan, seed): sign
 tests on excursion / contact / arrival flips, Wilcoxon on max error.
 Pre-registered rules: run_data/2026-10-11_job251_rtab-dev/README.md.
-Usage: python render.py [JOB_DIR]  -> table.txt, job251.png
+Usage: python render.py [JOB_DIR [OUT_DIR [CONFIG]]]  -> OUT_DIR/table.txt, job251.png
+(job 252: render.py run_data/2026-10-11_job252_rtab-lagfix-dev figures/2026-10-11/job252_rtab_lagfix tools/jobs/c1/rtab_lag.txt)
 """
 import glob, json, os, sys
 import numpy as np
@@ -17,10 +18,11 @@ import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 HERE = os.path.dirname(os.path.abspath(__file__))
 R = os.path.abspath(os.path.join(HERE, "../../.."))
 JOB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(R, "run_data/2026-10-11_job251_rtab-dev")
-CONFIG = os.path.join(R, "tools/jobs/c1/rtab.txt")
+OUT = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else HERE
+CONFIG = sys.argv[3] if len(sys.argv) > 3 else os.path.join(R, "tools/jobs/c1/rtab.txt")
 cells = [l.split()[0] for l in open(CONFIG) if l.strip() and l[0] != "#"]
 # (cell, reference) pairs to test; the first is the pre-registered primary.
-PAIRS = [("RQ", "Q0"), ("RQ", "RR"), ("Q0", "QR"), ("RQ", "T"), ("T", "TR")]
+PAIRS = [("RQ", "Q0"), ("RQ", "RR"), ("Q0", "QR"), ("RQ", "T"), ("T", "TR")]  # (cell, ref); job 253 reads Q0 vs QR, RQ vs RR
 
 
 def loc_error(z):
@@ -84,7 +86,8 @@ for a, b in PAIRS:
     dd = np.array([x["emax"] - y["emax"] for x, y in pr])
     row += f" | max|e| wilcoxon p {wilcoxon(dd).pvalue if np.any(dd) else 1:.3g} (median d {np.median(dd):+.3f})"
     out(row)
-open(os.path.join(HERE, "table.txt"), "w").write("\n".join(lines) + "\n")
+os.makedirs(OUT, exist_ok=True)
+open(os.path.join(OUT, "table.txt"), "w").write("\n".join(lines) + "\n")
 
 fig, ax = plt.subplots(figsize=(7, 3.5))
 cs = list(stats)
@@ -93,5 +96,5 @@ ax.bar(np.arange(len(cs)) - 0.2, [np.mean([x["exc"] for x in stats[c]]) * 100 fo
 ax.bar(np.arange(len(cs)) + 0.2, [np.mean([x["contact"] for x in stats[c]]) * 100 for c in cs], 0.4,
        label="contact runs")
 ax.set_xticks(range(len(cs)), cs); ax.set_ylabel("% of runs"); ax.legend(fontsize=8)
-ax.set_title("Job 251: lidar-only rtabmap vs amcl, dev half")
-fig.tight_layout(); fig.savefig(os.path.join(HERE, "job251.png"), dpi=130)
+ax.set_title(f"{os.path.basename(JOB)}: rtab vs amcl vs truth")
+fig.tight_layout(); fig.savefig(os.path.join(OUT, "job251.png"), dpi=130)
