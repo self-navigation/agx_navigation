@@ -890,14 +890,17 @@ FP_HALF_LENGTH, FP_HALF_WIDTH, FP_SPACING = 0.315, 0.2925, 0.02
 _SIGNED_DIST = {}
 
 
-def _signed_wall_dist(floor: int):
-    """Signed distance to the baked map's walls [m] (+ free, - inside), cached."""
+def _signed_wall_dist(floor):
+    """Signed distance to the baked map's walls [m] (+ free, - inside), cached.
+    `floor` is a floor number or a map YAML path (a per-plan map with door leaves)."""
     if floor not in _SIGNED_DIST:
         import yaml
         from PIL import Image
         from scipy.ndimage import distance_transform_edt
-        maps = os.path.join(WORKSPACE, "src", "rudn-ordjo-building", "maps")
-        meta = yaml.safe_load(open(os.path.join(maps, f"floor_{floor}.yaml")))
+        path = floor if isinstance(floor, str) else os.path.join(
+            WORKSPACE, "src", "rudn-ordjo-building", "maps", f"floor_{floor}.yaml")
+        maps = os.path.dirname(path)
+        meta = yaml.safe_load(open(path))
         img = np.asarray(Image.open(os.path.join(maps, meta["image"])))[::-1]  # row 0 = origin y
         wall = img == 0
         r = meta["resolution"]
@@ -906,7 +909,7 @@ def _signed_wall_dist(floor: int):
     return _SIGNED_DIST[floor]
 
 
-def wall_contact(track, floor: int) -> dict:
+def wall_contact(track, floor) -> dict:
     """Where the ground-truth BODY met the baked map's walls (#34).
 
     Scores the rectangle's perimeter, not the centre, against the map the
@@ -945,7 +948,7 @@ def gmpc_on_nav2(args) -> bool:
     return bool(args.supervisor or getattr(args, "gmpc_nav2", False))
 
 
-def bring_up_stack(args, arm: str, spawn, log_path: str):
+def bring_up_stack(args, arm: str, spawn, log_path: str, map_yaml: str = ""):
     """Fresh stack via fixture_up.sh. Returns (ok, attempts, detail)."""
     nav_mode = ARM_TO_NAV_MODE.get(arm, "nav2")
     cmd = [
@@ -957,6 +960,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
+        *(["--map-yaml", map_yaml] if map_yaml else []),
         *(["--supervisor"] if args.supervisor else []),
         *(["--supervisor-params", args.supervisor_params]
           if args.supervisor and args.supervisor_params else []),
@@ -1078,11 +1082,14 @@ def cgroup_fields(a: dict | None, b: dict | None) -> dict:
     }
 
 
-def spawn_patches(args, plan_path: str):
-    """tools/spawn_patches.py, in the worker's partition. Returns its JSON."""
+def spawn_patches(args, plan_path: str, patches: bool = True):
+    """tools/spawn_patches.py (slip patches + the plan's door leaves, if any), in the
+    worker's partition. Returns its JSON."""
     cmd = [os.path.join(HERE, "with-worker"), str(args.worker or ""), "python3",
            os.path.join(HERE, "spawn_patches.py"),
-           "--plan", plan_path, "--seed", str(args.seed), "--json"]
+           "--plan", plan_path, "--seed", str(args.seed), "--json",
+           *(["--phantom"] if args.phantom_walls else []),
+           *([] if patches else ["--no-patches"])]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=WORKSPACE)
     for line in reversed((proc.stdout or "").strip().splitlines()):
         line = line.strip()
@@ -1100,10 +1107,15 @@ def load_plan(path: str) -> dict:
         start = np.asarray(f["start_xy"], dtype=float) if "start_xy" in f else poses[0, :2]
         goal = np.asarray(f["goal_xy"], dtype=float) if "goal_xy" in f else poses[-1, :2]
         dt = float(f["dt_sample"]) if "dt_sample" in f else 0.1
+        # Door-leaf plans (tools/door_leaves.py) carry their own map copy; the stack
+        # serves it as /map and contact is scored against it. Others: the floor's map.
+        leaves = json.loads(str(f["leaves"])) if "leaves" in f else []
+        map_yaml = str(f["map_yaml"]) if leaves else ""
     goal_yaw = float(poses[-1, 2])
     duration = poses.shape[0] * dt
     return {"poses": poses, "start": start, "goal": goal,
-            "goal_yaw": goal_yaw, "dt": dt, "duration": duration}
+            "goal_yaw": goal_yaw, "dt": dt, "duration": duration,
+            "leaves": leaves, "map_yaml": map_yaml}
 
 
 def run_one(args, plan_path: str) -> dict:
@@ -1149,7 +1161,9 @@ def run_one(args, plan_path: str) -> dict:
     # carries no heading). --spawn-yaw-zero pins 0.0 for a flat-ground debug.
     spawn_yaw = 0.0 if args.spawn_yaw_zero else float(plan["poses"][0, 2])
     spawn = (float(plan["start"][0]), float(plan["start"][1]), spawn_yaw)
-    up_ok, attempts, up_text = bring_up_stack(args, args.arm, spawn, up_log)
+    up_ok, attempts, up_text = bring_up_stack(args, args.arm, spawn, up_log, plan["map_yaml"])
+    row["n_leaves"] = len(plan["leaves"])
+    row["map_yaml"] = plan["map_yaml"] or None
     row["stack_up_attempts"] = attempts
     # fixture_up.sh's stage stamps, [[t_wall_s, stage], ...] in order.
     row["up_stages"] = [[float(t), stage.strip()] for t, stage in
@@ -1167,7 +1181,8 @@ def run_one(args, plan_path: str) -> dict:
 
     # 2. terrain ------------------------------------------------------------
     t_terr = time.monotonic()
-    terr = spawn_patches(args, plan_path) if not args.no_terrain else {"ok": True, "patches": []}
+    terr = (spawn_patches(args, plan_path, patches=not args.no_terrain)
+            if not args.no_terrain or plan["leaves"] else {"ok": True, "patches": []})
     row["patches"] = terr.get("patches", [])
     row["terrain_s"] = round(time.monotonic() - t_terr, 1)
     if not terr.get("ok"):
@@ -1392,7 +1407,7 @@ def run_one(args, plan_path: str) -> dict:
             max_cross_track=(round(max(nearest_dist_to_polyline((x, y), plan["poses"][:, :2])
                                        for (x, y) in track), 4)
                              if track else None),
-            **wall_contact([s for s in st["track"] if s[0] >= goal_t], args.floor),
+            **wall_contact([s for s in st["track"] if s[0] >= goal_t], plan["map_yaml"] or args.floor),
             # Over the drive phase only: sim seconds since drive_t0 per wall
             # second of that same wait.
             rtf=(round((st["sim_t"] - drive_t0) / res["drive_wall"], 3)
