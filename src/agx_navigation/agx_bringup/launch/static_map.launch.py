@@ -258,6 +258,21 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals("localization", "rtab"),
     )
 
+    icp_odometry = Node(
+        package="rtabmap_odom",
+        executable="icp_odometry",
+        name="icp_odometry",
+        output="screen",
+        parameters=[cfg_file("rtabmap_lidar_params.yaml"), {"use_sim_time": sim}],
+        remappings=[
+            ("scan_cloud", Topics.LIDAR_POINTS),
+            # its default "odom" topic would collide with wheel odometry's /odom
+            ("odom", "/icp_odom"),
+            ("odom_info", "/icp_odom/info"),
+        ],
+        condition=LaunchConfigurationEquals("localization", "rtab"),
+    )
+
     nav_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("nav")),
     )
@@ -277,6 +292,7 @@ def generate_launch_description():
             amcl,
             amcl_lifecycle,
             rtab_anchor,
+            icp_odometry,
             rtabmap,
             delayed_nav_launch,
         ]
