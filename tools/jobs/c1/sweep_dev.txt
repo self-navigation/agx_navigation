@@ -1,0 +1,18 @@
+# job 248: one-factor sweep around frozen TVLQG under amcl (Aogs), dev half of plan set v3 floor 6.
+# Reference cells first; every other cell changes ONE thing from SQ (or from SE for the S_e* rows).
+SR --arm ours-lib --localization amcl --phantom-walls
+SQ --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+SE --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true
+SEp2 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.2
+SEp4 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.4
+SEp2t --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.2,tvlqg.r_theta=0.07
+SEp2c5 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.2,q_cross=5.0
+Sp2 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.r_pos=0.2
+St07 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.r_theta=0.07
+St14 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.r_theta=0.14
+Sc15 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,q_cross=1.5
+Sc5 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,q_cross=5.0
+Sh25 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,q_heading=2.5
+Sh10 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,q_heading=10.0
+Sg15 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.15,tvlqg.enabled=true
+Sg5 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.5,tvlqg.enabled=true
