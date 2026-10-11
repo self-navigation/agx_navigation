@@ -1,0 +1,14 @@
+LTN   runs=123 contact=57 | plan body touches wall: 0 runs (of contacts 0), plan within 5 cm: 0 | contact in narrow passage: 50, open: 7
+LTNq  runs=123 contact=43 | plan body touches wall: 0 runs (of contacts 0), plan within 5 cm: 0 | contact in narrow passage: 36, open: 7
+LAN   runs=123 contact=44 | plan body touches wall: 0 runs (of contacts 0), plan within 5 cm: 0 | contact in narrow passage: 40, open: 4
+LANq  runs=123 contact=52 | plan body touches wall: 0 runs (of contacts 0), plan within 5 cm: 0 | contact in narrow passage: 44, open: 8
+wrote /home/danya/university/clown-car/agx_navigation/figures/2026-10-11/job247_final_dev/contacts.png
+LTN   plan min body clearance -> contact runs/runs: [0.00,0.10): 0/0, [0.10,0.15): 23/33, [0.15,0.20): 31/48, [0.20,0.30): 1/15, [0.30,9.00): 2/27
+LTNq  plan min body clearance -> contact runs/runs: [0.00,0.10): 0/0, [0.10,0.15): 17/33, [0.15,0.20): 21/48, [0.20,0.30): 2/15, [0.30,9.00): 3/27
+LAN   plan min body clearance -> contact runs/runs: [0.00,0.10): 0/0, [0.10,0.15): 16/33, [0.15,0.20): 24/48, [0.20,0.30): 2/15, [0.30,9.00): 2/27
+LANq  plan min body clearance -> contact runs/runs: [0.00,0.10): 0/0, [0.10,0.15): 21/33, [0.15,0.20): 24/48, [0.20,0.30): 2/15, [0.30,9.00): 5/27
+contact depth (max body penetration into wall pixels, m) per cell:
+LTN   n=57 median 0.050 | <=5cm 57, 5-10cm 0, >10cm 0
+LTNq  n=43 median 0.050 | <=5cm 43, 5-10cm 0, >10cm 0
+LAN   n=44 median 0.050 | <=5cm 44, 5-10cm 0, >10cm 0
+LANq  n=52 median 0.050 | <=5cm 51, 5-10cm 1, >10cm 0
