@@ -194,7 +194,7 @@ READY_MODE=vec-pmp
 AMCL_FLAG=""
 [ "$LOCALIZATION" = "amcl" ] && AMCL_FLAG="--require-amcl"
 # rtabmap: the static map->rtab_map anchor exists before rtabmap does.
-[ "$LOCALIZATION" = "rtab" ] && AMCL_FLAG="--require-tf rtab_map->odom"
+[ "$LOCALIZATION" = "rtab" ] && AMCL_FLAG="--require-tf rtab_map->icp_odom --require-tf icp_odom->odom"
 
 cd "$WORKSPACE" || exit 2
 

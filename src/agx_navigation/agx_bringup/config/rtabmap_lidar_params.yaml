@@ -1,5 +1,16 @@
 # rtabmap for localization:=rtab (static_map.launch.py): LIDAR ONLY, mapping
-# from an empty database every run, odometry from the EKF's odom->base_link TF.
+# from an empty database every run. Two nodes, the standard rtabmap lidar setup:
+#
+#   map -> rtab_map   static, the spawn pose (Gazebo truth: a known start)
+#   rtab_map -> icp_odom   rtabmap (graph SLAM; moves only on loop closures)
+#   icp_odom -> odom       icp_odometry: scan-to-local-map ICP, seeded with the
+#                          EKF's motion (guess_frame_id), so it corrects the
+#                          wheel-speed error in skids that job 249 found
+#   odom -> base_link      the EKF, unchanged
+#
+# rtabmap alone does NOT do the second-to-last step: its neighbour-link ICP only
+# moves map->odom when the graph is optimized, i.e. at a loop closure, which a
+# one-way drive almost never has (smoke 2026-10-11: map->odom constant).
 #
 # Not slam.launch.py's config: that one fuses the RGB-D camera and flattens the
 # aggregated cloud to /scan. Here rtabmap takes the raw 3-D lidar cloud
@@ -12,7 +23,7 @@ rtabmap:
   ros__parameters:
     frame_id: base_link
     map_frame_id: rtab_map
-    odom_frame_id: odom          # odometry from TF (the EKF)
+    odom_frame_id: icp_odom      # odometry from TF (icp_odometry over the EKF)
     publish_tf: true
     tf_delay: 0.05
 
@@ -61,3 +72,29 @@ rtabmap:
     Icp/Strategy: "0"            # PCL
 
     DbSqlite3/InMemory: "true"
+
+icp_odometry:
+  ros__parameters:
+    frame_id: base_link
+    odom_frame_id: icp_odom
+    guess_frame_id: odom         # publish icp_odom -> odom; EKF motion as the ICP prior
+    publish_tf: true
+    wait_for_transform: 0.2
+    scan_voxel_size: 0.05
+
+    Odom/Strategy: "0"           # frame-to-map
+    Odom/ResetCountdown: "1"
+    Reg/Strategy: "1"
+    Reg/Force3DoF: "true"
+    OdomF2M/ScanSubtractRadius: "0.05"
+    OdomF2M/ScanMaxSize: "15000"
+    Icp/VoxelSize: "0.05"
+    Icp/PointToPlane: "true"
+    Icp/PointToPlaneK: "10"
+    Icp/PointToPlaneRadius: "0.0"
+    Icp/Iterations: "30"
+    Icp/MaxCorrespondenceDistance: "0.2"
+    Icp/MaxTranslation: "1.0"
+    Icp/CorrespondenceRatio: "0.2"
+    Icp/Epsilon: "0.001"
+    Icp/Strategy: "0"

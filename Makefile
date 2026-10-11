@@ -172,9 +172,14 @@ can-bus:
 LAUNCH_PKG ?= agx_bringup
 LAUNCH_FILE ?= main.launch.py
 
+# localization:=rtab needs rtabmap_odom (icp_odometry), which the VM's apt
+# rtabmap 0.22.1 lacks and apt only offers at 0.23 (an ABI mismatch). It is
+# built from the 0.22.1-jazzy tag into this overlay; sourced only if present.
+RTABMAP_ODOM_WS ?= $(HOME)/rtabmap_odom_ws
 define LAUNCH_RECIPE
 	source /opt/ros/jazzy/setup.bash && \
 		source install/setup.bash && \
+		{ [ ! -f $(RTABMAP_ODOM_WS)/install/local_setup.bash ] || source $(RTABMAP_ODOM_WS)/install/local_setup.bash; } && \
 		$(WORKER_ENV) \
 		$(GPU_PREFIX) \
 		ros2 launch $(DEBUG_INFIX) \

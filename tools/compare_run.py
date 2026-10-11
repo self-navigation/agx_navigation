@@ -419,23 +419,36 @@ class CompareDriver:
                              _sim(m.header.stamp)))
             return cb
 
+        # localization:=rtab has no single map->odom edge but a chain
+        # map -> rtab_map -> icp_odom -> odom (rtabmap_lidar_params.yaml);
+        # keep every edge's latest value and record the composition. The
+        # stamp is the newest along the chain.
+        parent_of = st.setdefault("tf_parent", {})
+
         def _on_tf(m):
+            touched = False
             for tf in m.transforms:
                 parent, child = tf.header.frame_id.lstrip("/"), tf.child_frame_id.lstrip("/")
+                if child in ("base_link",) or parent == "odom":
+                    continue
                 tr = tf.transform.translation
-                if parent == "map" and child == "odom":
-                    st["map_odom_latest"] = (tr.x, tr.y, _yaw(tf.transform.rotation),
-                                             _sim(tf.header.stamp))
-                # localization:=rtab chains map -> rtab_map (static anchor at
-                # the spawn pose) -> odom (rtabmap); record the composition.
-                elif parent == "map" and child == "rtab_map":
-                    st["rtab_anchor"] = (tr.x, tr.y, _yaw(tf.transform.rotation))
-                elif parent == "rtab_map" and child == "odom" and st.get("rtab_anchor"):
-                    ax, ay, ayaw = st["rtab_anchor"]
-                    c, s = math.cos(ayaw), math.sin(ayaw)
-                    st["map_odom_latest"] = (ax + c * tr.x - s * tr.y, ay + s * tr.x + c * tr.y,
-                                             ayaw + _yaw(tf.transform.rotation),
-                                             _sim(tf.header.stamp))
+                parent_of[child] = (parent, tr.x, tr.y, _yaw(tf.transform.rotation),
+                                    _sim(tf.header.stamp))
+                touched = touched or child in ("odom", "icp_odom", "rtab_map")
+            if not touched:
+                return
+            x = y = yaw = 0.0
+            stamp, frame = 0.0, "odom"
+            for _ in range(5):
+                if frame not in parent_of:
+                    return
+                p, ex, ey, eyaw, es = parent_of[frame]
+                c, s = math.cos(eyaw), math.sin(eyaw)
+                x, y, yaw = ex + c * x - s * y, ey + s * x + c * y, eyaw + yaw
+                stamp, frame = max(stamp, es), p
+                if frame == "map":
+                    st["map_odom_latest"] = (x, y, math.atan2(math.sin(yaw), math.cos(yaw)), stamp)
+                    return
 
         self.node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", _on_amcl, 10)
         self.node.create_subscription(Odometry, "/odom", _odom_cb("odom"), 10)
