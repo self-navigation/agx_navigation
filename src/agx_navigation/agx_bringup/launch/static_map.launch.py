@@ -8,6 +8,8 @@ localization:
   truth  Gazebo ground truth via truth_localization.py, sim only
   none   identity, i.e. raw wheel odometry; not usable for evaluating a
          pose-feedback corrector
+  rtab   lidar-only rtabmap; its rtab_map frame is pinned to the spawn pose
+         by a static map->rtab_map transform (needs sim_sensors:=true)
 
 The map never updates; use localization:=slam to test navigation itself.
 """
@@ -23,8 +25,8 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import (LaunchConfiguration, PathJoinSubstitution,
-                                  PythonExpression)
+from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
+                                  PathJoinSubstitution, PythonExpression)
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -215,6 +217,47 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals("localization", "amcl"),
     )
 
+    # --- localization:=rtab -------------------------------------------------
+    rtab_anchor = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="static_map_to_rtab_map",
+        output="screen",
+        arguments=[
+            "--x", LaunchConfiguration("spawn_x"),
+            "--y", LaunchConfiguration("spawn_y"), "--z", "0",
+            "--roll", "0", "--pitch", "0",
+            "--yaw", LaunchConfiguration("spawn_yaw"),
+            "--frame-id", "map",
+            "--child-frame-id", "rtab_map",
+        ],
+        parameters=[{"use_sim_time": sim}],
+        condition=LaunchConfigurationEquals("localization", "rtab"),
+    )
+    rtabmap = Node(
+        package="rtabmap_slam",
+        executable="rtabmap",
+        name="rtabmap",
+        output="screen",
+        parameters=[
+            cfg_file("rtabmap_lidar_params.yaml"),
+            {
+                "use_sim_time": sim,
+                # one database per parallel worker (in memory anyway)
+                "database_path": PythonExpression([
+                    "'/tmp/rtabmap_lidar_w' + '",
+                    EnvironmentVariable("ROS_DOMAIN_ID", default_value="0"), "' + '.db'"]),
+            },
+        ],
+        remappings=[
+            ("scan_cloud", Topics.LIDAR_POINTS),
+            # never clobber the baked /map the planner uses
+            ("map", "/rtabmap/grid_map"),
+        ],
+        arguments=["--delete_db_on_start"],
+        condition=LaunchConfigurationEquals("localization", "rtab"),
+    )
+
     nav_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(launch_file("nav")),
     )
@@ -233,6 +276,8 @@ def generate_launch_description():
             scan_from_lidar,
             amcl,
             amcl_lifecycle,
+            rtab_anchor,
+            rtabmap,
             delayed_nav_launch,
         ]
     )

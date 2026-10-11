@@ -421,9 +421,20 @@ class CompareDriver:
 
         def _on_tf(m):
             for tf in m.transforms:
-                if tf.header.frame_id.lstrip("/") == "map" and tf.child_frame_id.lstrip("/") == "odom":
-                    tr = tf.transform.translation
+                parent, child = tf.header.frame_id.lstrip("/"), tf.child_frame_id.lstrip("/")
+                tr = tf.transform.translation
+                if parent == "map" and child == "odom":
                     st["map_odom_latest"] = (tr.x, tr.y, _yaw(tf.transform.rotation),
+                                             _sim(tf.header.stamp))
+                # localization:=rtab chains map -> rtab_map (static anchor at
+                # the spawn pose) -> odom (rtabmap); record the composition.
+                elif parent == "map" and child == "rtab_map":
+                    st["rtab_anchor"] = (tr.x, tr.y, _yaw(tf.transform.rotation))
+                elif parent == "rtab_map" and child == "odom" and st.get("rtab_anchor"):
+                    ax, ay, ayaw = st["rtab_anchor"]
+                    c, s = math.cos(ayaw), math.sin(ayaw)
+                    st["map_odom_latest"] = (ax + c * tr.x - s * tr.y, ay + s * tr.x + c * tr.y,
+                                             ayaw + _yaw(tf.transform.rotation),
                                              _sim(tf.header.stamp))
 
         self.node.create_subscription(PoseWithCovarianceStamped, "/amcl_pose", _on_amcl, 10)
