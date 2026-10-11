@@ -1,0 +1,2 @@
+SR --arm ours-lib --localization amcl --phantom-walls --record-scan
+SQ --arm ours-lib --localization amcl --phantom-walls --record-scan --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
