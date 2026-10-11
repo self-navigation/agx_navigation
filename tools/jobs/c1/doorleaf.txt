@@ -1,0 +1,7 @@
+# Job 254: door-leaf corridor test, TVLQG vs TVLQR under amcl, rtab and truth.
+Q0 --arm ours-lib --localization amcl  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+QR --arm ours-lib --localization amcl  --phantom-walls
+RQ --arm ours-lib --localization rtab  --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+RR --arm ours-lib --localization rtab  --phantom-walls
+T  --arm ours-lib --localization truth --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+TR --arm ours-lib --localization truth --phantom-walls

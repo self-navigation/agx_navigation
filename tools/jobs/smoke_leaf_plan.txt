@@ -1,0 +1,1 @@
+__HOME__/run_data/2026-10-12_nojob_doorleaf-plans/plans/f6_corridor_0069_L0.npz

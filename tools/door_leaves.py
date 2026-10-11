@@ -123,6 +123,14 @@ def draw_leaf(img, meta, h, tip):
                 img[H - 1 - rr, c] = 0
 
 
+def write_yaml(base_yaml, out_yaml, image, note):
+    """The base map YAML verbatim with only `image:` replaced. map_publisher parses YAML by
+    hand and needs `origin: [x, y, z]` in flow style, which yaml.safe_dump does not write."""
+    lines = [f"image: {image}" if l.startswith("image:") else l for l in open(base_yaml).read().splitlines()]
+    with open(out_yaml, "w") as f:
+        f.write(f"# {note}\n" + "\n".join(lines) + "\n")
+
+
 def _edt(arr, r):
     from scipy import ndimage
     return ndimage.distance_transform_edt(arr == 0) * r
@@ -187,10 +195,8 @@ def cmd_sample(a):
                 skipped.append(f"{pid}/v{v}"); continue
             cid = f"{pid}_L{v}"
             Image.fromarray(img).save(os.path.join(a.out, "maps", cid + ".png"))
-            m2 = dict(meta, image=cid + ".png")
-            with open(os.path.join(a.out, "maps", cid + ".yaml"), "w") as f:
-                f.write(f"# {cid}: {base_yaml} + {len(leaves)} ajar door leaves (tools/door_leaves.py)\n")
-                yaml.safe_dump(m2, f, sort_keys=False)
+            write_yaml(base_yaml, os.path.join(a.out, "maps", cid + ".yaml"), cid + ".png",
+                       f"{cid}: {base_yaml} + {len(leaves)} ajar door leaves (tools/door_leaves.py)")
             out.append(dict(id=cid, floor=a.floor, band="doorleaf", end_clear=a.end_clear,
                             start=[round(x, 4) for x in start], goal=[round(x, 4) for x in goal],
                             map_yaml=os.path.abspath(os.path.join(a.out, "maps", cid + ".yaml")),
