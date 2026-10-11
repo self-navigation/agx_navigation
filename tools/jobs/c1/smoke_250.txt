@@ -1,0 +1,2 @@
+Ek --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --ekf-params __REPO__/tools/jobs/ekf_tune/accel.yaml --wheel-skid-cov 1.5
+EkA3 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --ekf-params __REPO__/tools/jobs/ekf_tune/accel.yaml --wheel-skid-cov 1.5 --amcl-params __REPO__/tools/jobs/amcl_tune/a3m.yaml

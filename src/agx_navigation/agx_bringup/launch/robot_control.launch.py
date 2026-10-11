@@ -80,6 +80,12 @@ def generate_launch_description():
                     "corrector then saw its cross-track error at ~0.4x gain "
                     "and ~2.5 s lag (#34). Needs /scan (localization:=amcl)."))
 
+    declared_args.append(DeclareLaunchArgument(
+        "ekf_params", default_value="",
+        description="params file layered over ekf_params.yaml (key "
+                    "ekf_filter_node), e.g. tools/jobs/ekf_tune/*.yaml. Applied "
+                    "after the ekf_wheel_yaw / lidar_odom overrides, so it wins."))
+
     def ekf_nodes(context):
         wheel_yaw = LaunchConfiguration("ekf_wheel_yaw").perform(context) == "true"
         lidar = LaunchConfiguration("lidar_odom").perform(context) == "true"
@@ -126,7 +132,8 @@ def generate_launch_description():
             executable="ekf_node",
             name="ekf_filter_node",
             output="screen",
-            parameters=[cfg_file("ekf_params.yaml"), overrides],
+            parameters=[cfg_file("ekf_params.yaml"), overrides]
+            + ([extra] if (extra := LaunchConfiguration("ekf_params").perform(context)) else []),
             remappings=[
                 ("odom", Topics.ODOM),
                 ("imu", Topics.IMU),

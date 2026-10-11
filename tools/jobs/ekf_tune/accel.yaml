@@ -1,0 +1,18 @@
+# Job 250: give the EKF a second forward-speed source, so a skid-inflated wheel
+# covariance (wheel_odometry skid_cov_gain) has something to lean on instead.
+# - imu0 fuses linear acceleration x, y (indices 12, 13); sim IMU accel noise is
+#   0.012 m/s^2 (sim.gazebo).
+# - odom0 drops differential x/y POSITION: it carried the same wheel distance as
+#   vx a second time, at the same weight. Wheels keep vx, vy and yaw rate.
+ekf_filter_node:
+  ros__parameters:
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  true,  true,  false]

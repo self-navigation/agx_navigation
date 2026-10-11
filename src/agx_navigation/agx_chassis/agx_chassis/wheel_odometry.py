@@ -2,7 +2,7 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Imu, JointState
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Quaternion, TransformStamped
 from tf2_ros import TransformBroadcaster
@@ -58,12 +58,26 @@ class WheelOdometryNode(Node):
         # makes sensor data spin with the robot and the body detach from the
         # wheels in RViz. Set true only if nothing else publishes it.
         self.declare_parameter("publish_tf", False)
+        # Skid-aware covariance (2026-10-11, job 249). In a skid turn the wheels'
+        # yaw rate disagrees with the gyro's by ~0.9 rad/s and their forward
+        # speed is then wrong by tenths of a m/s in either sign; a constant
+        # covariance tells the EKF to believe it. With skid_cov_gain > 0 the
+        # forward-speed (and x/y pose) std grows by
+        #     skid_cov_gain * |omega_wheel - omega_gyro| * track / 2,
+        # the speed mismatch a yaw disagreement of that size implies at the
+        # wheels. Gyro only, so it works unchanged on the real robot. It helps
+        # only where the EKF has ANOTHER forward-speed source (IMU ax): with
+        # none, an inflated variance still gets followed. 0 = the old constant.
+        self.declare_parameter("skid_cov_gain", 0.0)
+        self.declare_parameter("imu_topic", "/imu/data")
 
         self._radius = self.get_parameter("wheel_radius").value
         self._track = self.get_parameter("track").value
         self._odom_frame = self.get_parameter("odom_frame").value
         self._base_frame = self.get_parameter("base_frame").value
         self._publish_tf = self.get_parameter("publish_tf").value
+        self._skid_gain = float(self.get_parameter("skid_cov_gain").value)
+        self._gyro_z: float | None = None
 
         self._x = 0.0
         self._y = 0.0
@@ -79,6 +93,13 @@ class WheelOdometryNode(Node):
         self._pub = self.create_publisher(Odometry, "/odom", 10)
 
         self.create_subscription(JointState, "/joint_states", self._on_joints, 10)
+        if self._skid_gain > 0.0:
+            self.get_logger().info(f"skid-aware covariance ON: skid_cov_gain={self._skid_gain}")
+            self.create_subscription(
+                Imu, self.get_parameter("imu_topic").value, self._on_imu, 50)
+
+    def _on_imu(self, msg: Imu) -> None:
+        self._gyro_z = msg.angular_velocity.z
 
     def _on_joints(self, msg: JointState) -> None:
         # Integrate wheel *position* deltas rather than velocities. The position
@@ -155,11 +176,18 @@ class WheelOdometryNode(Node):
         odom.pose.pose.position.y = self._y
         odom.pose.pose.position.z = 0.0
         odom.pose.pose.orientation = q
-        odom.pose.covariance = self._pose_cov
+        pose_cov, twist_cov = self._pose_cov, self._twist_cov
+        if self._skid_gain > 0.0 and self._gyro_z is not None:
+            sd = self._skid_gain * abs(omega - self._gyro_z) * self._track / 2.0
+            pose_cov, twist_cov = list(pose_cov), list(twist_cov)
+            for cov in (pose_cov, twist_cov):
+                cov[0] += sd * sd   # x / vx
+                cov[7] += sd * sd   # y / vy
+        odom.pose.covariance = pose_cov
 
         odom.twist.twist.linear.x = v
         odom.twist.twist.angular.z = omega
-        odom.twist.covariance = self._twist_cov
+        odom.twist.covariance = twist_cov
 
         self._pub.publish(odom)
 

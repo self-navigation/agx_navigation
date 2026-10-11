@@ -946,6 +946,8 @@ def bring_up_stack(args, arm: str, spawn, log_path: str):
         *(["--no-ekf-wheel-yaw"] if args.no_ekf_wheel_yaw else []),
         *(["--lidar-odom"] if args.lidar_odom else []),
         *(["--amcl-params", args.amcl_params] if args.amcl_params else []),
+        *(["--ekf-params", args.ekf_params] if args.ekf_params else []),
+        *(["--wheel-skid-cov", str(args.wheel_skid_cov)] if args.wheel_skid_cov else []),
         # The comparison's slip comes from tools/spawn_patches.py (seed 0,
         # along-path). The fixture's own near-origin patches must be OFF, or a
         # wall strike has two candidate causes.
@@ -1105,6 +1107,8 @@ def run_one(args, plan_path: str) -> dict:
         "ekf_wheel_yaw": not args.no_ekf_wheel_yaw,
         "lidar_odom": args.lidar_odom,
         "amcl_params": args.amcl_params,
+        "ekf_params": args.ekf_params,
+        "wheel_skid_cov": args.wheel_skid_cov,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm not in VEC_PMP_ARMS else None,
         "floor": args.floor,
@@ -1513,6 +1517,10 @@ def main() -> int:
                          "wheels' yaw rate and vy=0 (#34: observe turn skid)")
     ap.add_argument("--amcl-params", default=None,
                     help="params file layered over nav2_params.yaml's amcl (#34)")
+    ap.add_argument("--ekf-params", default=None,
+                    help="params file layered over ekf_params.yaml (job 250)")
+    ap.add_argument("--wheel-skid-cov", type=float, default=0.0,
+                    help="wheel_odometry skid_cov_gain; 0 = constant covariance (job 250)")
     ap.add_argument("--nav2-profile", default="compare_static",
                     help="agx_baselines/config/nav2_profile_<name>.yaml for the nav2 arms "
                          "(costmap inflation, collision monitor); '' = stock")
