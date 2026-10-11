@@ -182,6 +182,22 @@ def _sim(stamp) -> float:
     return stamp.sec + stamp.nanosec * 1e-9
 
 
+def _scan_arrays(st) -> dict:
+    """--record-scan keys (empty dict otherwise): scan_t (n, 2) = sim time at
+    reception, header stamp; scan_ranges (n, beams) float16; scan_meta =
+    angle_min, angle_increment, range_min, range_max; scan_frame; tf_static
+    edges as 'parent child' -> x y z yaw rows."""
+    if not st.get("scan"):
+        return {}
+    edges = sorted(st["tf_static"].items())
+    return dict(scan_t=np.array([r[:2] for r in st["scan"]], dtype=float),
+                scan_ranges=np.stack([r[2] for r in st["scan"]]),
+                scan_meta=np.array(st["scan_meta"], dtype=float),
+                scan_frame=np.array(st.get("scan_frame", "")),
+                tf_static_edges=np.array([f"{a} {b}" for (a, b), _ in edges]),
+                tf_static=np.array([v for _, v in edges], dtype=float).reshape(-1, 4))
+
+
 def _rows(rows, ncol: int) -> np.ndarray:
     """A list of equal-length tuples as an (N, ncol) float array; (0, ncol) when empty."""
     return np.array(rows, dtype=float).reshape(-1, ncol)
@@ -197,7 +213,7 @@ class CompareDriver:
     def __init__(self, world: str, model: str,
                  goal_tries: int = 3, goal_ack_wait: float = 15.0,
                  plan_wall_cap: float = 600.0, supervised: bool = False,
-                 follow_action: str = "follow_path"):
+                 follow_action: str = "follow_path", record_scan: bool = False):
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -209,6 +225,7 @@ class CompareDriver:
         from action_msgs.msg import GoalStatusArray
 
         self.goal_tries = int(goal_tries)
+        self.record_scan = bool(record_scan)
         self.goal_ack_wait = float(goal_ack_wait)
         self.plan_wall_cap = float(plan_wall_cap)
         # Idle early stop (sim s; 0 = off), set by run_one from --idle-stop.
@@ -250,6 +267,9 @@ class CompareDriver:
             "odom_f": [],   # /odom/filtered (EKF = odom->base_link), same layout
             "map_odom": [],  # map->odom sampled at 10 Hz: (t, x, y, yaw, stamp)
             "map_odom_latest": None,  # (x, y, yaw, stamp) from /tf or /tf_static
+            # --record-scan only: /scan at 10 Hz of sim time, (t, stamp) + ranges
+            # (float16), its geometry, and every /tf_static edge (the lidar mount).
+            "scan": [], "scan_meta": None, "tf_static": {},
             "sentinel": False,
             "n_plan_paths": 0,
             "plan_goal_ids": set(),  # PlanToGoal goals the planner has seen
@@ -410,8 +430,28 @@ class CompareDriver:
         self.node.create_subscription(Odometry, "/odom", _odom_cb("odom"), 10)
         self.node.create_subscription(Odometry, "/odom/filtered", _odom_cb("odom_f"), 10)
         self.node.create_subscription(TFMessage, "/tf", _on_tf, 50)
+        if self.record_scan:
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import LaserScan
+
+            def _on_scan(m):
+                t, rows = st["sim_t"], st["scan"]
+                if t is None or (rows and t - rows[-1][0] < 0.1):
+                    return
+                if st["scan_meta"] is None:
+                    st["scan_meta"] = (m.angle_min, m.angle_increment, m.range_min, m.range_max)
+                    st["scan_frame"] = m.header.frame_id
+                rows.append((t, _sim(m.header.stamp), np.asarray(m.ranges, dtype=np.float16)))
+
+            def _on_static(m):
+                _on_tf(m)
+                for tf in m.transforms:
+                    tr, q = tf.transform.translation, tf.transform.rotation
+                    st["tf_static"][(tf.header.frame_id.lstrip("/"), tf.child_frame_id.lstrip("/"))] = (
+                        tr.x, tr.y, tr.z, _yaw(q))
+            self.node.create_subscription(LaserScan, "/scan", _on_scan, qos_profile_sensor_data)
         self.node.create_subscription(
-            TFMessage, "/tf_static", _on_tf,
+            TFMessage, "/tf_static", _on_static if self.record_scan else _on_tf,
             QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
                        reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -1136,6 +1176,7 @@ def run_one(args, plan_path: str) -> dict:
                             goal_tries=args.goal_tries,
                             goal_ack_wait=plan_scaled_ack,
                             plan_wall_cap=args.plan_wall_cap,
+                            record_scan=args.record_scan,
                             supervised=args.supervisor and args.arm not in VEC_PMP_ARMS,
                             follow_action=("follow_path_gmpc"
                                            if args.arm == "pmp-gmpc" and gmpc_on_nav2(args)
@@ -1223,6 +1264,7 @@ def run_one(args, plan_path: str) -> dict:
                  amcl=_rows(st["amcl"], 8), odom=_rows(st["odom"], 7),
                  odom_filtered=_rows(st["odom_f"], 7),
                  map_odom=_rows(st["map_odom"], 5),
+                 **_scan_arrays(st),
                  goal_t=goal_t, plan_poses=plan["poses"],
                  goal_xy=np.asarray(plan["goal"], dtype=float))
         row["track_path"] = track_path
@@ -1446,6 +1488,9 @@ def main() -> int:
                     help="sim-only actuator fault for the vec-pmp arm (#27): "
                          "'fl,rl,fr,rr' command scale, e.g. 0.9,0.9,0.9,0.9")
     ap.add_argument("--localization", default="amcl")
+    ap.add_argument("--record-scan", action="store_true",
+                    help="also store /scan (10 Hz, float16 ranges) and the /tf_static edges in "
+                         "the track npz, for scan-vs-map diagnosis of the localizer (2026-10-11)")
     ap.add_argument("--supervisor", action="store_true",
                     help="enable the supervisory layer on any arm (#41 vec-pmp, #42 nav2/gmpc)")
     ap.add_argument("--supervisor-params", default="",

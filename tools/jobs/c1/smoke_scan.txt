@@ -1,0 +1,1 @@
+SR --arm ours-lib --localization amcl --phantom-walls --record-scan
