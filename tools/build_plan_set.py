@@ -76,13 +76,15 @@ _MAP = {}
 
 
 def load_map(floor):
-    """(occ grid int8 with 0 free / 100 wall / -1 unknown, row 0 = y_min; meta)."""
+    """(occ grid int8 with 0 free / 100 wall / -1 unknown, row 0 = y_min; meta).
+    `floor` is a floor number or a map YAML path (per-plan maps, tools/door_leaves.py)."""
     if floor not in _MAP:
         # map_publisher.load_occupancy_grid's convention, inlined: that module imports rclpy.
         import yaml
         from PIL import Image
-        meta = yaml.safe_load(open(MAPS[floor][0]))
-        px = np.flipud(np.asarray(Image.open(os.path.join(os.path.dirname(MAPS[floor][0]), meta["image"]))
+        path = floor if isinstance(floor, str) else MAPS[floor][0]
+        meta = yaml.safe_load(open(path))
+        px = np.flipud(np.asarray(Image.open(os.path.join(os.path.dirname(path), meta["image"]))
                                   .convert("L"))).astype(float)
         occ = (255.0 - px) / 255.0
         if meta.get("negate"):
@@ -181,7 +183,7 @@ def _solve(job):
     from agx_planning.pmp_planner import rollout as ro
     from agx_planning.vector_field import VectorFieldConfig, compute_field
     from agx_planning.vector_field.field import field_result_to_grid
-    arr, meta = load_map(c["floor"])
+    arr, meta = load_map(c.get("map_yaml") or c["floor"])
     r, (ox, oy) = meta["resolution"], meta["origin"][:2]
     # Crop to the pair's box + margin: the full floor-2 bake is 6.4 M cells.
     xs, ys = (c["start"][0], c["goal"][0]), (c["start"][1], c["goal"][1])
@@ -222,7 +224,8 @@ def _solve(job):
              costates=np.concatenate(cos), dt_sample=1.0 / cfg.control_rate,
              start_xy=np.array(c["start"][:2]), goal_xy=np.array(c["goal"][:2]),
              goal_pose=np.array(c["goal"]), floor=c["floor"], band=c["band"],
-             map_yaml=MAPS[c["floor"]][0], shape="", screen_blocked=False, screen_detour=0.0,
+             map_yaml=c.get("map_yaml") or MAPS[c["floor"]][0], shape="",
+             leaves=json.dumps(c.get("leaves", [])), base_plan=c.get("base_plan", ""), screen_blocked=False, screen_detour=0.0,
              screen_score=0.0)
     return rec
 

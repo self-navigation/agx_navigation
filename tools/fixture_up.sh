@@ -16,7 +16,7 @@
 #                         [--floor N] [--frontier true|false] [--spawn X Y YAW]
 #                         [--supervisor] [--supervisor-mode navigate|follow_path]
 #                         [--supervisor-params k=v,k=v] [--tvlqr-params k=v,k=v]
-#                         [--gmpc-nav2]
+#                         [--gmpc-nav2] [--map-yaml PATH]
 #
 # --supervisor (#41/#42/#43) turns the supervisory layer on for every nav mode;
 # readiness then also requires it (stack_ready --supervisor). In gmpc mode it
@@ -85,6 +85,7 @@ while [ $# -gt 0 ]; do
         --spawn)          SPAWN_X=$2; SPAWN_Y=$3; SPAWN_YAW=$4; shift 4 ;;
         --wheel-bias)     WHEEL_BIAS=$2; shift 2 ;;
         --phantom-walls)  PHANTOM_WALLS=true; shift ;;
+        --map-yaml)       MAP_YAML=$2; shift 2 ;;
         --no-ekf-wheel-yaw) EKF_WHEEL_YAW=false; shift ;;
         --lidar-odom) LIDAR_ODOM=true; shift ;;
         --no-planner) NO_PLANNER=true; shift ;;
@@ -116,6 +117,8 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 [ -n "${WHEEL_BIAS:-}" ] && EXTRA="$EXTRA wheel_bias:=$WHEEL_BIAS"
 # Diagnostic (#34): walls the lidar sees but the robot drives through.
 [ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
+# Per-plan map copy (tools/door_leaves.py): what /map serves instead of floor_N.yaml.
+[ -n "${MAP_YAML:-}" ] && EXTRA="$EXTRA map_yaml:=$MAP_YAML"
 [ -n "${EKF_WHEEL_YAW:-}" ] && EXTRA="$EXTRA ekf_wheel_yaw:=$EKF_WHEEL_YAW"
 [ -n "${LIDAR_ODOM:-}" ] && EXTRA="$EXTRA lidar_odom:=$LIDAR_ODOM"
 # vec-pmp without pmp_planner (vec_pmp.launch.py's use_server switch): the

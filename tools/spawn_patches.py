@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 
@@ -32,7 +33,21 @@ from agx_planning.rl_corrector.terrain import along_path_terrain_sampler
 # rl_ground covers the ground_friction_sampler case too; 8 matches the bridge's
 # _STALE_PATCH_LIMIT so nothing a previous process could have left behind
 # survives the sweep.
-STALE_NAMES = ["rl_ground"] + [f"rl_patch_{i}" for i in range(8)]
+STALE_NAMES = ["rl_ground"] + [f"rl_patch_{i}" for i in range(8)] + [f"door_leaf_{i}" for i in range(16)]
+
+# Door leaves (tools/door_leaves.py): a plan npz with a `leaves` key carries ajar
+# leaves that are also drawn into its own map copy. Each is a static box along
+# hinge->tip, LEAF_T thick and LEAF_H tall, VISUAL always (gpu_lidar renders
+# visuals) and collision only without --phantom, matching the walls.
+LEAF_T, LEAF_H = 0.05, 2.0
+
+
+def leaf_sdf(name: str, length: float, collide: bool) -> str:
+    geom = f"<geometry><box><size>{length:.3f} {LEAF_T} {LEAF_H}</size></box></geometry>"
+    col = f"<collision name='c'>{geom}</collision>" if collide else ""
+    return (f"<?xml version='1.0'?><sdf version='1.9'><model name='{name}'><static>true</static>"
+            f"<link name='leaf'>{col}<visual name='v'>{geom}<material><ambient>0.55 0.4 0.25 1</ambient>"
+            f"<diffuse>0.55 0.4 0.25 1</diffuse></material></visual></link></model></sdf>")
 
 ACK_MS = 800  # same best-effort contract as the bridge: not consulted, just sent
 
@@ -100,6 +115,18 @@ class PatchSpawner:
         self._gz.request(self._svc_create, req, EntityFactory, Boolean, ACK_MS)
         return self._spin_until(lambda: name in self._entities, timeout_s)
 
+    def create_leaf_and_wait(self, leaf: dict, name: str, collide: bool, timeout_s: float = 20.0) -> bool:
+        """Create ONE door leaf, once, and wait for it to appear. Never re-issue."""
+        h, t = np.asarray(leaf["hinge"], float), np.asarray(leaf["tip"], float)
+        c, yaw = (h + t) / 2, math.atan2(t[1] - h[1], t[0] - h[0])
+        req = EntityFactory()
+        req.sdf = leaf_sdf(name, float(np.linalg.norm(t - h)), collide)
+        req.name = name
+        req.pose.position.x, req.pose.position.y, req.pose.position.z = float(c[0]), float(c[1]), LEAF_H / 2
+        req.pose.orientation.z, req.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+        self._gz.request(self._svc_create, req, EntityFactory, Boolean, ACK_MS)
+        return self._spin_until(lambda: name in self._entities, timeout_s)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -110,10 +137,13 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=30.0,
                     help="wall seconds to wait for the pose stream / each patch")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--phantom", action="store_true", help="door leaves without collision (phantom walls)")
+    ap.add_argument("--no-patches", action="store_true", help="door leaves only, no slip patches")
     args = ap.parse_args()
 
     with np.load(args.plan) as f:
         poses = np.asarray(f["poses"], dtype=float)
+        leaves = json.loads(str(f["leaves"])) if "leaves" in f else []
 
     sp = PatchSpawner(args.world)
     out: dict = {"plan": args.plan, "seed": args.seed, "world": args.world,
@@ -129,7 +159,8 @@ def main() -> int:
             out["error"] = "stale rl_* patches never disappeared; terrain state is inherited"
             return _emit(out, args.json, 1)
 
-        patches = along_path_terrain_sampler(poses[:, :3])(np.random.default_rng(args.seed))
+        patches = ([] if args.no_patches else
+                   along_path_terrain_sampler(poses[:, :3])(np.random.default_rng(args.seed)))
         for idx, patch in enumerate(patches):
             name = patch.get("name") or f"rl_patch_{idx}"
             if not sp.create_and_wait(patch, name):
@@ -143,6 +174,14 @@ def main() -> int:
                 "x": round(float(patch["x"]), 3), "y": round(float(patch["y"]), 3),
                 "ok": True,
             })
+        for idx, leaf in enumerate(leaves):
+            name = f"door_leaf_{idx}"
+            ok = sp.create_leaf_and_wait(leaf, name, collide=not args.phantom)
+            out["patches"].append({"name": name, "profile": "door_leaf", "x": leaf["hinge"][0],
+                                   "y": leaf["hinge"][1], "ok": ok})
+            if not ok:
+                out["error"] = f"leaf {name} never appeared in pose/info"
+                return _emit(out, args.json, 1)
         out["ok"] = True
         return _emit(out, args.json, 0)
     finally:
