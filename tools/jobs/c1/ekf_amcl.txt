@@ -1,0 +1,11 @@
+# Job 250 (2026-10-11): the motion input amcl follows (job 249: excursions start
+# in skid turns, the wheels' forward speed is wrong and the EKF passes it on).
+# All cells = job 248 SQ (TVLQG under Aogs amcl). Q0 is the in-process control.
+Q0 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+Es --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-skid-cov 1.5
+Ea --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --ekf-params __REPO__/tools/jobs/ekf_tune/accel.yaml
+Ek --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --ekf-params __REPO__/tools/jobs/ekf_tune/accel.yaml --wheel-skid-cov 1.5
+A3m --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/a3m.yaml
+A3h --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/a3h.yaml
+A14 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --amcl-params __REPO__/tools/jobs/amcl_tune/a14.yaml
+EkA3 --arm ours-lib --localization amcl --phantom-walls --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --ekf-params __REPO__/tools/jobs/ekf_tune/accel.yaml --wheel-skid-cov 1.5 --amcl-params __REPO__/tools/jobs/amcl_tune/a3m.yaml

@@ -7,11 +7,17 @@ from launch.substitutions import (
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterValue
 from agx_bringup import Topics
 
 
 def generate_launch_description():
     declared_args = [
+        DeclareLaunchArgument(
+            "wheel_skid_cov", default_value="0.0",
+            description="wheel_odometry skid_cov_gain: inflate the forward-speed "
+                        "covariance by the wheel-vs-gyro yaw-rate gap (job 249). "
+                        "0 = constant covariance (historical)."),
         # World-frame spawn pose of the scout_mini. The default (0, 0, 0) is the
         # historical behaviour the map frame is anchored to (see
         # truth_localization.py, FRAMES): map == Gazebo world, so a plan's
@@ -86,6 +92,9 @@ def generate_launch_description():
                 "wheel_radius": 0.08,
                 "track": 0.416503,
                 "use_sim_time": sim,
+                "skid_cov_gain": ParameterValue(
+                    LaunchConfiguration("wheel_skid_cov"), value_type=float),
+                "imu_topic": Topics.IMU,
             }
         ],
     )

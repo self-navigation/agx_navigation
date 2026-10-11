@@ -1,0 +1,5 @@
+# Job 250: amcl trans-from-trans noise up (over Aogs in nav2_params.yaml). The
+# EKF hands amcl a wrong translation in skid turns while its rotation is right.
+amcl:
+  ros__parameters:
+    alpha3: 3.0

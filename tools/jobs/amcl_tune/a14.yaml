@@ -1,0 +1,8 @@
+# Job 250: all of alpha1-4 at 1.0 (over Aogs); covers either reading of the
+# omni model alpha convention.
+amcl:
+  ros__parameters:
+    alpha1: 1.0
+    alpha2: 1.0
+    alpha3: 1.0
+    alpha4: 1.0

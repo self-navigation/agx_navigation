@@ -89,6 +89,8 @@ while [ $# -gt 0 ]; do
         --lidar-odom) LIDAR_ODOM=true; shift ;;
         --no-planner) NO_PLANNER=true; shift ;;
         --amcl-params)    AMCL_PARAMS=$2; shift 2 ;;
+        --ekf-params)     EKF_PARAMS=$2; shift 2 ;;
+        --wheel-skid-cov) WHEEL_SKID_COV=$2; shift 2 ;;
         --supervisor)     SUPERVISOR_=true; shift ;;
         --supervisor-mode) SUPERVISOR_MODE=$2; shift 2 ;;
         --supervisor-params) SUPERVISOR_PARAMS=$2; shift 2 ;;
@@ -124,6 +126,9 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 # start, so the supervisor must not ask it for a full re-plan (#41).
 [ -n "${NO_PLANNER:-}" ] && EXTRA="$EXTRA supervisor_full_replan:=false"
 [ -n "${AMCL_PARAMS:-}" ] && EXTRA="$EXTRA amcl_params:=$AMCL_PARAMS"
+# EKF / wheel-odometry skid covariance (job 250): robot_control.launch.py, sim_control.launch.py.
+[ -n "${EKF_PARAMS:-}" ] && EXTRA="$EXTRA ekf_params:=$EKF_PARAMS"
+[ -n "${WHEEL_SKID_COV:-}" ] && EXTRA="$EXTRA wheel_skid_cov:=$WHEEL_SKID_COV"
 # TVLQRConfig overrides 'k=v,k=v' (agx_bringup.utils.tvlqr_overrides), e.g. sideslip_k=-0.33.
 [ -n "${TVLQR_PARAMS:-}" ] && EXTRA="$EXTRA tvlqr_params:=$TVLQR_PARAMS"
 # Supervisory layer (#41 vec-pmp, #42 nav2/gmpc). supervisor_mode is nav2-only
