@@ -84,6 +84,7 @@ while [ $# -gt 0 ]; do
         --frontier)       FRONTIER=$2; shift 2 ;;
         --spawn)          SPAWN_X=$2; SPAWN_Y=$3; SPAWN_YAW=$4; shift 4 ;;
         --wheel-bias)     WHEEL_BIAS=$2; shift 2 ;;
+        --wheel-mu2)      WHEEL_MU2=$2; shift 2 ;;
         --phantom-walls)  PHANTOM_WALLS=true; shift ;;
         --map-yaml)       MAP_YAML=$2; shift 2 ;;
         --no-ekf-wheel-yaw) EKF_WHEEL_YAW=false; shift ;;
@@ -115,6 +116,8 @@ LOG="/tmp/fixture${WORKER}.log"
 EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRONTIER"
 # Sim-only actuator fault, vec-pmp only (#27): 'fl,rl,fr,rr' command scale.
 [ -n "${WHEEL_BIAS:-}" ] && EXTRA="$EXTRA wheel_bias:=$WHEEL_BIAS"
+# Sim tyre lateral friction (scout_mini.launch.py wheel_mu2; default 0.45 when unset).
+[ -n "${WHEEL_MU2:-}" ] && EXTRA="$EXTRA wheel_mu2:=$WHEEL_MU2"
 # Diagnostic (#34): walls the lidar sees but the robot drives through.
 [ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
 # Per-plan map copy (tools/door_leaves.py): what /map serves instead of floor_N.yaml.

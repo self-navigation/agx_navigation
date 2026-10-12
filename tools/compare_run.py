@@ -959,6 +959,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str, map_yaml: str = ""):
         "--nav2-profile", args.nav2_profile,
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
+        *(["--wheel-mu2", str(args.wheel_mu2)] if args.wheel_mu2 is not None else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
         *(["--map-yaml", map_yaml] if map_yaml else []),
         *(["--supervisor"] if args.supervisor else []),
@@ -1090,7 +1091,8 @@ def spawn_patches(args, plan_path: str, patches: bool = True):
            "--plan", plan_path, "--seed", str(args.seed), "--json",
            *(["--phantom"] if args.phantom_walls else []),
            *([] if patches else ["--no-patches"]),
-           *(["--patch-mu", str(args.patch_mu)] if args.patch_mu is not None else [])]
+           *(["--patch-mu", str(args.patch_mu)] if args.patch_mu is not None else []),
+           *(["--patch-mu2", str(args.patch_mu2)] if args.patch_mu2 is not None else [])]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=WORKSPACE)
     for line in reversed((proc.stdout or "").strip().splitlines()):
         line = line.strip()
@@ -1147,6 +1149,8 @@ def run_one(args, plan_path: str) -> dict:
         "ekf_params": args.ekf_params,
         "wheel_skid_cov": args.wheel_skid_cov,
         "patch_mu": args.patch_mu,
+        "patch_mu2": args.patch_mu2,
+        "wheel_mu2": args.wheel_mu2 if args.wheel_mu2 is not None else 0.45,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm not in VEC_PMP_ARMS else None,
         "floor": args.floor,
@@ -1576,6 +1580,16 @@ def main() -> int:
                          "swept value that still steers -- the default evaluation plant since 2026-10-12 "
                          "(user). 'stock' = the stock profiles, all at or below the wheel's mu2=0.45 "
                          "steering knee: the no-steer stress case")
+    ap.add_argument("--patch-mu2", type=float, default=None,
+                    help="the patches' LATERAL mu (default: = --patch-mu, isotropic). Gazebo takes the "
+                         "smaller of wheel and ground per direction, so with a grippier tyre "
+                         "(--wheel-mu2 above 0.5) isotropic mu 0.5 patches fall at or below the steering "
+                         "knee again. 'The same tyre on a slicker floor' keeps the ratio: "
+                         "--patch-mu2 = patch_mu * wheel_mu2 / 1.0 (ground mu 1.0)")
+    ap.add_argument("--wheel-mu2", type=float, default=None,
+                    help="tyre lateral friction (Gazebo mu2; scout_mini.launch.py wheel_mu2). Unset = "
+                         "0.45, the plant of every run before 2026-10-12. The sim slides sideways ~10x "
+                         "more than the real robot (k -0.33 vs -0.03 s), hence the calibration sweep")
     ap.add_argument("--goal-tries", type=int, default=3,
                     help="republish attempts if the goal is never taken "
                          "(only while nothing has reacted -- see "
