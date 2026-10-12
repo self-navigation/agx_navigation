@@ -1,0 +1,52 @@
+
+===== 2026-10-11_job253_rtab-test
+Q0   crosses sub-knee:  41/126 hit | none:   0/  0 hit | pre-contact surface: SUB-KNEE slippery 17, ground 12, SUB-KNEE linoleum 6, SUB-KNEE icy 4, SUB-KNEE wet_tile 2
+QR   crosses sub-knee:  56/125 hit | none:   0/  1 hit | pre-contact surface: ground 25, SUB-KNEE slippery 17, SUB-KNEE linoleum 6, SUB-KNEE icy 6, SUB-KNEE wet_tile 2
+RQ   crosses sub-knee:  49/126 hit | none:   0/  0 hit | pre-contact surface: ground 22, SUB-KNEE slippery 18, SUB-KNEE icy 4, SUB-KNEE linoleum 4, SUB-KNEE wet_tile 1
+RR   crosses sub-knee:  62/126 hit | none:   0/  0 hit | pre-contact surface: ground 32, SUB-KNEE slippery 19, SUB-KNEE icy 5, SUB-KNEE linoleum 4, SUB-KNEE wet_tile 2
+T    crosses sub-knee:  31/126 hit | none:   0/  0 hit | pre-contact surface: SUB-KNEE slippery 13, SUB-KNEE icy 9, SUB-KNEE linoleum 4, ground 3, SUB-KNEE wet_tile 2
+TR   crosses sub-knee:  58/126 hit | none:   0/  0 hit | pre-contact surface: ground 28, SUB-KNEE slippery 19, SUB-KNEE linoleum 5, SUB-KNEE icy 4, SUB-KNEE wet_tile 2
+per profile crossed (all cells): runs, contact runs, rate
+  icy            min mu 0.05   252    89  0.35
+  directional_x  min mu 0.15    24    10  0.42
+  slippery       min mu 0.20   251   129  0.51
+  wet_tile       min mu 0.30   252    79  0.31
+  linoleum       min mu 0.45   426   152  0.36
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 126 | ground: 12 vs 25, 15/2 p 0.0023 | patch: 29 vs 31, 8/6 p 0.79
+  RQ vs RR n 126 | ground: 22 vs 32, 11/1 p 0.0063 | patch: 27 vs 30, 8/5 p 0.58
+  T vs TR n 126 | ground: 3 vs 28, 25/0 p 6e-08 | patch: 28 vs 30, 8/6 p 0.79
+
+===== 2026-10-12_job254_doorleaf
+Q0   crosses sub-knee:  34/173 hit | none:   0/  6 hit | pre-contact surface: SUB-KNEE slippery 15, SUB-KNEE linoleum 9, SUB-KNEE icy 5, ground 5
+QR   crosses sub-knee:  27/177 hit | none:   0/  3 hit | pre-contact surface: SUB-KNEE slippery 14, SUB-KNEE linoleum 8, SUB-KNEE icy 2, ground 2, SUB-KNEE wet_tile 1
+RQ   crosses sub-knee:  32/175 hit | none:   0/  4 hit | pre-contact surface: SUB-KNEE slippery 13, ground 9, SUB-KNEE icy 5, SUB-KNEE linoleum 4, SUB-KNEE wet_tile 1
+RR   crosses sub-knee:  38/177 hit | none:   0/  3 hit | pre-contact surface: SUB-KNEE slippery 15, ground 9, SUB-KNEE linoleum 8, SUB-KNEE icy 6
+T    crosses sub-knee:  30/176 hit | none:   0/  4 hit | pre-contact surface: SUB-KNEE slippery 15, SUB-KNEE linoleum 7, ground 5, SUB-KNEE icy 3
+TR   crosses sub-knee:  31/172 hit | none:   0/  7 hit | pre-contact surface: SUB-KNEE slippery 14, SUB-KNEE icy 7, ground 5, SUB-KNEE linoleum 4, SUB-KNEE wet_tile 1
+per profile crossed (all cells): runs, contact runs, rate
+  icy            min mu 0.05   346    55  0.16
+  directional_x  min mu 0.15    35    11  0.31
+  slippery       min mu 0.20   350   100  0.29
+  wet_tile       min mu 0.30   354    37  0.10
+  linoleum       min mu 0.45   644    89  0.14
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 179 | ground: 5 vs 2, 0/3 p 0.25 | patch: 29 vs 25, 5/9 p 0.42
+  RQ vs RR n 179 | ground: 9 vs 9, 5/5 p 1 | patch: 23 vs 29, 11/5 p 0.21
+  T vs TR n 179 | ground: 5 vs 5, 1/1 p 1 | patch: 25 vs 26, 8/7 p 1
+
+===== 2026-10-11_job252_rtab-lagfix-dev
+Q0   crosses sub-knee:  44/123 hit | none:   0/  0 hit | pre-contact surface: SUB-KNEE slippery 20, ground 10, SUB-KNEE icy 6, SUB-KNEE linoleum 4, SUB-KNEE wet_tile 4
+QR   crosses sub-knee:  62/122 hit | none:   0/  0 hit | pre-contact surface: ground 22, SUB-KNEE slippery 19, SUB-KNEE icy 10, SUB-KNEE wet_tile 7, SUB-KNEE linoleum 4
+RQ   crosses sub-knee:  55/123 hit | none:   0/  0 hit | pre-contact surface: ground 21, SUB-KNEE slippery 21, SUB-KNEE wet_tile 6, SUB-KNEE icy 5, SUB-KNEE linoleum 2
+RR   crosses sub-knee:  70/123 hit | none:   0/  0 hit | pre-contact surface: ground 33, SUB-KNEE slippery 17, SUB-KNEE icy 11, SUB-KNEE wet_tile 8, SUB-KNEE linoleum 1
+T    crosses sub-knee:  43/123 hit | none:   0/  0 hit | pre-contact surface: SUB-KNEE slippery 17, ground 9, SUB-KNEE icy 8, SUB-KNEE wet_tile 7, SUB-KNEE linoleum 2
+per profile crossed (all cells): runs, contact runs, rate
+  icy            min mu 0.05   204    83  0.41
+  directional_x  min mu 0.15    15     8  0.53
+  slippery       min mu 0.20   204   111  0.54
+  wet_tile       min mu 0.30   202    76  0.38
+  linoleum       min mu 0.45   356   151  0.42
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 122 | ground: 10 vs 22, 12/0 p 0.00049 | patch: 33 vs 40, 9/2 p 0.065
+  RQ vs RR n 123 | ground: 21 vs 33, 13/1 p 0.0018 | patch: 34 vs 37, 11/8 p 0.65

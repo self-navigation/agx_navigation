@@ -1,0 +1,5 @@
+# Job 255: job 253's held-out plans and patch LAYOUTS, every patch at mu 0.5 (lowest friction that still steers).
+Q0 --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+QR --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5
+T  --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+TR --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5
