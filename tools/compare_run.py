@@ -1570,9 +1570,12 @@ def main() -> int:
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--no-terrain", action="store_true",
                     help="skip along-path patches (flat-ground debugging)")
-    ap.add_argument("--patch-mu", type=float, default=None,
-                    help="same patch layout, every patch an isotropic mu=X surface "
-                         "(tools/spawn_patches.py --patch-mu; 0.5 = lowest that steers)")
+    ap.add_argument("--patch-mu", type=lambda v: None if v == "stock" else float(v), default=0.5,
+                    help="every along-path patch is an isotropic mu=X surface, same layout "
+                         "(tools/spawn_patches.py --patch-mu). DEFAULT 0.5 (~wet pavement), the lowest "
+                         "swept value that still steers -- the default evaluation plant since 2026-10-12 "
+                         "(user). 'stock' = the stock profiles, all at or below the wheel's mu2=0.45 "
+                         "steering knee: the no-steer stress case")
     ap.add_argument("--goal-tries", type=int, default=3,
                     help="republish attempts if the goal is never taken "
                          "(only while nothing has reacted -- see "
