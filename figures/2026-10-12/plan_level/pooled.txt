@@ -1,0 +1,11 @@
+TR(255)+TR(259) vs T(255)+T(259)  plans 83 | contact runs 80 vs 14 | plans with any contact 36 vs 11 | B-better/A-better plans 31/2 sign p 1.3e-07 | Wilcoxon p 4.9e-07
+QR(255)+QR(259) vs Q0(255)+Q0(259)  plans 83 | contact runs 79 vs 41 | plans with any contact 40 vs 24 | B-better/A-better plans 27/6 sign p 0.00032 | Wilcoxon p 2.7e-05
+RR(256)+RR(259) vs RQ(256)+RQ(259)  plans 83 | contact runs 95 vs 62 | plans with any contact 41 vs 31 | B-better/A-better plans 20/4 sign p 0.0015 | Wilcoxon p 0.00011
+Q0(255)+Q0(259) vs PQ(257)+PQ(259)  plans 83 | contact runs 41 vs 16 | plans with any contact 24 vs 13 | B-better/A-better plans 20/4 sign p 0.0015 | Wilcoxon p 0.0041
+RQ(256)+RQ(259) vs PR(257)+PR(259)  plans 83 | contact runs 62 vs 31 | plans with any contact 31 vs 16 | B-better/A-better plans 19/3 sign p 0.00086 | Wilcoxon p 0.0004
+T(255)+T(259) vs PT(257)+PT(259)  plans 83 | contact runs 14 vs 13 | plans with any contact 11 vs 9 | B-better/A-better plans 5/5 sign p 1 | Wilcoxon p 0.72
+TR(255)+TR(259) vs FT(257)+FT(259)  plans 83 | contact runs 80 vs 13 | plans with any contact 36 vs 11 | B-better/A-better plans 35/2 sign p 1e-08 | Wilcoxon p 3e-07
+QR(255)+QR(259) vs FQ(257)+FQ(259)  plans 83 | contact runs 79 vs 12 | plans with any contact 40 vs 12 | B-better/A-better plans 38/2 sign p 1.5e-09 | Wilcoxon p 7.6e-08
+RR(256)+RR(259) vs FR(257)+FR(259)  plans 83 | contact runs 95 vs 20 | plans with any contact 41 vs 14 | B-better/A-better plans 37/1 sign p 2.8e-10 | Wilcoxon p 3.7e-08
+PQ(257)+PQ(259) vs FQ(257)+FQ(259)  plans 83 | contact runs 16 vs 12 | plans with any contact 13 vs 12 | B-better/A-better plans 8/7 sign p 1 | Wilcoxon p 0.35
+PR(257)+PR(259) vs FR(257)+FR(259)  plans 83 | contact runs 31 vs 20 | plans with any contact 16 vs 14 | B-better/A-better plans 12/4 sign p 0.077 | Wilcoxon p 0.025

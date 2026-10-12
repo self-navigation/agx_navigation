@@ -1,0 +1,5 @@
+TR(259) vs T(259)  plans 41 | contact runs 28 vs 7 | plans with any contact 16 vs 5 | B-better/A-better plans 13/1 sign p 0.0018 | Wilcoxon p 0.0013
+QR(259) vs Q0(259)  plans 41 | contact runs 29 vs 11 | plans with any contact 18 vs 8 | B-better/A-better plans 14/2 sign p 0.0042 | Wilcoxon p 0.0023
+RR(259) vs RQ(259)  plans 41 | contact runs 38 vs 25 | plans with any contact 20 vs 14 | B-better/A-better plans 9/1 sign p 0.021 | Wilcoxon p 0.01
+Q0(259) vs PQ(259)  plans 41 | contact runs 11 vs 6 | plans with any contact 8 vs 5 | B-better/A-better plans 7/3 sign p 0.34 | Wilcoxon p 0.27
+RQ(259) vs PR(259)  plans 41 | contact runs 25 vs 11 | plans with any contact 14 vs 6 | B-better/A-better plans 8/0 sign p 0.0078 | Wilcoxon p 0.0083
