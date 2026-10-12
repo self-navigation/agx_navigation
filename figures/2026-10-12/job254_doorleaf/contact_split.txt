@@ -1,0 +1,105 @@
+cell  contact_runs  leaf_only  wall_only  both
+Q0              34          6         26     2
+QR              27          7         18     2
+RQ              32          7         22     3
+RR              38          8         28     2
+T               30          4         23     3
+TR              31          5         23     3
+
+plans with any contact: plan  min_centre_to_leaf  hits per cell (of runs)
+f6_corridor_0016_L1       0.31  Q0:3/3  QR:3/3  RQ:3/3  RR:3/3  T:2/3  TR:3/3
+f6_corridor_0016_L0       0.46  Q0:2/3  QR:2/3  RQ:2/3  RR:2/3  T:1/3  TR:2/3
+f6_corridor_0332_L2       0.54  Q0:1/3  QR:1/3  RQ:1/3  RR:3/3  T:1/3  TR:0/3
+f6_corridor_0332_L1       0.60  Q0:0/3  QR:0/3  RQ:2/3  RR:1/3  T:0/3  TR:0/3
+f6_corridor_0382_L1       0.67  Q0:3/3  QR:3/3  RQ:3/3  RR:3/3  T:3/3  TR:3/3
+f6_corridor_0451_L2       0.67  Q0:1/3  QR:2/3  RQ:3/3  RR:2/3  T:1/3  TR:3/3
+f6_corridor_0168_L2       0.71  Q0:1/3  QR:1/3  RQ:2/3  RR:1/3  T:2/3  TR:2/3
+f6_corridor_0443_L2       0.72  Q0:1/3  QR:1/3  RQ:1/3  RR:1/3  T:1/3  TR:1/3
+f6_corridor_0500_L1       0.73  Q0:2/3  QR:1/3  RQ:0/3  RR:1/3  T:2/3  TR:1/3
+f6_corridor_0016_L2       0.73  Q0:0/3  QR:1/3  RQ:1/3  RR:0/3  T:1/3  TR:1/3
+f6_long_0582_L2           0.74  Q0:1/3  QR:1/3  RQ:1/3  RR:1/3  T:1/3  TR:1/3
+f6_corridor_0451_L0       0.74  Q0:3/3  QR:1/3  RQ:1/3  RR:3/3  T:2/3  TR:2/3
+f6_corridor_0443_L0       0.75  Q0:1/3  QR:1/3  RQ:0/3  RR:1/3  T:1/3  TR:1/3
+f6_corridor_0168_L1       0.76  Q0:1/3  QR:1/3  RQ:2/3  RR:2/3  T:3/3  TR:2/3
+f6_corridor_0257_L1       0.77  Q0:1/3  QR:1/3  RQ:1/3  RR:2/3  T:1/3  TR:1/3
+f6_long_0582_L1           0.77  Q0:1/3  QR:1/3  RQ:1/3  RR:1/3  T:1/3  TR:1/3
+f6_corridor_0578_L1       0.79  Q0:1/3  QR:0/3  RQ:0/2  RR:0/3  T:1/3  TR:1/3
+f6_corridor_0443_L1       0.79  Q0:0/3  QR:0/3  RQ:0/3  RR:1/3  T:0/3  TR:0/3
+f6_corridor_0257_L2       0.79  Q0:1/3  QR:1/3  RQ:2/3  RR:2/3  T:1/3  TR:1/3
+f6_long_0582_L0           0.80  Q0:1/3  QR:0/3  RQ:0/3  RR:1/3  T:1/3  TR:1/3
+f6_corridor_0578_L2       0.81  Q0:1/3  QR:0/3  RQ:0/3  RR:0/3  T:0/3  TR:0/3
+f6_corridor_0569_L2       0.81  Q0:1/3  QR:1/3  RQ:1/3  RR:3/3  T:1/3  TR:1/3
+f6_corridor_0290_L2       0.82  Q0:1/3  QR:0/3  RQ:1/3  RR:0/3  T:1/3  TR:0/3
+f6_corridor_0451_L1       0.83  Q0:3/3  QR:1/3  RQ:1/3  RR:2/3  T:2/3  TR:2/3
+f6_medium_0342_L0         0.84  Q0:0/3  QR:1/3  RQ:0/3  RR:0/3  T:0/3  TR:0/3
+f6_medium_0102_L2         1.17  Q0:0/3  QR:0/3  RQ:0/3  RR:1/3  T:0/3  TR:0/3
+f6_medium_0102_L0         1.20  Q0:1/3  QR:0/3  RQ:0/3  RR:0/3  T:0/3  TR:0/3
+f6_corridor_0290_L0       1.32  Q0:1/3  QR:0/3  RQ:1/3  RR:0/3  T:0/3  TR:0/3
+f6_corridor_0168_L0       1.35  Q0:1/3  QR:2/3  RQ:2/3  RR:1/3  T:0/3  TR:0/3
+f6_medium_0102_L1         1.53  Q0:0/3  QR:0/3  RQ:0/3  RR:0/3  T:0/3  TR:1/3
+
+plan hull clearance [m]: plan  leaf-plan on leaf map | base plan on floor_6 | contact runs (all cells)
+f6_corridor_0009_L0       0.180 |  0.200 | 0/18
+f6_corridor_0009_L1       0.200 |  0.200 | 0/18
+f6_corridor_0009_L2       0.180 |  0.200 | 0/18
+f6_corridor_0016_L0       0.100 |  0.112 | 11/18
+f6_corridor_0016_L1      -0.050 |  0.112 | 17/18
+f6_corridor_0016_L2       0.112 |  0.112 | 4/18
+f6_corridor_0018_L0       0.500 |  0.832 | 0/18
+f6_corridor_0018_L1       0.832 |  0.832 | 0/18
+f6_corridor_0018_L2       0.502 |  0.832 | 0/18
+f6_corridor_0069_L0       0.461 |  0.500 | 0/18
+f6_corridor_0069_L1       0.500 |  0.500 | 0/18
+f6_corridor_0069_L2       0.381 |  0.500 | 0/18
+f6_corridor_0160_L0       0.180 |  0.180 | 0/18
+f6_corridor_0160_L2       0.180 |  0.180 | 0/18
+f6_corridor_0168_L0       0.250 |  0.250 | 6/18
+f6_corridor_0168_L1       0.250 |  0.250 | 11/18
+f6_corridor_0168_L2       0.250 |  0.250 | 9/18
+f6_corridor_0198_L0       0.250 |  0.250 | 0/18
+f6_corridor_0198_L1       0.250 |  0.250 | 0/18
+f6_corridor_0198_L2       0.250 |  0.250 | 0/18
+f6_corridor_0257_L1       0.300 |  0.292 | 7/18
+f6_corridor_0257_L2       0.300 |  0.292 | 8/18
+f6_corridor_0290_L0       0.250 |  0.250 | 2/18
+f6_corridor_0290_L2       0.250 |  0.250 | 3/18
+f6_corridor_0332_L0       0.250 |  0.250 | 0/18
+f6_corridor_0332_L1       0.141 |  0.250 | 3/18
+f6_corridor_0332_L2       0.071 |  0.250 | 7/18
+f6_corridor_0382_L0       0.206 |  0.206 | 0/18
+f6_corridor_0382_L1       0.158 |  0.206 | 18/18
+f6_corridor_0382_L2       0.206 |  0.206 | 0/18
+f6_corridor_0384_L0       0.500 |  0.696 | 0/18
+f6_corridor_0384_L1       0.500 |  0.696 | 0/18
+f6_corridor_0384_L2       0.453 |  0.696 | 0/18
+f6_corridor_0387_L0       0.500 |  1.050 | 0/18
+f6_corridor_0387_L1       0.550 |  1.050 | 0/17
+f6_corridor_0387_L2       1.050 |  1.050 | 0/17
+f6_corridor_0443_L0       0.400 |  0.400 | 5/18
+f6_corridor_0443_L1       0.400 |  0.400 | 1/18
+f6_corridor_0443_L2       0.391 |  0.400 | 6/18
+f6_corridor_0451_L0       0.304 |  0.304 | 12/18
+f6_corridor_0451_L1       0.304 |  0.304 | 11/18
+f6_corridor_0451_L2       0.300 |  0.304 | 12/18
+f6_corridor_0500_L1       0.316 |  0.300 | 7/18
+f6_corridor_0569_L2       0.200 |  0.200 | 8/18
+f6_corridor_0578_L0       0.200 |  0.150 | 0/18
+f6_corridor_0578_L1       0.200 |  0.150 | 3/17
+f6_corridor_0578_L2       0.150 |  0.150 | 1/18
+f6_long_0582_L0           0.224 |  0.206 | 4/18
+f6_long_0582_L1           0.206 |  0.206 | 6/18
+f6_long_0582_L2           0.224 |  0.206 | 6/18
+f6_medium_0102_L0         0.200 |  0.200 | 1/18
+f6_medium_0102_L1         0.200 |  0.200 | 1/18
+f6_medium_0102_L2         0.200 |  0.200 | 1/18
+f6_medium_0342_L0         0.150 |  0.150 | 1/18
+f6_medium_0421_L0         0.292 |  0.492 | 0/18
+f6_medium_0421_L1         0.492 |  0.492 | 0/18
+f6_medium_0421_L2         0.381 |  0.492 | 0/18
+f6_short_0481_L0          0.300 |  0.300 | 0/18
+f6_short_0481_L1          0.300 |  0.300 | 0/18
+f6_short_0481_L2          0.300 |  0.300 | 0/18
+leaf-plan hull clearance [-1.00,0.10):  2 plans, contact 24/36
+leaf-plan hull clearance [0.10,0.15):  3 plans, contact 18/54
+leaf-plan hull clearance [0.15,0.25): 19 plans, contact 50/341
+leaf-plan hull clearance [0.25,9.00): 36 plans, contact 100/646
