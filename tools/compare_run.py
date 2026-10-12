@@ -960,6 +960,7 @@ def bring_up_stack(args, arm: str, spawn, log_path: str, map_yaml: str = ""):
         "--corrector", args.corrector,
         *(["--wheel-bias", args.wheel_bias] if args.wheel_bias else []),
         *(["--wheel-mu2", str(args.wheel_mu2)] if args.wheel_mu2 is not None else []),
+        *(["--wheel-slip2", str(args.wheel_slip2)] if args.wheel_slip2 is not None else []),
         *(["--phantom-walls"] if args.phantom_walls else []),
         *(["--map-yaml", map_yaml] if map_yaml else []),
         *(["--supervisor"] if args.supervisor else []),
@@ -1151,6 +1152,7 @@ def run_one(args, plan_path: str) -> dict:
         "patch_mu": args.patch_mu,
         "patch_mu2": args.patch_mu2,
         "wheel_mu2": args.wheel_mu2 if args.wheel_mu2 is not None else 0.45,
+        "wheel_slip2": args.wheel_slip2 if args.wheel_slip2 is not None else 0.01,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm not in VEC_PMP_ARMS else None,
         "floor": args.floor,
@@ -1590,6 +1592,10 @@ def main() -> int:
                     help="tyre lateral friction (Gazebo mu2; scout_mini.launch.py wheel_mu2). Unset = "
                          "0.45, the plant of every run before 2026-10-12. The sim slides sideways ~10x "
                          "more than the real robot (k -0.33 vs -0.03 s), hence the calibration sweep")
+    ap.add_argument("--wheel-slip2", type=float, default=None,
+                    help="tyre lateral force-dependent slip (Gazebo slip2; scout_mini.launch.py wheel_slip2). "
+                         "Unset = 0.01, the plant of every run before 2026-10-12. On plain ground this creep, "
+                         "not mu2, sets the sideways slide k (job 261)")
     ap.add_argument("--goal-tries", type=int, default=3,
                     help="republish attempts if the goal is never taken "
                          "(only while nothing has reacted -- see "
