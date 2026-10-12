@@ -1,0 +1,53 @@
+amcl: 715 cells with >=5 runs | |bias| median 0.078 p90 0.160 max 0.424 m | agreement median 0.79 | cells with |bias|>0.10 m AND agreement>0.7 AND >=3 distinct plans: 48
+    (-11.75, -2.75)  bias (+0.135,-0.340) |b| 0.366  agree 0.83  runs 13 plans 3
+    (  4.75, -3.75)  bias (+0.309,-0.146) |b| 0.342  agree 0.79  runs 6 plans 3
+    ( -4.25, -3.75)  bias (+0.293,-0.094) |b| 0.307  agree 0.85  runs 5 plans 4
+    ( -2.75, -2.75)  bias (+0.210,-0.198) |b| 0.289  agree 0.97  runs 68 plans 6
+    (  5.75, -1.75)  bias (+0.232,-0.100) |b| 0.253  agree 0.80  runs 15 plans 3
+    ( -3.25, -2.75)  bias (+0.221,-0.118) |b| 0.251  agree 0.95  runs 79 plans 7
+    ( -3.25, -3.25)  bias (+0.237,-0.047) |b| 0.241  agree 0.95  runs 24 plans 5
+    (  6.25,  1.25)  bias (+0.114,-0.207) |b| 0.237  agree 0.92  runs 16 plans 3
+    ( -2.25, -2.75)  bias (+0.139,-0.170) |b| 0.219  agree 0.95  runs 68 plans 6
+    ( -4.75, -2.75)  bias (-0.173,-0.126) |b| 0.214  agree 0.88  runs 31 plans 4
+    ( 13.25, -0.75)  bias (-0.007,+0.180) |b| 0.180  agree 0.79  runs 15 plans 4
+    ( 23.75, -1.25)  bias (-0.171,-0.002) |b| 0.171  agree 0.88  runs 25 plans 3
+rtab: 739 cells with >=5 runs | |bias| median 0.033 p90 0.109 max 0.326 m | agreement median 0.76 | cells with |bias|>0.10 m AND agreement>0.7 AND >=3 distinct plans: 9
+    ( 11.25, -2.25)  bias (-0.026,+0.143) |b| 0.145  agree 0.86  runs 25 plans 3
+    ( -4.25, -0.75)  bias (+0.121,-0.053) |b| 0.132  agree 0.84  runs 12 plans 4
+    ( 10.25, -2.75)  bias (+0.031,+0.122) |b| 0.126  agree 0.85  runs 14 plans 3
+    ( -4.25, -3.75)  bias (+0.101,-0.042) |b| 0.109  agree 0.80  runs 9 plans 5
+    (  9.75, -2.75)  bias (+0.006,+0.104) |b| 0.104  agree 0.78  runs 19 plans 3
+    ( -8.25,  1.75)  bias (-0.054,-0.089) |b| 0.104  agree 0.77  runs 7 plans 3
+    ( 17.25, -2.25)  bias (-0.092,+0.045) |b| 0.102  agree 0.86  runs 24 plans 3
+    ( 16.75, -2.25)  bias (-0.085,+0.054) |b| 0.101  agree 0.89  runs 21 plans 3
+    (-17.75, -0.75)  bias (+0.096,+0.031) |b| 0.100  agree 0.85  runs 35 plans 3
+
+contact sites (mu 0.5 jobs 255/256; site = 1.0 m cell of the first-contact truth position):
+
+TVLQG (T, Q0, RQ): hits/passes per site; |b| = localizer bias at the site centre
+     site centre      truth      amcl      rtab  amcl|b| rtab|b|
+(  -3.5,  -3.5)     1/30     11/30     11/30    0.134   0.021
+(   5.5,  -3.5)     0/24      4/24      2/24    0.176   0.038
+(  -8.5,  -0.5)     0/19      1/19      4/19    0.154   0.075
+(  -3.5,  -4.5)     0/30      2/30      4/30    0.127   0.025
+(  -4.5,  -0.5)     0/3       3/4       3/3     0.225   0.167
+( -18.5,  -2.5)     0/3       2/3       3/3     0.216   0.115
+( -19.5,  12.5)     0/3       3/3       1/3     0.208   0.031
+( -15.5,  -2.5)     0/12      1/12      0/14    0.245   0.116
+(  18.5,  -0.5)     0/3       1/3       3/3     0.078   0.141
+( -11.5,  -2.5)     0/21      1/21      0/21    0.089   0.054
+(   5.5,  -4.5)     0/21      0/21      3/21    0.090   0.027
+
+TVLQR (TR, QR, RR): hits/passes per site; |b| = localizer bias at the site centre
+     site centre      truth      amcl      rtab  amcl|b| rtab|b|
+(  -3.5,  -3.5)    14/30      8/29      9/30    0.134   0.021
+(   5.5,  -3.5)    13/23     15/24     12/24    0.176   0.038
+(  -8.5,  -0.5)     8/17      7/19      6/17    0.154   0.075
+(  -3.5,  -4.5)     3/30      1/29      8/30    0.127   0.025
+(  -4.5,  -0.5)     3/3       3/4       3/3     0.225   0.167
+( -18.5,  -2.5)     3/3       2/2       3/3     0.216   0.115
+( -19.5,  12.5)     2/3       3/3       1/3     0.208   0.031
+( -15.5,  -2.5)     3/13      2/11      3/15    0.245   0.116
+(  18.5,  -0.5)     0/3       1/3       3/3     0.078   0.141
+( -11.5,  -2.5)     0/21      3/22      2/21    0.089   0.054
+(   5.5,  -4.5)     0/20      0/21      3/21    0.090   0.027
