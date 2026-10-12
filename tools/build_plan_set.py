@@ -194,13 +194,23 @@ def _solve(job):
     gc, sc = g(c["goal"]), g(c["start"])
     rec = dict(id=c["id"], floor=c["floor"], band=c["band"])
     try:
-        res = compute_field(sub, gc[0], gc[1], r, cox, coy, VectorFieldConfig(**FIELD),
+        # FIELD_PARAMS="speed_decay_rate=3.0": field overrides for a variant set (recorded as field_params).
+        fld = dict(FIELD)
+        for kv in filter(None, os.environ.get("FIELD_PARAMS", "").split(",")):
+            k, v = kv.split("=")
+            fld[k] = type(FIELD.get(k, 0.0))(v)
+        res = compute_field(sub, gc[0], gc[1], r, cox, coy, VectorFieldConfig(**fld),
                             sc[0], sc[1], 65, allow_unknown=True)
         if res is None or res[0] is None:
             return dict(rec, status="no-field", t=round(time.time() - t0, 1))
         cfg = PlannerConfig(mode="offline")
         for k, v in STACK_PLANNER_PARAMS.items():
             setattr(cfg, k, v)
+        # PLAN_PARAMS="w_fp=100,fp_margin=0.25": planner overrides for a variant set (e.g. the
+        # footprint barrier, off in the stack); recorded in the npz as plan_params.
+        for kv in filter(None, os.environ.get("PLAN_PARAMS", "").split(",")):
+            k, v = kv.split("=")
+            setattr(cfg, k, type(getattr(cfg, k))(v))
         solver = PMPShootingSolver(cfg, field_result_to_grid(res[0], field_eps=cfg.field_eps,
                                                              wall_sigma=cfg.fp_smooth_sigma))
         solver.reset_warm_start()
@@ -226,7 +236,8 @@ def _solve(job):
              goal_pose=np.array(c["goal"]), floor=c["floor"], band=c["band"],
              map_yaml=c.get("map_yaml") or MAPS[c["floor"]][0], shape="",
              leaves=json.dumps(c.get("leaves", [])), base_plan=c.get("base_plan", ""), screen_blocked=False, screen_detour=0.0,
-             screen_score=0.0)
+             screen_score=0.0, plan_params=os.environ.get("PLAN_PARAMS", ""),
+             field_params=os.environ.get("FIELD_PARAMS", ""))
     return rec
 
 
@@ -235,7 +246,7 @@ def cmd_solve(a):
     if a.only:
         cands = [c for c in cands if any(c["id"].startswith(p) for p in a.only.split(","))]
     # Interleave floors/bands so a partial run is still a balanced sample.
-    cands.sort(key=lambda c: int(c["id"].rsplit("_", 1)[1]))
+    cands.sort(key=lambda c: int(next(t for t in reversed(c["id"].split("_")) if t.isdigit())))
     if a.limit:
         cands = cands[:a.limit]
     log = open(os.path.join(a.out, "solve_log.jsonl"), "a")

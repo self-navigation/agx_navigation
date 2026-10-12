@@ -1,0 +1,45 @@
+plan               base hull/dur |               t-v3-dr3 |               t-v3-dr5
+f6_corridor_0018    0.83  18.0s |  0.83  18.0s sh0.00 |  0.83  18.0s sh0.00 |
+f6_corridor_0035    0.40  30.6s |                 FAILED |                 FAILED |
+f6_corridor_0076    0.38  30.0s |  0.45  30.0s sh0.07 |  0.46  30.0s sh0.09 |
+f6_corridor_0168    0.25  50.5s |                 FAILED |  0.25  51.5s sh0.19 |
+f6_corridor_0257    0.29  38.0s |  0.30  38.0s sh0.09 |                 FAILED |
+f6_corridor_0332    0.25  59.0s |  0.25  59.5s sh0.09 |                 FAILED |
+f6_corridor_0382    0.21  47.7s |  0.22  47.5s sh0.05 |  0.25  47.3s sh0.08 |
+f6_corridor_0384    0.70  17.0s |  0.70  17.0s sh0.00 |  0.70  17.0s sh0.00 |
+f6_corridor_0500    0.30  37.5s |  0.30  37.5s sh0.04 |  0.30  37.5s sh0.05 |
+f6_corridor_0507    0.35  33.5s |  0.42  34.0s sh0.08 |  0.46  34.0s sh0.11 |
+f6_corridor_0569    0.20  55.5s |                 FAILED |  0.20  55.5s sh0.16 |
+f6_long_0037        0.14  52.0s |  0.15  50.9s sh0.12 |  0.15  49.9s sh0.17 |
+f6_long_0038        0.10  58.5s |  0.10  58.0s sh0.13 |  0.10  55.0s sh0.23 |
+f6_long_0048        0.15  52.0s |                 FAILED |                 FAILED |
+f6_long_0089        0.14  45.0s |  0.18  44.5s sh0.10 |  0.20  43.5s sh0.14 |
+f6_long_0111        0.11  48.5s |  0.15  48.0s sh0.13 |  0.15  46.5s sh0.19 |
+f6_long_0125        0.14  43.5s |  0.15  43.5s sh0.11 |  0.15  43.5s sh0.17 |
+f6_long_0140        0.10  57.5s |                 FAILED |  0.15  57.5s sh0.15 |
+f6_long_0263        0.15  50.0s |  0.15  50.0s sh0.13 |  0.15  50.0s sh0.20 |
+f6_long_0548        0.14  57.5s |  0.15  57.5s sh0.12 |                 FAILED |
+f6_medium_0102      0.20  18.5s |                 FAILED |  0.20  18.5s sh0.10 |
+f6_medium_0260      0.14  34.5s |  0.15  34.3s sh0.10 |                 FAILED |
+f6_medium_0342      0.15  29.5s |  0.10  29.5s sh0.06 |  0.10  29.5s sh0.08 |
+f6_medium_0376      0.11  46.5s |                 FAILED |  0.15  48.0s sh0.22 |  <- jamb plan
+f6_medium_0422      0.15  29.9s |  0.15  30.0s sh0.08 |  0.15  30.0s sh0.11 |
+f6_medium_0441      0.15  28.5s |  0.15  28.5s sh0.07 |  0.15  28.0s sh0.11 |
+f6_medium_0459      0.15  30.4s |  0.15  30.5s sh0.13 |  0.15  30.3s sh0.19 |
+f6_medium_0573      0.15  32.5s |  0.15  32.5s sh0.12 |  0.15  31.5s sh0.17 |
+f6_medium_0575      0.14  36.4s |  0.15  35.8s sh0.14 |  0.15  35.9s sh0.20 |  <- jamb plan
+f6_medium_0587      0.14  31.0s |  0.15  31.5s sh0.12 |  0.15  32.2s sh0.18 |  <- jamb plan
+f6_short_0012       0.14  37.5s |  0.15  37.5s sh0.13 |  0.15  37.0s sh0.19 |
+f6_short_0016       0.52  16.5s |  0.54  16.5s sh0.02 |  0.54  16.5s sh0.03 |
+f6_short_0034       0.30  16.0s |  0.30  16.0s sh0.04 |                 FAILED |
+f6_short_0068       0.15  25.5s |  0.15  25.5s sh0.13 |                 FAILED |  <- jamb plan
+f6_short_0115       0.15  16.5s |  0.15  16.5s sh0.09 |  0.15  16.5s sh0.12 |
+f6_short_0124       0.18  15.0s |  0.20  15.0s sh0.23 |                 FAILED |
+f6_short_0271       0.15  15.3s |  0.15  13.6s sh0.12 |  0.15  13.1s sh0.16 |
+f6_short_0315       0.15  12.5s |  0.15  12.0s sh0.02 |  0.15  12.0s sh0.03 |  <- jamb plan
+f6_short_0320       0.15  14.0s |  0.15  14.0s sh0.08 |  0.15  13.5s sh0.12 |
+f6_short_0405       1.08  10.0s |  1.08  10.0s sh0.00 |  1.08  10.0s sh0.00 |
+f6_short_0481       0.30  12.5s |  0.30  12.5s sh0.02 |  0.30  10.2s sh0.04 |
+f6_short_0582       0.15  19.5s |  0.15  19.5s sh0.07 |  0.15  19.5s sh0.11 |
+2026-10-12_nojob_plan-set-v3-dr3: solved 35/42; hull median 0.15 -> 0.15, min 0.10 -> 0.10; plans with hull < 0.20: 23 -> 22; duration x1.000 (max x1.02); path shift median 0.09 m; jamb plans hull 0.14->0.15, 0.14->0.15, 0.15->0.15, 0.15->0.15
+2026-10-12_nojob_plan-set-v3-dr5: solved 33/42; hull median 0.15 -> 0.15, min 0.10 -> 0.10; plans with hull < 0.20: 21 -> 20; duration x1.000 (max x1.04); path shift median 0.12 m; jamb plans hull 0.11->0.15, 0.14->0.15, 0.14->0.15, 0.15->0.15

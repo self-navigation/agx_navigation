@@ -1,0 +1,6 @@
+139 contact sites in job 255
+set        sites(solved)  median local clearance  sites < 0.20 m   per-site mean change vs base
+base         133          0.150 (base 0.150)     125 (base 125)      +0.000
+t-v3-dr3     113          0.150 (base 0.150)      97 (base 108)      +0.008
+t-v3-dr5     107          0.150 (base 0.150)      86 (base 102)      +0.014
+t-v3-fp100m25    63          0.150 (base 0.150)      56 (base 56)      +0.000
