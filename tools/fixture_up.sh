@@ -85,7 +85,7 @@ while [ $# -gt 0 ]; do
         --spawn)          SPAWN_X=$2; SPAWN_Y=$3; SPAWN_YAW=$4; shift 4 ;;
         --wheel-bias)     WHEEL_BIAS=$2; shift 2 ;;
         --wheel-mu2)      WHEEL_MU2=$2; shift 2 ;;
-        --wheel-slip2)    WHEEL_SLIP2=$2; shift 2 ;;
+        --wheel-slip-lat) WHEEL_SLIP_LAT=$2; shift 2 ;;
         --phantom-walls)  PHANTOM_WALLS=true; shift ;;
         --map-yaml)       MAP_YAML=$2; shift 2 ;;
         --no-ekf-wheel-yaw) EKF_WHEEL_YAW=false; shift ;;
@@ -119,7 +119,7 @@ EXTRA="spawn_x:=$SPAWN_X spawn_y:=$SPAWN_Y spawn_yaw:=$SPAWN_YAW frontier:=$FRON
 [ -n "${WHEEL_BIAS:-}" ] && EXTRA="$EXTRA wheel_bias:=$WHEEL_BIAS"
 # Sim tyre lateral friction (scout_mini.launch.py wheel_mu2; default 0.45 when unset).
 [ -n "${WHEEL_MU2:-}" ] && EXTRA="$EXTRA wheel_mu2:=$WHEEL_MU2"
-[ -n "${WHEEL_SLIP2:-}" ] && EXTRA="$EXTRA wheel_slip2:=$WHEEL_SLIP2"
+[ -n "${WHEEL_SLIP_LAT:-}" ] && EXTRA="$EXTRA wheel_slip_lat:=$WHEEL_SLIP_LAT"
 # Diagnostic (#34): walls the lidar sees but the robot drives through.
 [ -n "${PHANTOM_WALLS:-}" ] && EXTRA="$EXTRA phantom_walls:=true"
 # Per-plan map copy (tools/door_leaves.py): what /map serves instead of floor_N.yaml.

@@ -1,0 +1,9 @@
+# Job 263: tyre lateral slip compliance (gz WheelSlip plugin, --wheel-slip-lat) on plain ground, TVLQR + truth.
+# Pure Coulomb lateral friction locks the turn centre on an axle (k -0.35); compliance should pull it to the middle.
+L0 --arm ours-lib --localization truth --phantom-walls --no-terrain
+L1u --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.000001
+L02 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.02
+L05 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.05
+L10 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.1
+L20 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.2
+L50 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip-lat 0.5
