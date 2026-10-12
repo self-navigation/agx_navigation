@@ -144,6 +144,10 @@ def main() -> int:
                          "mu=mu2=X surface. Every stock profile is at or below the wheel's mu2=0.45 "
                          "steering knee, so stock patches cannot be steered "
                          "on; X=0.5 is the lowest swept value that still steers (chi 1.57 vs 1.36).")
+    ap.add_argument("--patch-mu2", type=float, default=None,
+                    help="with --patch-mu: the patches' lateral mu2 (default = --patch-mu, isotropic). For a "
+                         "grippier tyre keep the long:lat ratio of the tyre on plain ground, i.e. "
+                         "patch_mu * wheel_mu2 (compare_run.py --patch-mu2)")
     args = ap.parse_args()
 
     with np.load(args.plan) as f:
@@ -172,9 +176,11 @@ def main() -> int:
             if args.patch_mu is not None:
                 from rudn_ordjo_building.surface_patches import PhysicsProfile, build_patch_sdf
                 patch = dict(patch, name=name, stock_profile=patch["profile"],
-                             profile=f"mu{args.patch_mu:g}")
+                             profile=f"mu{args.patch_mu:g}" + (f"_mu2{args.patch_mu2:g}"
+                                                               if args.patch_mu2 is not None else ""))
+                mu2 = args.patch_mu if args.patch_mu2 is None else args.patch_mu2
                 sdf = build_patch_sdf(patch, PhysicsProfile(
-                    mu=args.patch_mu, mu2=args.patch_mu, slip1=0.0, slip2=0.0,
+                    mu=args.patch_mu, mu2=mu2, slip1=0.0, slip2=0.0,
                     color_rgba=(0.95, 0.60, 0.20, 0.75)), idx)
             if not sp.create_and_wait(patch, name, sdf=sdf):
                 # Do NOT re-issue (see module docstring) -- record and fail.

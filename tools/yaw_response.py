@@ -5,8 +5,9 @@ Holds the commands onto the ground-truth track's intervals and computes, per
 interval, omega_act from truth, omega_nom and v_cmd under the planner's
 nominal chi, and the body-frame lateral speed. Prints
 chi_eff = chi_nom * omega_nom / omega_act binned by |omega_nom| and by v_cmd
-(only where |omega_nom| > 0.1 rad/s) with the lateral speed per bin, and
-writes the table to --out as JSON.
+(only where |omega_nom| > 0.1 rad/s) with the lateral speed per bin, and fits
+the slide k in v_lat = k v omega + c0. Writes the table and k to --out as
+JSON.
 
     python3 tools/yaw_response.py <run dirs or track files> [--out f.json]
 """
@@ -92,6 +93,17 @@ def main():
         row(turn & (np.abs(Z["om_nom"]) >= lo) & (np.abs(Z["om_nom"]) < hi), lo, hi, "by_omega")
     for lo, hi in ((-1, 0.05), (0.05, 0.15), (0.15, 0.25), (0.25, 0.35), (0.35, 0.5), (0.5, 2)):
         row(turn & (Z["v_cmd"] >= lo) & (Z["v_cmd"] < hi), lo, hi, "by_v")
+    # Sideways slide k (v_lat = k * v * omega + c0, the TVLQRConfig.sideslip_k model), from truth,
+    # over moving intervals; same form as tools/real_sideslip.py for the real robot (2026-10-12).
+    mv = (np.abs(Z["v_lon"]) > 0.1) & np.isfinite(Z["v_lat"]) & (np.abs(Z["om_act"]) < 3)
+    A = np.c_[Z["v_lon"][mv] * Z["om_act"][mv], np.ones(mv.sum())]
+    coef, *_ = np.linalg.lstsq(A, Z["v_lat"][mv], rcond=None)
+    res = Z["v_lat"][mv] - A @ coef
+    se = float(np.sqrt(res.var() / max(1, mv.sum()) / max(1e-12, A[:, 0].var())))
+    chi_all = chi_eff[np.isfinite(chi_eff)]
+    out.update(k=float(coef[0]), k_se=se, k_n=int(mv.sum()), chi_eff_med=float(np.median(chi_all)))
+    print(f"sideslip k = {coef[0]:+.4f} s (se {se:.4f}, n {mv.sum()}; v_lat = k v omega + {coef[1]:+.4f}); "
+          f"chi_eff median {np.median(chi_all):.3f}")
     if a.out:
         json.dump(out, open(a.out, "w"), indent=1)
 

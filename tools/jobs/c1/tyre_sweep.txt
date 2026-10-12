@@ -1,0 +1,7 @@
+# Job 261: tyre calibration sweep. TVLQR (no slip model), truth, plain ground (no patches), wheel mu2 swept.
+# Fit k and chi per mu2 with tools/yaw_response.py; pick the mu2 nearest the real robot (k -0.03..-0.16, chi ~2.15).
+W45 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-mu2 0.45
+W60 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-mu2 0.6
+W70 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-mu2 0.7
+W80 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-mu2 0.8
+W90 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-mu2 0.9
