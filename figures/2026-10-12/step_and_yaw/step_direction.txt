@@ -1,0 +1,2 @@
+rtab: contacts with a jump in the last 1.0 s: 32; estimate jumped AWAY from the wall in 5, toward in 27, sign test p 0.00011; median d.n +3.4 cm
+amcl: contacts with a jump in the last 1.0 s: 17; estimate jumped AWAY from the wall in 4, toward in 13, sign test p 0.049; median d.n +1.0 cm
