@@ -1,0 +1,6 @@
+job 253 (stock patches) -> job 255 (same layouts, mu 0.5), paired by (plan, seed)
+cell  n   contact 253 -> 255  fixed/new p   | arrived 253 -> 255 | median final_err
+Q0   126   41 ->  30   19/8  p 0.052 | 106 -> 125 | 0.161 -> 0.084
+QR   126   56 ->  50   14/8  p 0.29 | 104 -> 123 | 0.167 -> 0.084
+T    126   31 ->   7   26/2  p 3e-06 | 110 -> 125 | 0.116 -> 0.067
+TR   126   58 ->  52   11/5  p 0.21 | 112 -> 121 | 0.104 -> 0.071
