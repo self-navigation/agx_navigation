@@ -102,12 +102,12 @@ class PatchSpawner:
             return True
         return self._spin_until(lambda: self.present(stale) is False, timeout_s)
 
-    def create_and_wait(self, patch: dict, name: str, timeout_s: float = 20.0) -> bool:
+    def create_and_wait(self, patch: dict, name: str, timeout_s: float = 20.0, sdf: str = "") -> bool:
         """Create ONE patch, once, and wait for it to appear. Never re-issue."""
         from agx_planning.rl_corrector.terrain import patch_sdf
 
         req = EntityFactory()
-        req.sdf = patch_sdf(patch, name)
+        req.sdf = sdf or patch_sdf(patch, name)
         req.name = name
         req.pose.position.x = float(patch.get("x", 0.0))
         req.pose.position.y = float(patch.get("y", 0.0))
@@ -139,6 +139,11 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--phantom", action="store_true", help="door leaves without collision (phantom walls)")
     ap.add_argument("--no-patches", action="store_true", help="door leaves only, no slip patches")
+    ap.add_argument("--patch-mu", type=float, default=None,
+                    help="same patch layout (same sampler, same seed), but every patch is an isotropic "
+                         "mu=mu2=X surface. Every stock profile is at or below the wheel's mu2=0.45 "
+                         "steering knee, so stock patches cannot be steered "
+                         "on; X=0.5 is the lowest swept value that still steers (chi 1.57 vs 1.36).")
     args = ap.parse_args()
 
     with np.load(args.plan) as f:
@@ -163,7 +168,15 @@ def main() -> int:
                    along_path_terrain_sampler(poses[:, :3])(np.random.default_rng(args.seed)))
         for idx, patch in enumerate(patches):
             name = patch.get("name") or f"rl_patch_{idx}"
-            if not sp.create_and_wait(patch, name):
+            sdf = ""
+            if args.patch_mu is not None:
+                from rudn_ordjo_building.surface_patches import PhysicsProfile, build_patch_sdf
+                patch = dict(patch, name=name, stock_profile=patch["profile"],
+                             profile=f"mu{args.patch_mu:g}")
+                sdf = build_patch_sdf(patch, PhysicsProfile(
+                    mu=args.patch_mu, mu2=args.patch_mu, slip1=0.0, slip2=0.0,
+                    color_rgba=(0.95, 0.60, 0.20, 0.75)), idx)
+            if not sp.create_and_wait(patch, name, sdf=sdf):
                 # Do NOT re-issue (see module docstring) -- record and fail.
                 out["error"] = f"patch {name} never appeared in pose/info"
                 out["patches"].append({"name": name, "profile": patch.get("profile"),

@@ -1089,7 +1089,8 @@ def spawn_patches(args, plan_path: str, patches: bool = True):
            os.path.join(HERE, "spawn_patches.py"),
            "--plan", plan_path, "--seed", str(args.seed), "--json",
            *(["--phantom"] if args.phantom_walls else []),
-           *([] if patches else ["--no-patches"])]
+           *([] if patches else ["--no-patches"]),
+           *(["--patch-mu", str(args.patch_mu)] if args.patch_mu is not None else [])]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=WORKSPACE)
     for line in reversed((proc.stdout or "").strip().splitlines()):
         line = line.strip()
@@ -1145,6 +1146,7 @@ def run_one(args, plan_path: str) -> dict:
         "amcl_params": args.amcl_params,
         "ekf_params": args.ekf_params,
         "wheel_skid_cov": args.wheel_skid_cov,
+        "patch_mu": args.patch_mu,
         "nav2_controller": ARM_TO_CONTROLLER.get(args.arm),
         "nav2_profile": args.nav2_profile if args.arm not in VEC_PMP_ARMS else None,
         "floor": args.floor,
@@ -1568,6 +1570,9 @@ def main() -> int:
     ap.add_argument("--model", default="scout_mini")
     ap.add_argument("--no-terrain", action="store_true",
                     help="skip along-path patches (flat-ground debugging)")
+    ap.add_argument("--patch-mu", type=float, default=None,
+                    help="same patch layout, every patch an isotropic mu=X surface "
+                         "(tools/spawn_patches.py --patch-mu; 0.5 = lowest that steers)")
     ap.add_argument("--goal-tries", type=int, default=3,
                     help="republish attempts if the goal is never taken "
                          "(only while nothing has reacted -- see "
