@@ -1,0 +1,9 @@
+# Job 262: tyre calibration, take 2. Job 261 showed wheel mu2 0.45-0.9 does not move k (-0.33..-0.35) or chi (1.346) on
+# plain ground: the lateral force stays below mu2 N, and the slide is the force-dependent creep slip2. Sweep slip2,
+# and mu2 at the two stiffest values (a stiffer tyre raises the lateral force, so mu2 may start to bind).
+S100 --arm ours-lib --localization truth --phantom-walls --no-terrain
+S030 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip2 0.003
+S010 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip2 0.001
+S003 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip2 0.0003
+S010M8 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip2 0.001 --wheel-mu2 0.8
+S003M8 --arm ours-lib --localization truth --phantom-walls --no-terrain --wheel-slip2 0.0003 --wheel-mu2 0.8
