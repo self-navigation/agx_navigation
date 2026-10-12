@@ -43,7 +43,7 @@ def sign_p(A, B):
 
 
 def ptxt(p):
-    return f"p={p:.0e}" if p < 1e-3 else f"p={p:.2f}"
+    return f"p={p:.0e}" if p < 1e-3 else f"p={p:.3f}" if p < 0.01 else f"p={p:.2f}"
 
 
 def save(fig, name):

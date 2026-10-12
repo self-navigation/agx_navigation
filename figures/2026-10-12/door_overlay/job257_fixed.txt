@@ -1,0 +1,4 @@
+TVLQR, amcl (no slip model): 47 hits / 150 passages (51 distinct plan-doors)
+TVLQR + fixed slip k, amcl: 8 hits / 153 passages (51 distinct plan-doors)
+TVLQG + slip prior, true pose: 9 hits / 153 passages (51 distinct plan-doors)
+TVLQR + fixed slip k, true pose: 8 hits / 153 passages (51 distinct plan-doors)

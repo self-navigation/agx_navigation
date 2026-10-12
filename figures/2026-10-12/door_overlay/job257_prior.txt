@@ -1,0 +1,4 @@
+TVLQG, amcl (no prior): 29 hits / 153 passages (51 distinct plan-doors)
+TVLQG + slip prior, amcl: 8 hits / 151 passages (51 distinct plan-doors)
+TVLQG, rtab (no prior): 32 hits / 153 passages (51 distinct plan-doors)
+TVLQG + slip prior, rtab: 17 hits / 145 passages (51 distinct plan-doors)
