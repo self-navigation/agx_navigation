@@ -1,0 +1,32 @@
+window = 2.0 s before anchor (hit: wall_first_t; clean: min truth clearance within 1 m of the door plane)
+errors in the PRE-TURN frame (plan heading 1.5 m before the door): ALONG = mean |e.u_pre|, ACROSS = mean |e.n_pre| (m)
+passages are not independent (3 seeds x plan); the same-door permutation test is the honest one
+
+== rtab (RQ+PR), TURN doors (|turn| >= 45 deg): 41 hit passages, 143 clean passages
+   ALONG |e.u_pre|                          median hit +0.061  clean +0.021  | MWU p 0.00012 | same-door: hit - door clean mean +0.013 m, perm p(one-sided, >) 0.0054 (35 hits in 14 doors)
+   ACROSS |e.n_pre|                         median hit +0.039  clean +0.028  | MWU p 0.0025 | same-door: hit - door clean mean +0.000 m, perm p(one-sided, >) 0.47 (35 hits in 14 doors)
+   signed along at anchor                   median hit -0.057  clean -0.022  | MWU p 0.00046 | same-door: hit - door clean mean -0.006 m, perm p(one-sided, >) 0.92 (35 hits in 14 doors)
+   signed across at anchor (+ = turn side)  median hit +0.019  clean +0.015  | MWU p 0.69 | same-door: hit - door clean mean +0.012 m, perm p(one-sided, >) 0.057 (35 hits in 14 doors)
+   along share along/(along+across)          median hit 0.50  clean 0.45  | MWU p 0.096
+
+== rtab (RQ+PR), ALL doors: 49 hit passages, 230 clean passages
+   ALONG |e.u_pre|                          median hit +0.061  clean +0.018  | MWU p 3.6e-09 | same-door: hit - door clean mean +0.012 m, perm p(one-sided, >) 0.0053 (39 hits in 16 doors)
+   ACROSS |e.n_pre|                         median hit +0.040  clean +0.026  | MWU p 8.6e-05 | same-door: hit - door clean mean +0.000 m, perm p(one-sided, >) 0.45 (39 hits in 16 doors)
+   signed along at anchor                   median hit -0.059  clean -0.016  | MWU p 4.9e-09 | same-door: hit - door clean mean -0.008 m, perm p(one-sided, >) 0.98 (39 hits in 16 doors)
+   signed across at anchor (+ = turn side)  median hit +0.015  clean +0.007  | MWU p 0.26 | same-door: hit - door clean mean +0.012 m, perm p(one-sided, >) 0.044 (39 hits in 16 doors)
+   along share along/(along+across)          median hit 0.51  clean 0.42  | MWU p 0.0024
+
+== amcl (Q0+PQ), TURN doors (|turn| >= 45 deg): 33 hit passages, 155 clean passages
+   ALONG |e.u_pre|                          median hit +0.061  clean +0.063  | MWU p 0.16 | same-door: hit - door clean mean +0.032 m, perm p(one-sided, >) 0.03 (33 hits in 16 doors)
+   ACROSS |e.n_pre|                         median hit +0.185  clean +0.104  | MWU p 7.2e-06 | same-door: hit - door clean mean +0.018 m, perm p(one-sided, >) 0.16 (33 hits in 16 doors)
+   signed along at anchor                   median hit -0.115  clean +0.002  | MWU p 0.0005 | same-door: hit - door clean mean -0.037 m, perm p(one-sided, >) 0.89 (33 hits in 16 doors)
+   signed across at anchor (+ = turn side)  median hit +0.239  clean +0.120  | MWU p 4.8e-06 | same-door: hit - door clean mean -0.001 m, perm p(one-sided, >) 0.35 (33 hits in 16 doors)
+   along share along/(along+across)          median hit 0.27  clean 0.37  | MWU p 0.0087
+
+== amcl (Q0+PQ), ALL doors: 37 hit passages, 258 clean passages
+   ALONG |e.u_pre|                          median hit +0.064  clean +0.056  | MWU p 0.023 | same-door: hit - door clean mean +0.030 m, perm p(one-sided, >) 0.024 (37 hits in 18 doors)
+   ACROSS |e.n_pre|                         median hit +0.182  clean +0.080  | MWU p 9.3e-08 | same-door: hit - door clean mean +0.011 m, perm p(one-sided, >) 0.29 (37 hits in 18 doors)
+   signed along at anchor                   median hit -0.140  clean +0.009  | MWU p 1.9e-06 | same-door: hit - door clean mean -0.040 m, perm p(one-sided, >) 0.94 (37 hits in 18 doors)
+   signed across at anchor (+ = turn side)  median hit +0.234  clean +0.079  | MWU p 3.3e-09 | same-door: hit - door clean mean -0.003 m, perm p(one-sided, >) 0.36 (37 hits in 18 doors)
+   along share along/(along+across)          median hit 0.30  clean 0.37  | MWU p 0.011
+
