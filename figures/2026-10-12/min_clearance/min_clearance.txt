@@ -1,0 +1,21 @@
+true pose TVLQR            n 126  median 0.085 m  <=0 0.41  <0.05 0.41  <0.10 0.50
+true pose TVLQG            n 126  median 0.112 m  <=0 0.06  <0.05 0.06  <0.10 0.18
+true pose TVLQR + fixed k  n 126  median 0.127 m  <=0 0.06  <0.05 0.06  <0.10 0.14
+true pose TVLQG + prior    n 126  median 0.112 m  <=0 0.07  <0.05 0.07  <0.10 0.11
+    plan-level TVLQR vs TVLQG: median per-plan diff +0.033 m, Wilcoxon p 0.0005 (42 plans)
+    plan-level TVLQG vs TVLQG + prior: median per-plan diff +0.000 m, Wilcoxon p 0.86 (42 plans)
+    plan-level TVLQR vs TVLQR + fixed k: median per-plan diff +0.039 m, Wilcoxon p 0.00031 (42 plans)
+amcl      TVLQR            n 126  median 0.100 m  <=0 0.40  <0.05 0.40  <0.10 0.48
+amcl      TVLQG            n 126  median 0.100 m  <=0 0.24  <0.05 0.24  <0.10 0.36
+amcl      TVLQR + fixed k  n 126  median 0.150 m  <=0 0.07  <0.05 0.07  <0.10 0.15
+amcl      TVLQG + prior    n 126  median 0.150 m  <=0 0.08  <0.05 0.08  <0.10 0.17
+    plan-level TVLQR vs TVLQG: median per-plan diff +0.000 m, Wilcoxon p 0.078 (42 plans)
+    plan-level TVLQG vs TVLQG + prior: median per-plan diff +0.025 m, Wilcoxon p 0.00013 (42 plans)
+    plan-level TVLQR vs TVLQR + fixed k: median per-plan diff +0.033 m, Wilcoxon p 0.00077 (42 plans)
+rtab      TVLQR            n 126  median 0.050 m  <=0 0.45  <0.05 0.45  <0.10 0.53
+rtab      TVLQG            n 126  median 0.100 m  <=0 0.29  <0.05 0.29  <0.10 0.48
+rtab      TVLQR + fixed k  n 126  median 0.100 m  <=0 0.11  <0.05 0.11  <0.10 0.25
+rtab      TVLQG + prior    n 125  median 0.100 m  <=0 0.16  <0.05 0.16  <0.10 0.31
+    plan-level TVLQR vs TVLQG: median per-plan diff +0.004 m, Wilcoxon p 0.0036 (42 plans)
+    plan-level TVLQG vs TVLQG + prior: median per-plan diff +0.000 m, Wilcoxon p 0.058 (42 plans)
+    plan-level TVLQR vs TVLQR + fixed k: median per-plan diff +0.037 m, Wilcoxon p 0.00047 (42 plans)
