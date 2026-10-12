@@ -14,7 +14,7 @@ jambs, so the door frame appears as a fuzzy aperture); every run's truth track t
 (thin, translucent); runs whose FIRST wall contact falls in the window in red, with the robot footprint at the contact
 moment. Contact = wall_overlap_s > 0, first contact from wall_first_t.
 
-usage: door_overlay.py [JOB:CELL:LABEL ...]   (default: the four arms below, mu 0.5)
+usage: door_overlay.py [--out=NAME] [JOB:CELL:LABEL ...]   (default: the four arms below, mu 0.5; NAME.png/.txt)
 """
 import glob, json, os, sys
 import numpy as np, yaml
@@ -28,7 +28,8 @@ from scipy.ndimage import distance_transform_edt
 HERE = os.path.dirname(os.path.abspath(__file__)); R = os.path.abspath(os.path.join(HERE, "../../.."))
 RD = os.path.join(R, "run_data")
 DOOR_CLEAR, W, HL, HW = 0.60, 2.5, 0.315, 0.2925   # HL/HW: pmp_planner footprint half length / width (plan_check.py)
-ARMS = sys.argv[1:] or ["2026-10-12_job255_steerable:TR:TVLQR, true pose",
+OUT = next((a[6:] for a in sys.argv[1:] if a.startswith("--out=")), "door_overlay")
+ARMS = [a for a in sys.argv[1:] if not a.startswith("--out=")] or ["2026-10-12_job255_steerable:TR:TVLQR, true pose",
                         "2026-10-12_job255_steerable:T:TVLQG, true pose",
                         "2026-10-12_job255_steerable:Q0:TVLQG, amcl",
                         "2026-10-12_job256_steerable-rtab:RQ:TVLQG, rtab"]
@@ -137,6 +138,6 @@ np.atleast_1d(axs)[-1].set_xlabel("along the plan through the door (m); robot en
 fig.suptitle("All door passages overlaid in the door's frame\n(mu 0.5 patches, 42 plans x 3 seeds; red = wall hit + robot outline)",
              fontsize=21, fontweight="bold")
 fig.tight_layout()
-fig.savefig(os.path.join(HERE, "door_overlay.png"), dpi=110)
-open(os.path.join(HERE, "door_overlay.txt"), "w").write("\n".join(summary) + "\n")
+fig.savefig(os.path.join(HERE, OUT + ".png"), dpi=110)
+open(os.path.join(HERE, OUT + ".txt"), "w").write("\n".join(summary) + "\n")
 print("\n".join(summary))
