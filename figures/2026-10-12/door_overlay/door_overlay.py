@@ -89,7 +89,7 @@ def to_frame(p, o, h, m):
 
 
 NR = -(-len(ARMS) // COLS)
-fig, axs = plt.subplots(NR, COLS, figsize=((10.8 if COLS == 1 else 9.0) * COLS, 4.6 * NR + 1.2), sharex=True, squeeze=False)
+fig, axs = plt.subplots(NR, COLS, figsize=((10.8 if COLS == 1 else 9.0) * COLS, (4.6 if COLS == 1 else 5.1) * NR + 1.2), sharex=True, squeeze=False)
 axs = axs.ravel()
 plt.rcParams.update({"font.size": 18})
 summary = []
@@ -130,7 +130,7 @@ for ax, arm in zip(axs, ARMS):
                     ax.add_patch(Polygon(fp, fill=False, ec="tab:red", lw=1.2, alpha=0.8, zorder=4))
                 else:
                     ax.plot(q[win, 0], q[win, 1], "-", color="tab:blue", lw=0.7, alpha=0.18, zorder=2)
-    ax.set_title(f"{label}: {n_hit} wall hits in {n_pass} door passages", fontsize=19, fontweight="bold")
+    ax.set_title(f"{label}{chr(10) if COLS > 1 else ': '}{n_hit} wall hits in {n_pass} door passages", fontsize=19, fontweight="bold")
     ax.set_xlim(-W, W); ax.set_ylim(-1.3, 1.3); ax.set_facecolor('white'); ax.set_aspect("equal"); ax.set_ylabel("lateral (m)")
     jw = np.median(widths) / 2
     for sg in (1, -1):

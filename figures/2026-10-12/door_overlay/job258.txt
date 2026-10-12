@@ -1,0 +1,6 @@
+TVLQR, k = -0.33 (right): 8 hits / 153 passages (51 distinct plan-doors)
+TVLQR, k = -0.6 (too big): 22 hits / 152 passages (51 distinct plan-doors)
+TVLQG, prior -0.6 (too big): 12 hits / 153 passages (51 distinct plan-doors)
+rtab, TVLQG + prior: 17 hits / 145 passages (51 distinct plan-doors)
+rtab, + steer on filter pose: 15 hits / 149 passages (51 distinct plan-doors)
+rtab, + filter trusts pose less: 15 hits / 153 passages (51 distinct plan-doors)
