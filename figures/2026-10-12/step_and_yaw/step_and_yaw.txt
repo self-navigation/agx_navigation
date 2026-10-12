@@ -1,0 +1,14 @@
+amcl B1: step (> 3 cm) within 0.5 s before contact: 53% of 30 contacts vs 42% of 960 random clean moments
+amcl B1: step (> 3 cm) within 1.0 s before contact: 57% of 30 contacts vs 53% of 960 random clean moments
+amcl B1 SAME DOORWAYS: step within 0.5 s: contacts 53% vs clean runs passing a contact site 63% (n 1322 moments)
+amcl B1 SAME DOORWAYS: step within 1.0 s: contacts 57% vs clean runs passing a contact site 72% (n 1322 moments)
+amcl B1: median time since last step: contact 0.17 s, random 0.27 s, MWU p 0.16
+amcl B2: localizer heading error, 1 s before contact 0.4 deg (n 30) vs clean-run median 0.2 deg, MWU p 0.02
+amcl B2: corrector |e_heading|, 1 s before contact 2.4 deg vs clean-run mean 1.4 deg
+rtab B1: step (> 3 cm) within 0.5 s before contact: 68% of 37 contacts vs 12% of 860 random clean moments
+rtab B1: step (> 3 cm) within 1.0 s before contact: 86% of 37 contacts vs 18% of 860 random clean moments
+rtab B1 SAME DOORWAYS: step within 0.5 s: contacts 68% vs clean runs passing a contact site 21% (n 881 moments)
+rtab B1 SAME DOORWAYS: step within 1.0 s: contacts 86% vs clean runs passing a contact site 27% (n 881 moments)
+rtab B1: median time since last step: contact 0.35 s, random 4.07 s, MWU p 1.6e-10
+rtab B2: localizer heading error, 1 s before contact 0.2 deg (n 37) vs clean-run median 0.1 deg, MWU p 0.0034
+rtab B2: corrector |e_heading|, 1 s before contact 1.7 deg vs clean-run mean 1.3 deg
