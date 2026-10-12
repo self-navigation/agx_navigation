@@ -1,0 +1,11 @@
+
+===== 2026-10-12_job255_steerable
+Q0   crosses sub-knee:   0/  0 hit | none:  30/126 hit | pre-contact surface: mu0.5 16, ground 14
+QR   crosses sub-knee:   0/  0 hit | none:  50/126 hit | pre-contact surface: ground 28, mu0.5 22
+T    crosses sub-knee:   0/  0 hit | none:   7/126 hit | pre-contact surface: mu0.5 6, ground 1
+TR   crosses sub-knee:   0/  0 hit | none:  52/126 hit | pre-contact surface: ground 30, mu0.5 22
+per profile crossed (all cells): runs, contact runs, rate
+  mu0.5          min mu 0.50   496   139  0.28
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 126 | ground: 14 vs 28, 16/2 p 0.0013 | patch: 16 vs 22, 11/5 p 0.21
+  T vs TR n 126 | ground: 1 vs 30, 30/1 p 3e-08 | patch: 6 vs 22, 18/2 p 0.0004
