@@ -1,0 +1,49 @@
+
+== job 252 dev: 41 plans; contact runs/runs by the plan's own hull clearance
+hull clear [m]   plans         Q0         QR         RQ         RR          T
+[-9.00, 0.00)      0     0/0        0/0        0/0        0/0        0/0   
+[ 0.00, 0.05)      0     0/0        0/0        0/0        0/0        0/0   
+[ 0.05, 0.10)      0     0/0        0/0        0/0        0/0        0/0   
+[ 0.10, 0.20)     27    39/81      57/80      49/81      63/81      36/81  
+[ 0.20, 9.00)     14     5/42       5/42       6/42       7/42       7/42  
+plans with hull clearance < 0.05: 
+
+== job 253 test: 42 plans; contact runs/runs by the plan's own hull clearance
+hull clear [m]   plans         Q0         QR         RQ         RR          T         TR
+[-9.00, 0.00)      0     0/0        0/0        0/0        0/0        0/0        0/0   
+[ 0.00, 0.05)      0     0/0        0/0        0/0        0/0        0/0        0/0   
+[ 0.05, 0.10)      0     0/0        0/0        0/0        0/0        0/0        0/0   
+[ 0.10, 0.20)     26    33/78      51/78      42/78      56/78      25/78      51/78  
+[ 0.20, 9.00)     16     8/48       5/48       7/48       6/48       6/48       7/48  
+plans with hull clearance < 0.05: 
+
+== job 254 leaf: 60 plans; contact runs/runs by the plan's own hull clearance
+hull clear [m]   plans         Q0         QR         RQ         RR          T         TR
+[-9.00, 0.00)      1     3/3        3/3        3/3        3/3        2/3        3/3   
+[ 0.00, 0.05)      0     0/0        0/0        0/0        0/0        0/0        0/0   
+[ 0.05, 0.10)      1     1/3        1/3        1/3        3/3        1/3        0/3   
+[ 0.10, 0.20)     10     6/30       7/30       8/30       6/30       5/30       6/30  
+[ 0.20, 9.00)     48    24/143     16/144     20/143     26/144     22/144     22/143 
+plans with hull clearance < 0.05: f6_corridor_0016_L1 -0.05
+
+== contact runs by the plan's LOCAL hull clearance near first contact (room = >= 0.15 m)
+job 252 dev: cell contacts / with room (plan >= 0.15 m clear there) / robot > 0.3 m from the plan at contact
+   Q0     44   39   23
+   QR     62   51   26
+   RQ     55   46   24
+   RR     70   56   31
+   T      43   35   25
+job 253 test: cell contacts / with room (plan >= 0.15 m clear there) / robot > 0.3 m from the plan at contact
+   Q0     41   35   16
+   QR     56   43   18
+   RQ     49   39   18
+   RR     62   45   22
+   T      31   25   19
+   TR     58   46   21
+job 254 leaf: cell contacts / with room (plan >= 0.15 m clear there) / robot > 0.3 m from the plan at contact
+   Q0     34   30   23
+   QR     27   22   21
+   RQ     32   24   20
+   RR     38   31   28
+   T      30   27   18
+   TR     31   27   23
