@@ -1,0 +1,8 @@
+
+===== 2026-10-12_job256_steerable-rtab
+RQ   crosses sub-knee:   0/  0 hit | none:  37/126 hit | pre-contact surface: ground 22, mu0.5 15
+RR   crosses sub-knee:   0/  0 hit | none:  57/126 hit | pre-contact surface: ground 34, mu0.5 23
+per profile crossed (all cells): runs, contact runs, rate
+  mu0.5          min mu 0.50   247    94  0.38
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  RQ vs RR n 126 | ground: 22 vs 34, 13/1 p 0.0018 | patch: 15 vs 23, 10/2 p 0.039

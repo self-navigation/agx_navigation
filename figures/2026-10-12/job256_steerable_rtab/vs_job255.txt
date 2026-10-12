@@ -1,0 +1,4 @@
+2026-10-12_job256_steerable-rtab:RQ vs 2026-10-12_job255_steerable:Q0  n 126 | contact 37 vs 30  A-better/B-better 8/15 p 0.21 | arrived 123 vs 125  1/3 p 0.62
+2026-10-12_job256_steerable-rtab:RQ vs 2026-10-12_job255_steerable:T  n 126 | contact 37 vs 7  A-better/B-better 2/32 p 6.9e-08 | arrived 123 vs 125  1/3 p 0.62
+2026-10-12_job256_steerable-rtab:RR vs 2026-10-12_job255_steerable:QR  n 126 | contact 57 vs 50  A-better/B-better 8/15 p 0.21 | arrived 123 vs 123  3/3 p 1
+2026-10-12_job256_steerable-rtab:RQ vs 2026-10-12_job256_steerable-rtab:RR  n 126 | contact 37 vs 57  A-better/B-better 23/3 p 8.8e-05 | arrived 123 vs 123  3/3 p 1
