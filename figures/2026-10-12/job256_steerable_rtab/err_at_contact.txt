@@ -1,0 +1,2 @@
+RQ contact runs: loc err in 1 s before first contact, median 0.073 p90 0.163 (n 37) | clean runs median err 0.031
+Q0 contact runs: loc err in 1 s before first contact, median 0.256 p90 0.343 (n 30) | clean runs median err 0.066
