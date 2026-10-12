@@ -1,0 +1,14 @@
+# Job 265: the main grid (jobs 255-260 cells, verbatim) on the realistic tyre: gz WheelSlip lateral compliance 1.0
+# (k -0.105 on plain ground, job 264; real robot -0.03..-0.16). Prior / fixed k = -0.10. mu 0.5 patches.
+RQ --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+RR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --wheel-slip-lat 1.0
+Q0 --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+QR --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --wheel-slip-lat 1.0
+T  --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+TR --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --wheel-slip-lat 1.0
+PQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+PR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+PT --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+FQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
+FR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
+FT --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
