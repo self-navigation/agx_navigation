@@ -1,0 +1,8 @@
+# Job 258: with the sideslip prior (job 257's P arms), does steering on the FILTER's pose fix the rest of the
+# localizer gap (rtab's late catch-ups)? And does estimation rescue an OVER-estimated prior (truth)? mu 0.5 patches.
+EQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33,tvlqg.control_on_estimate=true
+ER --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33,tvlqg.control_on_estimate=true
+SQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.15
+SR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33,tvlqg.control_on_estimate=true,tvlqg.r_pos=0.15
+OT --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.6,tvlqg.k_plan=-0.6
+OF --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.6,sideslip_v_gate=0.3
