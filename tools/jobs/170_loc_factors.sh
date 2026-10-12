@@ -7,7 +7,8 @@
 #   C   amcl, phantom walls                     (= job 160 C, the control)
 #   Cy  amcl, phantom walls, EKF without wheel yaw  (does chi-biased odom hurt amcl?)
 #   Ay  amcl, solid walls,  EKF without wheel yaw   (same, with contact)
-# Out: $OUT_DIR/<cfg>/rows.s<seed>.jsonl, tracks in $OUT_DIR/<cfg>/s<seed>/.
+# Out: $OUT_DIR/<cfg>/rows.s<seed>.jsonl (merged at the end from <cfg>/parts/), tracks in
+# $OUT_DIR/<cfg>/s<seed>/. Scheduling: one shared queue of (cfg, seed, plan) tasks, see below.
 set -uo pipefail
 
 if [ -z "${ROS_VERSION:-}" ]; then
@@ -53,11 +54,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-UNITS=()
-for s in "${SEEDS[@]}"; do for c in "${ORDER[@]}"; do UNITS+=("$c:$s"); done; done
-echo "[fac] starting at $(date -Is); ${#UNITS[@]} units x $(grep -c . "$PLANS") plans on ${#WORKERS[@]} workers; out=$OUT_DIR"
-N_TOTAL=$(( ${#UNITS[@]} * $(grep -c . "$PLANS") ))
-count_rows() { cat "$OUT_DIR"/*/rows.s*.jsonl 2>/dev/null | grep -c .; }
+# One task per (cell, seed, plan) in ONE shared queue: a free worker takes the next
+# line. Units used to be whole (cell, seed) plan lists dealt round-robin, which
+# left workers idle whenever units < workers and made the job wait for the
+# slowest unit (job 256: 6 units on 12 workers, 6 never used). compare_run
+# already brings up a fresh stack per plan, so one plan per call costs only the
+# interpreter start. Each task writes its own part file (concurrent appends to one
+# rows file are not safe for multi-KB lines); rows.s<seed>.jsonl is merged at the
+# end, so readers see the old layout. A killed job resumes: done parts are skipped.
+QDIR=$(mktemp -d /tmp/factor_queue.XXXXXX)
+TASKS=$QDIR/tasks
+while read -r plan; do
+    [ -z "$plan" ] && continue
+    for s in "${SEEDS[@]}"; do for c in "${ORDER[@]}"; do echo "$c $s $plan"; done; done
+done <"$PLANS" >"$TASKS"
+echo 0 >"$QDIR/next"
+N_TOTAL=$(grep -c . "$TASKS")
+echo "[fac] starting at $(date -Is); $N_TOTAL tasks (${#ORDER[@]} cells x ${#SEEDS[@]} seeds x $(grep -c . "$PLANS") plans) on ${#WORKERS[@]} workers, shared queue; out=$OUT_DIR"
+count_rows() { cat "$OUT_DIR"/*/parts/*.jsonl 2>/dev/null | grep -c .; }
 progress() {
     local n; n=$(count_rows)
     local el=$(( $(date +%s) - T_START )) eta=""
@@ -68,21 +82,32 @@ progress() {
 T_START=$(date +%s)
 ntfy_job_begin "$JOB_NAME" progress count_rows "$N_TOTAL"
 
-run_worker() {  # $1 = worker, rest = units
-    local w=$1; shift
-    local u c s
-    for u in "$@"; do
-        c=${u%%:*}; s=${u##*:}
-        mkdir -p "$OUT_DIR/$c"
-        echo "[fac] $(date -Is) worker $w start $c seed $s"
+next_task() {  # prints the next task line, or nothing when the queue is empty
+    local n
+    {
+        flock 9
+        n=$(( $(cat "$QDIR/next") + 1 ))
+        echo "$n" >"$QDIR/next"
+    } 9>"$QDIR/lock"
+    sed -n "${n}p" "$TASKS"
+}
+
+run_worker() {  # $1 = worker; pulls tasks until the queue is empty
+    local w=$1 c s plan name part rc
+    while read -r c s plan < <(next_task) && [ -n "$c" ]; do
+        name=$(basename "$plan" .npz)
+        part="$OUT_DIR/$c/parts/s$s.$name.jsonl"
+        mkdir -p "$OUT_DIR/$c/parts" "$OUT_DIR/$c/s$s"
+        echo "$plan" >"$QDIR/plan.w$w"
+        echo "[fac] $(date -Is) worker $w start $c seed $s $name"
         # shellcheck disable=SC2086
         tools/with-worker "$w" python3 tools/compare_run.py \
-            --plans "$PLANS" --arm ours --worker "$w" --seed "$s" ${CFG[$c]} \
-            --out "$OUT_DIR/$c/rows.s$s.jsonl" --log-dir "$OUT_DIR/$c/s$s" \
+            --plans "$QDIR/plan.w$w" --arm ours --worker "$w" --seed "$s" ${CFG[$c]} \
+            --out "$part" --log-dir "$OUT_DIR/$c/s$s" \
             >>"$OUT_DIR/w$w.log" 2>&1
-        local rc=$?
-        echo "[fac] $(date -Is) worker $w done $c seed $s rc=$rc rows $(grep -c . "$OUT_DIR/$c/rows.s$s.jsonl" 2>/dev/null)"
-        [ "$rc" -ne 0 ] && echo "$c seed $s worker $w rc=$rc" >>"$OUT_DIR/failed_units.txt"
+        rc=$?
+        echo "[fac] $(date -Is) worker $w done $c seed $s $name rc=$rc"
+        [ "$rc" -ne 0 ] && echo "$c seed $s $name worker $w rc=$rc" >>"$OUT_DIR/failed_units.txt"
     done
     # Tear down our own last stack HERE, before "finished at": a job launched
     # on these workers after that line must find them idle. (The EXIT-trap
@@ -94,20 +119,18 @@ run_worker() {  # $1 = worker, rest = units
 }
 
 PIDS=()
-for i in "${!WORKERS[@]}"; do
-    mine=()
-    for j in "${!UNITS[@]}"; do
-        [ $((j % ${#WORKERS[@]})) -eq "$i" ] && mine+=("${UNITS[$j]}")
-    done
-    echo "[fac] worker ${WORKERS[$i]} -> ${mine[*]}"
-    run_worker "${WORKERS[$i]}" "${mine[@]}" &
+for w in "${WORKERS[@]}"; do
+    run_worker "$w" &
     PIDS+=($!)
 done
 for p in "${PIDS[@]}"; do wait "$p"; done
 
 trap - EXIT  # workers already cleaned up; the trap is for aborts only
+for c in "${ORDER[@]}"; do for s in "${SEEDS[@]}"; do
+    cat "$OUT_DIR/$c/parts/s$s".*.jsonl >"$OUT_DIR/$c/rows.s$s.jsonl" 2>/dev/null
+done; done
 cat "$OUT_DIR"/*/rows.s*.jsonl >"$OUT_DIR/all_rows.jsonl" 2>/dev/null
 echo "[fac] finished at $(date -Is); rows $(grep -c . "$OUT_DIR/all_rows.jsonl" 2>/dev/null || echo 0)"
 ntfy_job_finished "$(progress; head -n 5 "$OUT_DIR/failed_units.txt" 2>/dev/null)" \
     "$(grep -c . "$OUT_DIR/failed_units.txt" 2>/dev/null || echo 0)"
-rm -f "$PLANS"
+rm -rf "$PLANS" "$QDIR"
