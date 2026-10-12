@@ -14,7 +14,7 @@ jambs, so the door frame appears as a fuzzy aperture); every run's truth track t
 (thin, translucent); runs whose FIRST wall contact falls in the window in red, with the robot footprint at the contact
 moment. Contact = wall_overlap_s > 0, first contact from wall_first_t.
 
-usage: door_overlay.py [--out=NAME] [--cols=N] [JOB:CELL:LABEL ...]   (default: the four arms below, mu 0.5; NAME.png/.txt)
+usage: door_overlay.py [--out=NAME] [--cols=N] [--title=T] [JOB:CELL[+JOB:CELL...]:LABEL ...]   (default: the four arms below, mu 0.5; NAME.png/.txt)
 """
 import glob, json, os, sys
 import numpy as np, yaml
@@ -29,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); R = os.path.abspath(os.path.j
 RD = os.path.join(R, "run_data")
 DOOR_CLEAR, W, HL, HW = 0.60, 2.5, 0.315, 0.2925   # HL/HW: pmp_planner footprint half length / width (plan_check.py)
 OUT = next((a[6:] for a in sys.argv[1:] if a.startswith("--out=")), "door_overlay")
+TITLE = next((a[8:] for a in sys.argv[1:] if a.startswith("--title=")), "mu 0.5 patches, 42 plans x 3 seeds")
 COLS = int(next((a[7:] for a in sys.argv[1:] if a.startswith("--cols=")), 1))
 ARMS = [a for a in sys.argv[1:] if not a.startswith("--")] or ["2026-10-12_job255_steerable:TR:TVLQR, true pose",
                         "2026-10-12_job255_steerable:T:TVLQG, true pose",
@@ -94,9 +95,13 @@ axs = axs.ravel()
 plt.rcParams.update({"font.size": 18})
 summary = []
 for ax, arm in zip(axs, ARMS):
-    job, cell, label = arm.split(":", 2)
+    specs, label = arm.rsplit(":", 1)                     # specs: JOB:CELL, or several joined by '+' (pooled)
+    files = []
+    for sp in specs.split("+"):
+        job, cell = sp.rsplit(":", 1)
+        files += [(job, cell, f) for f in sorted(glob.glob(f"{RD}/{job}/{cell}/rows.s*.jsonl"))]
     seen_doors, n_pass, n_hit, widths = set(), 0, 0, []
-    for f in sorted(glob.glob(f"{RD}/{job}/{cell}/rows.s*.jsonl")):
+    for job, cell, f in files:
         for l in open(f):
             r = json.loads(l)
             tp = f"{RD}/{job}/{cell}/s{r['seed']}/{os.path.basename(r.get('track_path') or 'x')}"
@@ -138,7 +143,7 @@ for ax, arm in zip(axs, ARMS):
     summary.append(f"{label}: {n_hit} hits / {n_pass} passages ({len(seen_doors)} distinct plan-doors)")
 axs[len(ARMS) - 1].set_xlabel("along the plan through the door (m); robot enters from the left,\n"
                                   "turns mirrored to the left, so the outside of a turn is DOWN")
-fig.suptitle("All door passages overlaid in the door's frame\n(mu 0.5 patches, 42 plans x 3 seeds; red = wall hit + robot outline)",
+fig.suptitle("All door passages overlaid in the door's frame\n(" + TITLE + "; red = wall hit + robot outline)",
              fontsize=21, fontweight="bold")
 fig.tight_layout()
 fig.savefig(os.path.join(HERE, OUT + ".png"), dpi=110)

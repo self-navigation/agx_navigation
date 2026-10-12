@@ -1,0 +1,6 @@
+amcl, TVLQR, k -0.33 (right): 8 hits / 153 passages (51 distinct plan-doors)
+amcl, TVLQR, k -0.6: 24 hits / 153 passages (51 distinct plan-doors)
+amcl, TVLQG, prior -0.6: 16 hits / 153 passages (51 distinct plan-doors)
+rtab, TVLQR, k -0.33 (right): 11 hits / 153 passages (51 distinct plan-doors)
+rtab, TVLQR, k -0.6: 17 hits / 153 passages (51 distinct plan-doors)
+rtab, TVLQG, prior -0.6: 20 hits / 153 passages (51 distinct plan-doors)

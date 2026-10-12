@@ -20,12 +20,19 @@ if a: PAIRS = list(zip(a[::2], a[1::2]))
 
 
 def frac(spec):
-    job, cell = spec.rsplit(":", 1); d = collections.defaultdict(dict)
+    """spec = JOB:CELL, or several joined by '+' to POOL plan sets (plan names are disjoint between test and dev)."""
+    d = collections.defaultdict(dict)
+    for one in spec.split("+"):
+        frac1(one, d)
+    return d
+
+
+def frac1(spec, d):
+    job, cell = spec.rsplit(":", 1)
     for f in glob.glob(f"{RD}/{job}/{cell}/rows.s*.jsonl"):
         for l in open(f):
             if l.strip():
                 r = json.loads(l); d[os.path.basename(r["plan"])][r["seed"]] = (r.get("wall_overlap_s") or 0) > 0
-    return d
 
 
 out = []
@@ -37,8 +44,9 @@ for A, B in PAIRS:
     better_b, better_a = int((db < da).sum()), int((da < db).sum())
     ps = binomtest(better_b, better_b + better_a).pvalue if better_a + better_b else 1.0
     pw = wilcoxon(da, db).pvalue if (da != db).any() else 1.0
-    out.append(f"{A.split(':')[1]:>3s} ({A.split('_job')[1][:3]}) vs {B.split(':')[1]:>3s} ({B.split('_job')[1][:3]})  plans {len(plans)}"
+    lab = lambda X: "+".join(f"{x.rsplit(':', 1)[1]}({x.split('_job')[1][:3]})" for x in X.split("+"))
+    out.append(f"{lab(A)} vs {lab(B)}  plans {len(plans)} | contact runs {int(sum(len(fa[p]) * a_ for p, a_ in zip(plans, da)))} vs {int(sum(len(fb[p]) * b_ for p, b_ in zip(plans, db)))}"
                f" | plans with any contact {int((da > 0).sum())} vs {int((db > 0).sum())}"
                f" | B-better/A-better plans {better_b}/{better_a} sign p {ps:.2g} | Wilcoxon p {pw:.2g}")
 print("\n".join(out))
-open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "plan_level.txt"), "w").write("\n".join(out) + "\n")
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.environ.get("OUT", "plan_level") + ".txt"), "w").write("\n".join(out) + "\n")
