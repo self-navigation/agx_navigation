@@ -1,0 +1,13 @@
+# Job 259: replication of the main grid (jobs 255-257) on the DEV half (never run at mu 0.5), configs copied verbatim.
+RQ --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+RR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5
+Q0 --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+QR --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5
+T  --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true
+TR --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5
+PQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33
+PR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33
+PT --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.33,tvlqg.k_plan=-0.33
+FQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
+FR --arm ours-lib --localization rtab  --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
+FT --arm ours-lib --localization truth --phantom-walls --patch-mu 0.5 --tvlqr-params sideslip_k=-0.33,sideslip_v_gate=0.3
