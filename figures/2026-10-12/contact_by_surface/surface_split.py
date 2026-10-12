@@ -15,7 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 R = os.path.abspath(os.path.join(HERE, "../../.."))
 sys.path[:0] = [os.path.join(R, "src/agx_navigation/agx_planning"), os.path.join(R, "src/rudn-ordjo-building")]
 from agx_planning.rl_corrector.terrain import along_path_terrain_sampler
-from rudn_ordjo_building.surface_patches import PROFILES
+from rudn_ordjo_building.surface_patches import PROFILES, PhysicsProfile
 KNEE = 0.45
 PRE_S = 3.0
 
@@ -58,6 +58,10 @@ for JOB in sys.argv[1:]:
                     continue
                 poses = np.load(local(r["plan_path"]))["poses"]
                 pats = along_path_terrain_sampler(poses[:, :3])(np.random.default_rng(r["seed"]))
+                if r.get("patch_mu") is not None:  # --patch-mu: same layout, one isotropic friction
+                    pm = f"mu{r['patch_mu']:g}"
+                    PROFILES.setdefault(pm, PhysicsProfile(r["patch_mu"], r["patch_mu"], 0, 0, (0, 0, 0, 0)))
+                    pats = [dict(p, profile=pm) for p in pats]
                 rec = [p for p in r.get("patches", []) if p.get("profile") != "door_leaf"]
                 if len(rec) != len(pats) or any(a["profile"] != b["profile"] or abs(a["x"] - b["x"]) > 0.01
                                                 for a, b in zip(rec, pats)):
@@ -67,7 +71,7 @@ for JOB in sys.argv[1:]:
                 crossed = {s for s in set(surf) if s != "ground"}
                 knee_crossed = any(sub_knee(s) for s in crossed)
                 hit = (r.get("wall_overlap_s") or 0) > 0
-                key = "crosses sub-knee patch" if knee_crossed else "no sub-knee patch"
+                key = "crosses sub-knee patch" if knee_crossed else "no sub-knee patch"  # (steerable patches count as none)
                 tab[c][key + (" HIT" if hit else "")] += 1
                 lab_of.setdefault((c, r["plan"], r["seed"]), "none")
                 for s in crossed:
