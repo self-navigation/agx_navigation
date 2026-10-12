@@ -1,0 +1,14 @@
+# Job 266: job 265 (realistic tyre, wheel_slip_lat 1.0, prior / fixed k -0.10) on the STOCK patch profiles
+# (linoleum .45, wet_tile .30, slippery .2, directional .15/1.0, icy .05): the no-steer stress case on the realistic tyre.
+RQ --arm ours-lib --localization rtab  --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+RR --arm ours-lib --localization rtab  --phantom-walls --patch-mu stock --wheel-slip-lat 1.0
+Q0 --arm ours-lib --localization amcl  --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+QR --arm ours-lib --localization amcl  --phantom-walls --patch-mu stock --wheel-slip-lat 1.0
+T  --arm ours-lib --localization truth --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true --wheel-slip-lat 1.0
+TR --arm ours-lib --localization truth --phantom-walls --patch-mu stock --wheel-slip-lat 1.0
+PQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+PR --arm ours-lib --localization rtab  --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+PT --arm ours-lib --localization truth --phantom-walls --patch-mu stock --tvlqr-params sideslip_v_gate=0.3,tvlqg.enabled=true,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10 --wheel-slip-lat 1.0
+FQ --arm ours-lib --localization amcl  --phantom-walls --patch-mu stock --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
+FR --arm ours-lib --localization rtab  --phantom-walls --patch-mu stock --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
+FT --arm ours-lib --localization truth --phantom-walls --patch-mu stock --tvlqr-params sideslip_k=-0.10,sideslip_v_gate=0.3 --wheel-slip-lat 1.0
