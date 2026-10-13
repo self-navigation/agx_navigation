@@ -1,0 +1,52 @@
+plans 63
+cell  n  contact  arrived  miss>0.5  med_ef | no f6_corridor_0016: contact | job265 same plans: contact miss
+QR   158     9     157       1    0.055 |     7 | 0/158 0/158
+Q0   158    14     158       0    0.060 |    12 | 0/158 1/158
+PQ   158    16     158       0    0.056 |    14 | 0/158 2/158
+FQ   158    14     157       0    0.053 |    12 | 0/158 1/157
+RR   158    22     157       1    0.058 |    20 | 3/158 1/158
+RQ   158    16     155       3    0.063 |    14 | 1/158 1/158
+PR   158    11     158       0    0.058 |     9 | 0/158 1/158
+FR   158    14     155       3    0.064 |    12 | 0/158 3/158
+TR   158    13     156       2    0.051 |    11 | 0/158 0/157
+T    158     9     157       0    0.050 |     7 | 0/158 0/158
+PT   158    10     157       1    0.053 |     8 | 0/158 1/157
+FT   158     8     157       1    0.052 |     6 | 0/158 1/158
+
+wheel saturation: mean fraction of commands with max|w| >= 19 rad/s, contact runs vs clean runs
+QR  contact 0.002 (n 9)  clean 0.001
+Q0  contact 0.001 (n 14)  clean 0.001
+PQ  contact 0.003 (n 16)  clean 0.001
+FQ  contact 0.002 (n 14)  clean 0.001
+RR  contact 0.003 (n 22)  clean 0.001
+RQ  contact 0.002 (n 16)  clean 0.001
+PR  contact 0.005 (n 11)  clean 0.001
+FR  contact 0.004 (n 14)  clean 0.001
+TR  contact 0.002 (n 13)  clean 0.001
+T   contact 0.000 (n 9)  clean 0.001
+PT  contact 0.003 (n 10)  clean 0.001
+FT  contact 0.004 (n 8)  clean 0.001
+
+contact runs per plan (all 12 cells)
+  f6_corridor_0016 24
+  f6_short_0115 22
+  f6_long_0111 21
+  f6_medium_0376 17
+  f6_long_0038 14
+  f6_medium_0544 11
+  f6_long_0191 8
+  f6_short_0136 8
+  f6_short_0068 6
+  f6_long_0184 4
+  f6_medium_0176 3
+  f6_long_0037 3
+  f6_short_0582 3
+  f6_long_0291 2
+  f6_medium_0403 2
+  f6_medium_0422 2
+  f6_long_0089 1
+  f6_long_0125 1
+  f6_corridor_0451 1
+  f6_short_0596 1
+  f6_medium_0575 1
+  f6_long_0582 1

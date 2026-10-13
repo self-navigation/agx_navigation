@@ -1,0 +1,40 @@
+
+===== test
+FQ   crosses sub-knee:   0/  0 hit | none:   6/ 95 hit | pre-contact surface: ground 4, mu0.5 2
+FR   crosses sub-knee:   0/  0 hit | none:  10/ 96 hit | pre-contact surface: ground 5, mu0.5 5
+FT   crosses sub-knee:   0/  0 hit | none:   5/ 96 hit | pre-contact surface: ground 3, mu0.5 2
+PQ   crosses sub-knee:   0/  0 hit | none:  10/ 96 hit | pre-contact surface: ground 6, mu0.5 4
+PR   crosses sub-knee:   0/  0 hit | none:   9/ 96 hit | pre-contact surface: ground 5, mu0.5 4
+PT   crosses sub-knee:   0/  0 hit | none:   7/ 96 hit | pre-contact surface: mu0.5 4, ground 3
+Q0   crosses sub-knee:   0/  0 hit | none:   9/ 96 hit | pre-contact surface: mu0.5 7, ground 2
+QR   crosses sub-knee:   0/  0 hit | none:   3/ 96 hit | pre-contact surface: mu0.5 2, ground 1
+RQ   crosses sub-knee:   0/  0 hit | none:   7/ 96 hit | pre-contact surface: mu0.5 6, ground 1
+RR   crosses sub-knee:   0/  0 hit | none:  11/ 96 hit | pre-contact surface: mu0.5 7, ground 4
+T    crosses sub-knee:   0/  0 hit | none:   4/ 95 hit | pre-contact surface: ground 2, mu0.5 2
+TR   crosses sub-knee:   0/  0 hit | none:  10/ 96 hit | pre-contact surface: mu0.5 8, ground 2
+per profile crossed (all cells): runs, contact runs, rate
+  mu0.5          min mu 0.50  1145    91  0.08
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 96 | ground: 2 vs 1, 1/2 p 1 | patch: 7 vs 2, 0/5 p 0.062
+  RQ vs RR n 96 | ground: 1 vs 4, 3/0 p 0.25 | patch: 6 vs 7, 3/2 p 1
+  T vs TR n 95 | ground: 2 vs 2, 2/2 p 1 | patch: 2 vs 7, 6/1 p 0.12
+
+===== dev
+FQ   crosses sub-knee:   0/  0 hit | none:   8/ 62 hit | pre-contact surface: ground 6, mu0.5 2
+FR   crosses sub-knee:   0/  0 hit | none:   4/ 62 hit | pre-contact surface: ground 2, mu0.5 2
+FT   crosses sub-knee:   0/  0 hit | none:   3/ 62 hit | pre-contact surface: ground 2, mu0.5 1
+PQ   crosses sub-knee:   0/  0 hit | none:   6/ 62 hit | pre-contact surface: ground 6
+PR   crosses sub-knee:   0/  0 hit | none:   2/ 62 hit | pre-contact surface: ground 2
+PT   crosses sub-knee:   0/  0 hit | none:   3/ 62 hit | pre-contact surface: ground 2, mu0.5 1
+Q0   crosses sub-knee:   0/  0 hit | none:   5/ 62 hit | pre-contact surface: ground 4, mu0.5 1
+QR   crosses sub-knee:   0/  0 hit | none:   6/ 62 hit | pre-contact surface: ground 3, mu0.5 3
+RQ   crosses sub-knee:   0/  0 hit | none:   9/ 62 hit | pre-contact surface: mu0.5 6, ground 3
+RR   crosses sub-knee:   0/  0 hit | none:  11/ 62 hit | pre-contact surface: mu0.5 7, ground 4
+T    crosses sub-knee:   0/  0 hit | none:   5/ 62 hit | pre-contact surface: mu0.5 3, ground 2
+TR   crosses sub-knee:   0/  0 hit | none:   3/ 62 hit | pre-contact surface: ground 2, mu0.5 1
+per profile crossed (all cells): runs, contact runs, rate
+  mu0.5          min mu 0.50   742    65  0.09
+paired (A vs B over plan,seed): contact preceded by GROUND / by a PATCH; fixed/new = B hit & A not / A hit & B not; sign test
+  Q0 vs QR n 62 | ground: 4 vs 3, 0/1 p 1 | patch: 1 vs 3, 2/0 p 0.5
+  RQ vs RR n 62 | ground: 3 vs 4, 2/1 p 1 | patch: 6 vs 7, 3/2 p 1
+  T vs TR n 62 | ground: 2 vs 2, 0/0 p 1 | patch: 3 vs 1, 0/2 p 0.5
