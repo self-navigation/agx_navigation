@@ -1,0 +1,27 @@
+1. Contact at a door vs the PLAN's hull margin there (all 12 cells pooled; unit = run x door)
+  plan margin [-1.00, 0.00) m: plan-doors   1  passages    24  door contacts   24  rate 1.000
+  plan margin [ 0.00, 0.05) m: plan-doors   5  passages   155  door contacts   35  rate 0.226
+  plan margin [ 0.05, 0.10) m: plan-doors   6  passages   179  door contacts    7  rate 0.039
+  plan margin [ 0.10, 0.20) m: plan-doors  38  passages  1103  door contacts   67  rate 0.061
+  plan margin [ 0.20, 9.00) m: plan-doors  40  passages  1126  door contacts   16  rate 0.014
+  door contacts at plan-doors with margin < 0.10 m: 66 of 149
+
+2. Deviation from the plan at the door line (m; + = inward, - = outward), per localizer and arm
+   per plan-door mean over seeds; median over plan-doors [IQR]; Wilcoxon vs TVLQR over plan-doors
+  amcl: QR median -0.030 [-0.072, +0.006]
+     Q0: median -0.019; paired diff median +0.0051 m over 90 plan-doors, Wilcoxon p 0.00213
+     PQ: median -0.006; paired diff median +0.0292 m over 90 plan-doors, Wilcoxon p 1.31e-06
+     FQ: median -0.012; paired diff median +0.0342 m over 90 plan-doors, Wilcoxon p 6.25e-07
+  rtab: RR median -0.028 [-0.097, +0.014]
+     RQ: median -0.029; paired diff median +0.0018 m over 90 plan-doors, Wilcoxon p 0.193
+     PR: median -0.008; paired diff median +0.0302 m over 90 plan-doors, Wilcoxon p 0.00039
+     FR: median -0.005; paired diff median +0.0297 m over 90 plan-doors, Wilcoxon p 1.45e-05
+  truth: TR median -0.024 [-0.099, -0.000]
+     T: median -0.018; paired diff median +0.0016 m over 90 plan-doors, Wilcoxon p 0.0023
+     PT: median -0.015; paired diff median +0.0300 m over 90 plan-doors, Wilcoxon p 1.06e-05
+     FT: median -0.015; paired diff median +0.0315 m over 90 plan-doors, Wilcoxon p 3.14e-06
+
+3. Scale: the same deviation on the OLD tyre (job 255, slow plans, mu 0.5), truth
+  TVLQR: deviation median -0.108 [-0.202, -0.004] over 51 plan-doors; plan margin median 0.158
+  TVLQG: deviation median -0.045 [-0.071, -0.004] over 51 plan-doors; plan margin median 0.158
+  job 267 plan margin median 0.168 over 90 plan-doors
