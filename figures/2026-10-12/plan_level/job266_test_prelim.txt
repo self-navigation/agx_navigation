@@ -1,0 +1,11 @@
+QR(266) vs Q0(266)  plans 42 | contact runs 32 vs 34 | plans with any contact 23 vs 25 | B-better/A-better plans 2/4 sign p 0.69 | Wilcoxon p 0.32
+RR(266) vs RQ(266)  plans 42 | contact runs 31 vs 33 | plans with any contact 24 vs 24 | B-better/A-better plans 3/6 sign p 0.51 | Wilcoxon p 0.49
+TR(266) vs T(266)  plans 42 | contact runs 30 vs 28 | plans with any contact 22 vs 21 | B-better/A-better plans 4/2 sign p 0.69 | Wilcoxon p 0.41
+Q0(266) vs PQ(266)  plans 42 | contact runs 34 vs 31 | plans with any contact 25 vs 24 | B-better/A-better plans 5/2 sign p 0.45 | Wilcoxon p 0.26
+RQ(266) vs PR(266)  plans 42 | contact runs 33 vs 33 | plans with any contact 24 vs 25 | B-better/A-better plans 5/4 sign p 1 | Wilcoxon p 0.85
+T(266) vs PT(266)  plans 42 | contact runs 28 vs 26 | plans with any contact 21 vs 20 | B-better/A-better plans 4/2 sign p 0.69 | Wilcoxon p 0.41
+QR(266) vs FQ(266)  plans 42 | contact runs 32 vs 27 | plans with any contact 23 vs 20 | B-better/A-better plans 6/2 sign p 0.29 | Wilcoxon p 0.27
+RR(266) vs FR(266)  plans 42 | contact runs 31 vs 27 | plans with any contact 24 vs 21 | B-better/A-better plans 5/1 sign p 0.22 | Wilcoxon p 0.32
+TR(266) vs FT(266)  plans 42 | contact runs 30 vs 27 | plans with any contact 22 vs 22 | B-better/A-better plans 5/2 sign p 0.45 | Wilcoxon p 0.26
+FR(266) vs PR(266)  plans 42 | contact runs 27 vs 33 | plans with any contact 21 vs 25 | B-better/A-better plans 1/7 sign p 0.07 | Wilcoxon p 0.13
+FQ(266) vs PQ(266)  plans 42 | contact runs 27 vs 31 | plans with any contact 20 vs 24 | B-better/A-better plans 1/5 sign p 0.22 | Wilcoxon p 0.1
