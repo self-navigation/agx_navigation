@@ -1,0 +1,6 @@
+TVLQR, true pose: 13 hits / 209 passages (90 distinct plan-doors)
+TVLQG, true pose: 9 hits / 213 passages (90 distinct plan-doors)
+TVLQR, rtab: 20 hits / 215 passages (90 distinct plan-doors)
+TVLQG, rtab: 16 hits / 216 passages (90 distinct plan-doors)
+TVLQR, amcl: 9 hits / 209 passages (90 distinct plan-doors)
+TVLQG, amcl: 14 hits / 216 passages (90 distinct plan-doors)
