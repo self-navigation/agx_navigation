@@ -1,0 +1,9 @@
+job 265 QR median -0.007 | Q0 median -0.005; paired diff -0.0003 over 125 plan-doors, p 0.765
+job 265 QR median -0.007 | PQ median +0.016; paired diff +0.0164 over 125 plan-doors, p 1.28e-06
+job 265 QR median -0.007 | FQ median +0.017; paired diff +0.0104 over 125 plan-doors, p 5.9e-06
+job 265 RR median -0.011 | RQ median -0.006; paired diff +0.0013 over 125 plan-doors, p 0.214
+job 265 RR median -0.011 | PR median -0.000; paired diff +0.0124 over 125 plan-doors, p 5.76e-06
+job 265 RR median -0.011 | FR median -0.000; paired diff +0.0131 over 125 plan-doors, p 1.01e-06
+job 265 TR median -0.011 | T median -0.007; paired diff +0.0001 over 125 plan-doors, p 0.319
+job 265 TR median -0.011 | PT median +0.003; paired diff +0.0128 over 125 plan-doors, p 3.84e-07
+job 265 TR median -0.011 | FT median +0.003; paired diff +0.0144 over 125 plan-doors, p 6.41e-07
