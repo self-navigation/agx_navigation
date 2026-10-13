@@ -1,0 +1,10 @@
+QR(265)+QR(265) vs Q0(265)+Q0(265)  plans 83 | contact runs 0 vs 0 | plans with any contact 0 vs 0 | B-better/A-better plans 0/0 sign p 1 | Wilcoxon p 1
+RR(265)+RR(265) vs RQ(265)+RQ(265)  plans 83 | contact runs 7 vs 3 | plans with any contact 3 vs 3 | B-better/A-better plans 3/2 sign p 1 | Wilcoxon p 0.42
+TR(265)+TR(265) vs T(265)+T(265)  plans 83 | contact runs 0 vs 0 | plans with any contact 0 vs 0 | B-better/A-better plans 0/0 sign p 1 | Wilcoxon p 1
+Q0(265)+Q0(265) vs PQ(265)+PQ(265)  plans 83 | contact runs 0 vs 0 | plans with any contact 0 vs 0 | B-better/A-better plans 0/0 sign p 1 | Wilcoxon p 1
+RQ(265)+RQ(265) vs PR(265)+PR(265)  plans 83 | contact runs 3 vs 2 | plans with any contact 3 vs 1 | B-better/A-better plans 2/1 sign p 1 | Wilcoxon p 0.41
+T(265)+T(265) vs PT(265)+PT(265)  plans 83 | contact runs 0 vs 0 | plans with any contact 0 vs 0 | B-better/A-better plans 0/0 sign p 1 | Wilcoxon p 1
+QR(265)+QR(265) vs FQ(265)+FQ(265)  plans 83 | contact runs 0 vs 0 | plans with any contact 0 vs 0 | B-better/A-better plans 0/0 sign p 1 | Wilcoxon p 1
+RR(265)+RR(265) vs FR(265)+FR(265)  plans 83 | contact runs 7 vs 3 | plans with any contact 3 vs 1 | B-better/A-better plans 2/0 sign p 0.5 | Wilcoxon p 0.18
+TR(265)+TR(265) vs FT(265)+FT(265)  plans 83 | contact runs 0 vs 1 | plans with any contact 0 vs 1 | B-better/A-better plans 0/1 sign p 1 | Wilcoxon p 0.32
+FR(265)+FR(265) vs PR(265)+PR(265)  plans 83 | contact runs 3 vs 2 | plans with any contact 1 vs 1 | B-better/A-better plans 1/0 sign p 1 | Wilcoxon p 0.32

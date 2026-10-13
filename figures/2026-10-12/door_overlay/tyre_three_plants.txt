@@ -1,0 +1,6 @@
+old tyre, mu 0.5 patches - TVLQR: 51 hits / 150 passages (51 distinct plan-doors)
+old tyre, mu 0.5 patches - TVLQG: 5 hits / 152 passages (51 distinct plan-doors)
+realistic tyre, mu 0.5 patches - TVLQR: 0 hits / 152 passages (51 distinct plan-doors)
+realistic tyre, mu 0.5 patches - TVLQG: 0 hits / 153 passages (51 distinct plan-doors)
+realistic tyre, STOCK patches - TVLQR: 25 hits / 153 passages (51 distinct plan-doors)
+realistic tyre, STOCK patches - TVLQG: 24 hits / 153 passages (51 distinct plan-doors)
