@@ -1,0 +1,19 @@
+PRIMARY: fixed k minus TVLQR, per-plan mean door deviation (m, + = inward), Wilcoxon over plans, two-sided
+  amcl : plans 40 | TVLQR median -0.0397 | fixed median -0.0125 | paired shift median +0.0250 mean +0.0237 | inward on 29/40 plans | p 0.000115
+  rtab : plans 40 | TVLQR median -0.0389 | fixed median -0.0162 | paired shift median +0.0263 mean +0.0300 | inward on 30/40 plans | p 5.85e-05
+  truth: plans 40 | TVLQR median -0.0444 | fixed median -0.0191 | paired shift median +0.0304 mean +0.0300 | inward on 32/40 plans | p 1.67e-05
+
+SECONDARY (descriptive): contact runs, arrival, miss > 0.5 m
+  QR: n 189 contact 17 arrived 189 miss 0
+  FQ: n 189 contact 13 arrived 188 miss 1
+  RR: n 189 contact 28 arrived 188 miss 1
+  FR: n 189 contact 10 arrived 185 miss 4
+  TR: n 189 contact 23 arrived 189 miss 0
+  FT: n 189 contact 11 arrived 189 miss 0
+
+SECONDARY: door contacts by the plan's hull margin at the door (6 cells pooled)
+  [-1.00, 0.00) m: passages    18 door contacts   16 rate 0.889
+  [ 0.00, 0.05) m: passages    90 door contacts   13 rate 0.144
+  [ 0.05, 0.10) m: passages   108 door contacts    4 rate 0.037
+  [ 0.10, 0.20) m: passages   684 door contacts   60 rate 0.088
+  [ 0.20, 9.00) m: passages   720 door contacts    7 rate 0.010
