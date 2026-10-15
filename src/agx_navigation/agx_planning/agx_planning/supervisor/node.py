@@ -14,7 +14,8 @@ cancels and re-sends NavigateToPose, or in follow_path computes a new path with
 ComputePathToPose and sends it to FollowPath. With core.replan_source plan|pmp
 the follow_path re-plan instead keeps the PMP plan remainder from the re-join
 target (ref_plan_topic), joined by the controller or by a PMP re-join arc,
-falling back to plan when the solve fails or the wall gate rejects it.
+falling back to plan when the solve fails or the wall gate rejects it. The PMP
+re-join also tries later landings (core.rejoin_windows).
 
 While stopped after a re-plan, a command passes only if it opens clearance at
 the pose predicted escape_horizon seconds ahead. In the slow band a command
@@ -282,6 +283,7 @@ class SupervisorNode(Node):
         solver = None
         if self.core.cfg.replan_source == "pmp":
             from agx_planning.pmp_planner.rejoin_service import RejoinSolver, wall_field
+            from agx_planning.supervisor.core import parse_windows
             c = self.core.cfg
             field = (wall_field(self.walls, pcfg.fp_smooth_sigma)
                      if c.rejoin_wall_w_fp > 0 and self.walls is not None else None)
@@ -291,7 +293,8 @@ class SupervisorNode(Node):
             solver = RejoinSolver(samples, field, dt=dt, T_w_min=c.rejoin_t_min,
                                   max_nodes=c.rejoin_max_nodes or None,
                                   retry_w_fp=c.rejoin_wall_w_fp,
-                                  retry_fp_margin=c.rejoin_wall_margin)
+                                  retry_fp_margin=c.rejoin_wall_margin,
+                                  windows=parse_windows(c.rejoin_windows))
         self.ref = dict(poses=poses, dt=dt, c=c_ref, k=0, solver=solver, pcfg=pcfg)
         self.get_logger().info(f"reference plan: {len(poses)} samples at dt {dt:.3f} s, "
                                f"replan_source={self.core.cfg.replan_source}")
@@ -513,28 +516,31 @@ class SupervisorNode(Node):
         if r["solver"] is not None:
             c0 = self.clearance
 
-            def gate(smp) -> bool:
-                stops = rp.stop_thresholds(c, r["c"], k0, tgt, len(smp))
+            def gate(smp, t) -> bool:
+                stops = rp.stop_thresholds(c, r["c"], k0, t, len(smp))
                 return stops is None or rejoin_clear(smp, self.walls, c0, stops)
 
             v, w = (0.0, 0.0) if self.stop else self.last_cmd
             wl, wr = r["pcfg"].body_to_wheels(v, w)
             x0 = np.array([x, y, yaw, wl, wr])
-            # Solved off the executor thread (a failure takes 1-6 s); only a
-            # held robot waits for the barrier retry, as in the corrector.
+            # Solved off the executor thread (a failure takes 1-6 s); the gate
+            # selects among the landing windows, and only a held robot waits
+            # for the barrier retry, as in the corrector.
             fut = Future()
-            accept = gate if self.stop else None
+            held = bool(self.stop)
 
             def work():
                 try:
-                    out = r["solver"].solve(x0, tgt, k0, accept)
+                    out = r["solver"].solve(x0, tgt, k0, gate, wall_retry=held)
+                    landed = int(r["solver"].last.get("target_index", tgt))
                 except Exception:  # noqa: BLE001 -- a failed solve falls back
-                    out = None
-                fut.set_result(out)
+                    out, landed = None, tgt
+                fut.set_result((out, landed))
 
             threading.Thread(target=work, daemon=True).start()
-            samples = await fut
-            if samples is not None and gate(samples):
+            samples, landed = await fut
+            if samples is not None and gate(samples, landed):
+                tgt = landed  # the remainder joins where the re-join landed
                 head = [s.pose for s in samples]
                 how = "pmp_wall" if r["solver"].last.get("wall_retry") else "pmp"
             else:

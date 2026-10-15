@@ -65,6 +65,32 @@ def _outline(a: float, b: float, spacing: float) -> np.ndarray:
     return np.concatenate(pts)
 
 
+def _trapz(y, x):
+    """np.trapezoid (numpy >= 2) with the numpy 1 name as fallback."""
+    f = getattr(np, "trapezoid", None) or np.trapz
+    return f(y, x)
+
+
+def rejoin_effort_rate(cfg: PlannerConfig, al, ar, wl, wr):
+    """Running cost of re-join cost B without the footprint term [1/s]:
+        gamma_wheel/2 (a_l^2 + a_r^2)
+        + rejoin_w_wheel_barrier/2 * sum_i max(0, |w_i| - w_wheel_max)^2
+        + rejoin_w_v_barrier/2     * max(0, |v| - v_max)^2
+        + rejoin_w_omega_barrier/2 * max(0, |omega| - omega_max)^2
+    Broadcasts. The barriers are the planner's (node.py docstring, running
+    cost) at the re-join weights. Used to score a converged re-join and, by
+    rejoin_service, to price the stretch of nominal plan a shorter re-join
+    leaves to playback, so windows of different length compare on one
+    horizon."""
+    v, om = cfg.wheels_to_body(wl, wr)
+    exc = lambda x, lim: np.maximum(0.0, np.abs(x) - lim) ** 2  # noqa: E731
+    return (0.5 * cfg.gamma_wheel * (al * al + ar * ar)
+            + 0.5 * cfg.rejoin_w_wheel_barrier * (exc(wl, cfg.w_wheel_max)
+                                                  + exc(wr, cfg.w_wheel_max))
+            + 0.5 * cfg.rejoin_w_v_barrier * exc(v, cfg.v_max)
+            + 0.5 * cfg.rejoin_w_omega_barrier * exc(om, cfg.omega_max))
+
+
 class PMPShootingSolver:
     """TPBVP solver for the 5D wheel-space skid-steer PMP problem.
 
@@ -799,6 +825,9 @@ class PMPShootingSolver:
                    override whatever terminal pull the field would add.
           "effort" (B) -- minimum wheel-acceleration effort
                    (gamma_wheel/2 * |a|^2, same tanh-saturated law), plus
+                   the planner's soft wheel/v/omega speed barriers at the
+                   rejoin_w_* weights (_ode_effort; v/omega default off,
+                   PlannerConfig "Re-join cost B"), plus
                    the footprint barrier L_fp when cfg.w_fp > 0 and the
                    field carries wall_dist (rejoin_service.wall_field). With
                    w_fp = 0 the costates lx, ly are constant and B knows
@@ -807,12 +836,26 @@ class PMPShootingSolver:
         goal feeds only v_ref in cost A. y_guess may be on any mesh spanning
         [0, T_w] (shape (10, n)); max_nodes overrides cfg.bvp_max_nodes.
 
+        Cost B carries the planner's soft wheel-speed, v and omega barriers
+        (PlannerConfig "Re-join cost B", _ode_effort; the v / omega ones at
+        weight 0 by default) since 2026-10-10. A
+        CONVERGED solution is then checked for feasibility: if any |w_i|
+        exceeds w_wheel_max + rejoin_wheel_tol (201-point grid over [0, T_w])
+        it is reported with status "infeasible", success False and the
+        reason in message. When a PIN (x0's measured wheel speeds, or the
+        target's) is itself over w_wheel_max, the bar is that pin's speed:
+        the solver cannot be blamed for its boundary conditions. The check
+        applies to both costs.
+
         Never touches the warm-start state of solve(). Returns a dict:
-        success, status ("ok" | "fail" | "exception"), message, nodes,
-        niter, solve_ms, and on success sol (OdeSolution), max_accel,
+        success, status ("ok" | "fail" | "exception" | "infeasible"),
+        message, nodes, niter, solve_ms; for every converged solve max_accel,
         max_wheel (for checking the pins were reached by an admissible
-        control); on a non-exception failure, sol_last (the solver's last
-        iterate -- for plotting only, it satisfies neither pins nor ODE).
+        control) and J (integral of rejoin_effort_rate along it -- cost B's
+        running cost without L_fp, the currency the runtime compares landing
+        windows in); on success sol (OdeSolution); on a non-exception
+        failure, sol_last (the solver's last iterate -- for plotting only, it
+        satisfies neither pins nor ODE when the BVP did not converge).
         """
         if cost not in ("field", "effort"):
             raise ValueError(f"cost must be 'field' or 'effort', got {cost!r}")
@@ -862,17 +905,46 @@ class PMPShootingSolver:
             out["sol_last"] = sol.sol
             return out
         sat = cfg.gamma_wheel * cfg.a_wheel_max
-        y = sol.sol(np.linspace(0.0, T_w, 201))
-        out.update(success=True, status="ok", sol=sol.sol,
-                   max_accel=float(np.max(np.abs(cfg.a_wheel_max * np.tanh(-y[8:10] / sat)))),
-                   max_wheel=float(np.max(np.abs(y[3:5]))))
+        tq = np.linspace(0.0, T_w, 201)
+        y = sol.sol(tq)
+        acc = cfg.a_wheel_max * np.tanh(-y[8:10] / sat)
+        max_wheel = float(np.max(np.abs(y[3:5])))
+        out.update(max_accel=float(np.max(np.abs(acc))), max_wheel=max_wheel,
+                   J=float(_trapz(rejoin_effort_rate(cfg, acc[0], acc[1], y[3], y[4]), tq)))
+        # The pinned endpoints are not the solver's choice: a measured x0 (or
+        # a plan state) already over the limit raises the bar to itself, so
+        # only a solution going FURTHER over than its pins is rejected.
+        lim = max(cfg.w_wheel_max, float(np.max(np.abs(x0[3:5]))),
+                  float(np.max(np.abs(x_target[3:5]))))
+        if not max_wheel <= lim + cfg.rejoin_wheel_tol:
+            # Converged, but to a trajectory the wheels cannot drive: report
+            # it, never clip it into a different one (the clipped samples
+            # would not reach the landing pin).
+            out.update(status="infeasible", sol_last=sol.sol, message=(
+                f"wheel speed {max_wheel:.2f} rad/s exceeds w_wheel_max "
+                f"{cfg.w_wheel_max:g} (or the pins, {lim:.2f}) + tol "
+                f"{cfg.rejoin_wheel_tol:g}"))
+            return out
+        out.update(success=True, status="ok", sol=sol.sol)
         return out
 
     def _ode_effort(self, t: np.ndarray, y: np.ndarray) -> np.ndarray:
-        """Cost B: L = gamma_wheel/2 * (a_l^2 + a_r^2) [+ L_fp]. Same state
-        dynamics and control law as _ode; the costate ODEs are -dH/dx of
-        the kinematic coupling, plus -dL_fp/d(x, y, theta) when the
-        footprint barrier is on (exactly as in _ode)."""
+        """Cost B:
+            L = gamma_wheel/2 * (a_l^2 + a_r^2) + L_bar(w_l, w_r) [+ L_fp]
+        with L_bar the planner's three soft speed barriers at the re-join
+        weights (rejoin_effort_rate; PlannerConfig "Re-join cost B"). Same
+        state dynamics and control law as _ode. Costates are -dH/dx, H = L +
+        lambda . f, assembled exactly as in _ode: the body barriers enter the
+        body-channel gradients
+            H_v  = lx cos(th) + ly sin(th) + w_vb  sign(v) max(0, |v| - v_max)
+            H_om = lt                      + w_omb sign(om) max(0, |om| - om_max)
+        and the wheel rows are their chain-rule images (dv/dw_l = dv/dw_r =
+        c_v, dom/dw_l = -c_w, dom/dw_r = +c_w) plus the per-wheel barrier:
+            d(lam_wl)/dt = -c_v H_v + c_w H_om - w_wb sign(w_l) max(0, |w_l| - w_max)
+            d(lam_wr)/dt = -c_v H_v - c_w H_om - w_wb sign(w_r) max(0, |w_r| - w_max)
+        The barriers depend on the wheel states only, so lx, ly, lt are
+        unchanged by them; -dL_fp/d(x, y, theta) is added when the footprint
+        barrier is on (exactly as in _ode)."""
         cfg = self.cfg
         c_v, c_w = cfg.c_v, cfg.c_w
         th, wl, wr = y[2], y[3], y[4]
@@ -889,13 +961,19 @@ class PMPShootingSolver:
         if cfg.w_fp > 0.0 and self.field is not None and self.field.has_wall_dist:
             _, gpx, gpy, gth = footprint_cost(self.field, y[0], y[1], th, cfg)
             dlx, dly, dlt = dlx - gpx, dly - gpy, dlt - gth
-        H_v = lx * cos_t + ly * sin_t
-        H_om = lt
+        H_v = (lx * cos_t + ly * sin_t
+               + cfg.rejoin_w_v_barrier * np.sign(v) * np.maximum(0.0, np.abs(v) - cfg.v_max))
+        H_om = (lt
+                + cfg.rejoin_w_omega_barrier * np.sign(w)
+                * np.maximum(0.0, np.abs(w) - cfg.omega_max))
+        wb = cfg.rejoin_w_wheel_barrier
+        bl = wb * np.sign(wl) * np.maximum(0.0, np.abs(wl) - cfg.w_wheel_max)
+        br = wb * np.sign(wr) * np.maximum(0.0, np.abs(wr) - cfg.w_wheel_max)
         return np.vstack([
             v * cos_t, v * sin_t, w, al, ar,
             dlx, dly, dlt,
-            -c_v * H_v + c_w * H_om,
-            -c_v * H_v - c_w * H_om,
+            -c_v * H_v + c_w * H_om - bl,
+            -c_v * H_v - c_w * H_om - br,
         ])
 
     def _rejoin_guess(self, x0: np.ndarray, x_target: np.ndarray,
