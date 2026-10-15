@@ -202,7 +202,7 @@ def _pillar_case():
 def test_wall_retry_clears_a_pillar_the_blind_rejoin_hits():
     from agx_planning.pmp_planner.rejoin_service import RejoinSolver
     swd, field, plan, x0 = _pillar_case()
-    clear = lambda smp: min(swd.body_clearance(*s.pose) for s in smp) > 0.0  # noqa: E731
+    clear = lambda smp, t=None: min(swd.body_clearance(*s.pose) for s in smp) > 0.0  # noqa: E731
     blind = RejoinSolver(plan, None, dt=0.1)
     out = blind.solve(x0, 33, k_now=3, accept=clear)
     assert out is not None and not clear(out) and not blind.last["wall_retry"]
@@ -212,5 +212,5 @@ def test_wall_retry_clears_a_pillar_the_blind_rejoin_hits():
     assert np.allclose(out[-1].pose[:2], plan[33].pose[:2], atol=1e-3)
     # an accepted wall-blind answer is returned as is, with no retry
     far = x0 + np.array([-0.4, 0.0, 0.0, 0.0, 0.0])
-    assert rs.solve(far, 33, k_now=0, accept=lambda smp: True) is not None
+    assert rs.solve(far, 33, k_now=0, accept=lambda smp, t: True) is not None
     assert not rs.last["wall_retry"]

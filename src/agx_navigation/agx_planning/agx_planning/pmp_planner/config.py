@@ -98,6 +98,46 @@ class PlannerConfig:
     w_wheel_max: float = 20.0
     w_wheel_barrier: float = 50.0
 
+    # --- Re-join cost B ("effort", shooting_solver.solve_rejoin) ---
+    # The re-join's running cost is gamma_wheel/2 * |a|^2 PLUS the
+    # planner's three soft barriers, in the same functional form and
+    # against the same limits (w_wheel_max, v_max, omega_max):
+    #   (1/2) rejoin_w_wheel_barrier * sum_i max(0, |w_i| - w_wheel_max)^2
+    #   (1/2) rejoin_w_v_barrier     * max(0, |v| - v_max)^2
+    #   (1/2) rejoin_w_omega_barrier * max(0, |omega| - omega_max)^2
+    # Separate fields so the re-join is tuned without touching the planner
+    # (the launch file's planner overrides do not reach the re-join, which
+    # builds its own PlannerConfig). Added 2026-10-10: before, cost B had no
+    # speed term and wheel speeds were only clipped after the solve.
+    # The WHEEL barrier is on at the planner's weight: it is the hardware
+    # net, and offline (tools/rejoin_windows_bench.py, 150 Phase-0 problems,
+    # run_data/2026-10-10_nojob_rejoin-windows-bench) it pulled 6 of the 10
+    # over-limit re-joins to 20.0 rad/s, 2 stayed over only as far as their
+    # measured x0 (see rejoin_wheel_tol) and 2 became reported failures.
+    # Where it does not bind the solve time is unchanged (median 6 ms);
+    # where it binds (8/150) a solve takes 0.3-1.4 s and a failure 1.6-4.6 s,
+    # past a moving robot's rejoin_max_age.
+    # The v / omega barriers are OFF by default (0), deliberately unlike the
+    # planner: v_max / omega_max are behaviour bounds the plans themselves
+    # do not keep (traj_data_v2 plans run at a median |v| of 0.84 m/s
+    # against v_max 0.5), and the re-join is PINNED to plan states at both
+    # ends, so a v barrier fights its own boundary conditions. On the same
+    # bench it cut gate-passing re-joins from 90.0% to 80.7% and raised the
+    # median solve from 6 to 41 ms. 50.0 (the planner's) turns them on.
+    # rejoin_wheel_tol: post-solve feasibility check [rad/s]. A solution
+    #    whose |w_i| exceeds w_wheel_max + this anywhere (201-point grid
+    #    over [0, T_w]) is reported as status "infeasible", never clipped
+    #    into a different trajectory. A pin already over w_wheel_max (a
+    #    measured x0 can be) raises the bar to the pin's own speed. The
+    #    soft barrier at weight 50 against gamma_wheel = 0.0016 leaves a
+    #    penetration of ~1e-4 rad/s when a feasible answer exists (unit
+    #    test case), so 0.5 only trips on problems the barrier could not
+    #    make feasible. inf disables the check.
+    rejoin_w_wheel_barrier: float = 50.0
+    rejoin_w_v_barrier: float = 0.0
+    rejoin_w_omega_barrier: float = 0.0
+    rejoin_wheel_tol: float = 0.5
+
     # --- Command deadzone (body space) ---
     # Applied to the body velocities reconstructed from the wheel
     # commands, BEFORE mapping back to wheels: a near-zero v with

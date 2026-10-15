@@ -48,7 +48,7 @@ from agx_planning.rl_corrector.obs import build_observation
 from agx_planning.rl_corrector.policy import load_policy
 from agx_planning.runtime_corrector import tvlqg as tvlqg_mod
 from agx_planning.runtime_corrector import tvlqr as tvlqr_mod
-from agx_planning.supervisor.core import SupervisorConfig, SupervisorCore
+from agx_planning.supervisor.core import SupervisorConfig, SupervisorCore, parse_windows
 from agx_planning.supervisor.recovery import backoff_and_face
 from agx_planning.supervisor.walls import SignedWallDistance, rejoin_clear
 from agx_planning.utils import declare_and_load_dataclass
@@ -897,7 +897,12 @@ class WheelCorrectorNode(Node):
           ``rejoin_wall_w_fp`` > 0 a HELD robot's re-join that fails the gate
           is re-solved with the footprint barrier (rejoin_service "Wall
           retry"); a moving robot's is not (the retry outlives
-          ``rejoin_max_age``);
+          ``rejoin_max_age``). The re-join is solved for that waypoint AND
+          for the later landings of ``rejoin_windows``; the gate selects, the
+          cheapest passing one is spliced, and playback resumes at the index
+          it LANDED on + 1 (rejoin_service "Landing windows", "Playback
+          clock"). Its cost carries the wheel-speed barrier and an
+          over-limit solution is rejected, never clipped (2026-10-10);
         * an off-plan trigger may be HELD (no re-join requested, the
           corrector keeps tracking) while the heading error exceeds
           ``offplan_max_heading`` or k* is in the plan's last
@@ -1044,7 +1049,8 @@ class WheelCorrectorNode(Node):
                     T_w_min=self._sup_cfg.rejoin_t_min,
                     max_nodes=self._sup_cfg.rejoin_max_nodes or None,
                     retry_w_fp=self._sup_cfg.rejoin_wall_w_fp,
-                    retry_fp_margin=self._sup_cfg.rejoin_wall_margin)
+                    retry_fp_margin=self._sup_cfg.rejoin_wall_margin,
+                    windows=parse_windows(self._sup_cfg.rejoin_windows))
             except Exception as exc:  # noqa: BLE001 - re-join is optional
                 self.get_logger().error("re-join solver unavailable (%s); triggers "
                                         "will only stop or replan." % exc)
@@ -1151,13 +1157,22 @@ class WheelCorrectorNode(Node):
         tgt = self._sup.rejoin_target(d.k_star, self._buf.active_dt, self._rejoin_t_min())
         self._rejoin_meta = dict(t0=now, tgt=tgt, k0=d.k_star, c0=clearance,
                                  reason=d.reason, held=bool(d.stop), x0=x0)
-        # Only a held robot may wait for the barrier retry (SupervisorConfig).
-        accept = None
-        if d.stop:
-            k0, c0 = d.k_star, clearance
-            accept = lambda smp: self._rejoin_gate(smp, k0, tgt, c0)  # noqa: E731
-        self._rejoin_future = self._rejoin_pool.submit(
-            self._rejoin_solver.solve, x0, tgt, d.k_star, accept)
+        # The wall gate SELECTS among the landing windows for every robot;
+        # only a held one may wait for the barrier retry (SupervisorConfig),
+        # and a moving one stops adding windows at half rejoin_max_age.
+        k0, c0 = d.k_star, clearance
+        accept = lambda smp, t: self._rejoin_gate(smp, k0, t, c0)  # noqa: E731
+        held = bool(d.stop)
+        budget = None if held else 0.5 * self._sup_cfg.rejoin_max_age
+        solver = self._rejoin_solver
+
+        def work():
+            out = solver.solve(x0, tgt, k0, accept, wall_retry=held, budget_s=budget)
+            # Copied on the worker thread: the landed index travels with the
+            # samples, so a later solve cannot overwrite it before the poll.
+            return out, dict(solver.last)
+
+        self._rejoin_future = self._rejoin_pool.submit(work)
 
     def _poll_rejoin(self, now: float) -> None:
         f = self._rejoin_future
@@ -1166,15 +1181,18 @@ class WheelCorrectorNode(Node):
         self._rejoin_future = None
         meta = self._rejoin_meta
         try:
-            samples = f.result()
+            samples, last = f.result()
         except Exception:  # noqa: BLE001
-            samples = None
+            samples, last = None, {}
+        # The landed index (rejoin_service "Landing windows"): the gate's
+        # thresholds and the resume index follow it, not the requested target.
+        tgt = int(last.get("target_index", meta["tgt"]))
         age = now - meta["t0"]
         wall = meta["reason"] == "wall"
         if samples is None:
             self._sup_counts["rejoin_fail"] += 1
             self.get_logger().warn("re-join failed after %.2f s (%s)" % (
-                age, self._rejoin_solver.last.get("status")))
+                age, last.get("status")))
             if wall:
                 self._full_replan("wall stop, re-join failed")
             return
@@ -1182,7 +1200,7 @@ class WheelCorrectorNode(Node):
             self._sup_counts["rejoin_stale"] += 1
             self._sup.latched = False  # let the next tick ask again
             return
-        if not self._rejoin_gate(samples, meta["k0"], meta["tgt"], meta["c0"]):
+        if not self._rejoin_gate(samples, meta["k0"], tgt, meta["c0"]):
             self._sup_counts["rejoin_blocked"] += 1
             self.get_logger().warn("re-join blocked by wall clearance")
             if wall:
@@ -1192,18 +1210,20 @@ class WheelCorrectorNode(Node):
         # has already lived through. A held robot has not moved.
         skip = 0 if meta["held"] else min(int(age / self._buf.active_dt),
                                           len(samples) - 1)
-        self._buf.splice(samples[skip:], meta["tgt"] + 1)
+        self._buf.splice(samples[skip:], tgt + 1)
         self._overlay_c0 = meta["c0"]
         self._sup_counts["rejoin_ok"] += 1
-        if self._rejoin_solver.last.get("wall_retry"):
+        if last.get("wall_retry"):
             self._wall_retry_ok += 1
         self._rejoin_retries = 0
         self._await_rejoin = False
         self.get_logger().info("re-join spliced: %d samples, resume at %d (T_w %.1f s,"
-                               " %.0f ms, %s)" % (len(samples) - skip, meta["tgt"] + 1,
-                                                  self._rejoin_solver.last.get("T_w", 0.0),
-                                                  self._rejoin_solver.last.get("solve_ms", 0.0),
-                                                  self._rejoin_solver.last.get("status")))
+                               " %.0f ms, %s, %d/%d windows passed, max wheel %.1f)" % (
+                                   len(samples) - skip, tgt + 1, last.get("T_w", 0.0),
+                                   last.get("solve_ms", 0.0), last.get("status"),
+                                   sum(w["passed"] for w in last.get("windows", [])),
+                                   len(last.get("windows", [])),
+                                   last.get("max_wheel") or 0.0))
 
     def _full_replan(self, why: str) -> None:
         """Tier 3: drop the plan and request a new one from the current pose.

@@ -136,8 +136,8 @@ def _label(prob):
                cmin=np.nan)
     c0 = float(s[7])
 
-    def accept(smp):  # the runtime's wall gate
-        return rejoin_clear(smp, walls, c0, stop_thresholds(c_plan, k, tgt, len(smp)))
+    def accept(smp, t=tgt):  # the runtime's wall gate (t = landing index; one window here)
+        return rejoin_clear(smp, walls, c0, stop_thresholds(c_plan, k, t, len(smp)))
 
     n_before = len(rs.solve_ms)
     samples = rs.solve(x0, tgt, k_now=k, accept=accept)

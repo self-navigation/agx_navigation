@@ -76,6 +76,14 @@ class SupervisorConfig:
     rejoin_max_age: float = 0.5     # [s] discard a re-join that arrives later than this
     rejoin_max_nodes: int = 3000    # solve_bvp mesh cap; bounds the 1-6 s failure case
     rejoin_t_min: float = 3.0       # [s] T_w floor (Phase 0: 99% solved at >= 3 s)
+    # [s] extra re-join landing windows, space-separated (a string so the
+    # 'k=v,k=v' launch overrides can carry it): the re-join is also solved
+    # landing k* + T/dt for each T (never earlier than rejoin_target's
+    # index) and the cheapest feasible, wall-gated answer is spliced
+    # (rejoin_service "Landing windows"). "3" = the single-target behaviour
+    # before 2026-10-10. A moving robot stops trying further windows once
+    # rejoin_max_age/2 is spent and one has passed.
+    rejoin_windows: str = "3.0 5.0 8.0"
     # Wall-aware re-join (rejoin_service "Wall retry"): > 0 re-solves a HELD
     # robot's re-join with the footprint barrier at this weight when the
     # wall-blind answer fails the wall gate. 0 = wall-blind only. A moving
@@ -100,6 +108,12 @@ class SupervisorConfig:
     # Back off and turn to face the target (recovery.py) when a held re-join
     # fails or is blocked; at most this many per goal (0 = off).
     recovery_max: int = 3
+
+
+def parse_windows(spec: str) -> tuple:
+    """SupervisorConfig.rejoin_windows ("3.0 5.0 8.0", commas also accepted)
+    -> (3.0, 5.0, 8.0)."""
+    return tuple(float(t) for t in str(spec).replace(",", " ").split())
 
 
 @dataclass
