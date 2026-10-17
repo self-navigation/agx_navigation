@@ -23,9 +23,9 @@ doors, to_frame, HL, HW, RD = g["doors"], g["to_frame"], g["HL"], g["HW"], g["RD
 XG = np.linspace(-1.2, 1.2, 121)
 J255, J257, J259 = "2026-10-12_job255_steerable", "2026-10-12_job257_kprior", "2026-10-12_job259_dev-replicate"
 J265, J268 = "2026-10-12_job265_tyre-grid", "2026-10-13_job268_door-deviation"
-ROWS = [("Original tyre, $v_{\\max}$ = 0.45 m/s", -0.33, f"{J255}:TR+{J259}:TR", f"{J257}:FT+{J259}:FT", False),
-        ("Calibrated tyre, $v_{\\max}$ = 0.45 m/s", -0.10, f"{J265}/test:TR+{J265}/dev:TR", f"{J265}/test:FT+{J265}/dev:FT", False),
-        ("Calibrated tyre, $v_{\\max}$ = 0.9 m/s", -0.10, f"{J268}/test:TR+{J268}/dev:TR", f"{J268}/test:FT+{J268}/dev:FT", True)]
+ROWS = [("Original tire, $v_{\\max}$ = 0.45 m/s", -0.33, f"{J255}:TR+{J259}:TR", f"{J257}:FT+{J259}:FT", False),
+        ("Calibrated tire, $v_{\\max}$ = 0.45 m/s", -0.10, f"{J265}/test:TR+{J265}/dev:TR", f"{J265}/test:FT+{J265}/dev:FT", False),
+        ("Calibrated tire, $v_{\\max}$ = 0.9 m/s", -0.10, f"{J268}/test:TR+{J268}/dev:TR", f"{J268}/test:FT+{J268}/dev:FT", True)]
 C_R, C_K, C_HIT = "#d95f02", "#1f5fa8", "#c00000"
 
 
