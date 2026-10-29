@@ -71,7 +71,7 @@ def load_trace(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=".")
+    ap.add_argument("--root", default=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ap.add_argument("--plans", default=None, help="default: first N of tools/jobs/broad40.txt")
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--soak", default=None, help=f"default: <root>/{RUN}/soak_identity.jsonl")

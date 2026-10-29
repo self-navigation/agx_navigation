@@ -22,6 +22,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ssh_cmd=(ssh -F "$here/ssh_config" agx)
+[ -r "$here/ssh_config" ] || { echo "agx-run: no $here/ssh_config; run \`just ssh-config\` first" >&2; exit 2; }
 
 detach=0
 log=""

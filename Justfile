@@ -8,7 +8,8 @@
 # jump host -- and which one works changes several times a day, because the VPN
 # drops on lid-close and takes ~15 minutes to come back. NOTHING HERE CHOOSES
 # BETWEEN THEM: every recipe talks to the host alias `agx`, whose ProxyCommand
-# (tools/agx-route) probes both and prefers direct. See ssh_config.
+# (tools/agx-route) probes both and prefers direct. See ssh_config.in; run
+# `just ssh-config` once per clone to generate ./ssh_config from the site file.
 #
 # So there is no route override to remember. To force one anyway, for testing:
 #     AGX_ROUTE=jump just sync
@@ -60,16 +61,25 @@ route-check:
     @AGX_ROUTE_VERBOSE=1 {{_ssh}} 'echo "reached $(hostname) as $(whoami)"'
     @echo "cached route: $(cat /tmp/agx-route.$(id -u) 2>/dev/null || echo none)"
 
+# Generate ./ssh_config from ssh_config.in and the site file (addresses, VM
+# user), with the ProxyCommand pointing into this clone. Rerun after moving the
+# clone or editing the site file.
+ssh-config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    site=${AGX_SITE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/agx/site.env}
+    [ -r "$site" ] || { echo "no site file at $site; copy site.env.example there and fill it in" >&2; exit 1; }
+    . "$site"
+    : "${AGX_DIRECT_HOST:?set AGX_DIRECT_HOST in $site}"
+    sed -e "s|@AGX_DIRECT_HOST@|$AGX_DIRECT_HOST|" -e "s|@AGX_USER@|${AGX_USER:-programmer}|" \
+        -e "s|@REPO@|{{justfile_directory()}}|" \
+        {{justfile_directory()}}/ssh_config.in > {{justfile_directory()}}/ssh_config
+    echo "wrote {{justfile_directory()}}/ssh_config"
+
 # One-time: make `ssh agx` / `scp x agx:` / `rsync agx:...` work with NO flags,
 # by Including this repo's ssh_config from ~/.ssh/config. The Justfile passes
 # -F explicitly and does not need this; interactive use does.
-#
-# Idempotent, and it rewrites the ProxyCommand path to wherever this clone
-# actually lives, so it is correct on a machine that checked the repo out
-# somewhere else.
-ssh-setup:
-    @sed -i 's|ProxyCommand .*/tools/agx-route|ProxyCommand {{justfile_directory()}}/tools/agx-route|' \
-        {{justfile_directory()}}/ssh_config
+ssh-setup: ssh-config
     @mkdir -p ~/.ssh
     @touch ~/.ssh/config
     @grep -qF 'Include {{justfile_directory()}}/ssh_config' ~/.ssh/config \

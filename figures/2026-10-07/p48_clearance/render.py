@@ -23,7 +23,7 @@ from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch, Polygon  # noqa: E402
 from PIL import Image  # noqa: E402
 
-MAIN = "."
+MAIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 OUT = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(OUT)))
 RUN = f"{MAIN}/run_data/2026-10-07_nojob_p48-clearance"

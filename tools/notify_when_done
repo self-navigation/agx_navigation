@@ -2,7 +2,8 @@
 # notify_when_done [--detach] <runner.log> [title]
 #
 # Wait for a job's runner.log to get its `[fac] finished` line, then push to
-# ntfy (<NTFY_URL>; server docs not kept here). The push carries the finished line, the
+# ntfy at $NTFY_URL (from the environment or the site file,
+# ${AGX_SITE_ENV:-~/.config/agx/site.env}). The push carries the finished line, the
 # count of `rc=` lines whose rc is not 0, and the first few of them. Priority
 # is high if any worker failed.
 #
@@ -32,7 +33,11 @@ fi
 
 log=$1
 title=${2:-"agx: $(basename "$(dirname "$(realpath -m "$log")")") finished"}
-url=${NTFY_URL:-<NTFY_URL>}
+site_env=${AGX_SITE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/agx/site.env}
+# shellcheck source=/dev/null
+[ -z "${NTFY_URL:-}" ] && [ -r "$site_env" ] && . "$site_env"
+url=${NTFY_URL:-}
+[ -n "$url" ] || { echo "NTFY_URL is not set (environment or $site_env)" >&2; exit 1; }
 token_file=${NTFY_TOKEN_FILE:-$HOME/.config/ntfy/agx-jobs.token}
 interval=${POLL_INTERVAL:-120}
 deadline=$(( $(date +%s) + ${MAX_AGE_H:-72} * 3600 ))

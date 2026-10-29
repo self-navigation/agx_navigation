@@ -1,19 +1,24 @@
 # Sourced by job runners: phone pushes for job start, a periodic heartbeat, and
 # finish (or death without finishing). Built into the runner rather than a
 # separate watcher so it cannot be forgotten.
-# Server: <NTFY_URL>; token ~/.config/ntfy/agx-jobs.token
-# on the VM (write-only). No token -> every call is a silent no-op, so runs on
-# a machine without it still work. Env: NTFY_URL, NTFY_TOKEN_FILE,
+# Server: NTFY_URL, from the environment or the site file
+# (${AGX_SITE_ENV:-~/.config/agx/site.env}); token ~/.config/ntfy/agx-jobs.token
+# on the VM (write-only). No URL or no token -> every call is a silent no-op, so
+# runs on a machine without them still work. Env: NTFY_URL, NTFY_TOKEN_FILE,
 # NTFY_HEARTBEAT_H (default 1; 0 disables), NTFY_POLL_S, NTFY_STALL_MIN,
 # NTFY_DISABLE=1.
 
-_NTFY_URL=${NTFY_URL:-<NTFY_URL>}
+_AGX_SITE_ENV=${AGX_SITE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/agx/site.env}
+# shellcheck source=/dev/null
+[ -z "${NTFY_URL:-}" ] && [ -r "$_AGX_SITE_ENV" ] && . "$_AGX_SITE_ENV"
+_NTFY_URL=${NTFY_URL:-}
 _NTFY_TOKEN_FILE=${NTFY_TOKEN_FILE:-$HOME/.config/ntfy/agx-jobs.token}
 _NTFY_HB_PID=""
 _NTFY_FINISHED=0
 
 ntfy_push() {  # <title> <priority> <tags> <message>; never fails the caller
     [ "${NTFY_DISABLE:-0}" = 1 ] && return 0
+    [ -n "$_NTFY_URL" ] || return 0
     [ -r "$_NTFY_TOKEN_FILE" ] || return 0
     local i
     for i in 1 2 3; do

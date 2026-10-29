@@ -1,0 +1,24 @@
+# Template for the ssh config of the GPU training VM. `just ssh-config` fills it
+# in from the site file (see site.env.example) and writes ./ssh_config, which is
+# gitignored because it holds this site's addresses.
+#
+# `agx` is the ONE name for that machine. Its ProxyCommand (tools/agx-route)
+# picks the direct or the jump-host route depending on which is alive, so
+# nothing downstream -- ssh, scp, rsync, git, the Justfile -- ever needs to know
+# which one is in use. See tools/agx-route for the probe and its cache.
+#
+# Used two ways:
+#   * the Justfile passes -F <repo>/ssh_config explicitly, so `just` works
+#     after `just ssh-config`;
+#   * `just ssh-setup` also adds an Include line to ~/.ssh/config, after which
+#     plain `ssh agx` / `scp x agx:` / `rsync agx:...` work with no flags.
+
+Host agx
+    HostName @AGX_DIRECT_HOST@
+    User @AGX_USER@
+    ProxyCommand @REPO@/tools/agx-route %h %p
+    ServerAliveInterval 30
+    ServerAliveCountMax 6
+
+# The Proxmox hypervisor is reachable for host-level work, but its route is
+# deliberately not recorded in this repo. Everything here goes through `agx`.

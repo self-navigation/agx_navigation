@@ -40,7 +40,7 @@ from multiprocessing import Pool
 import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN = "."
+MAIN = os.environ.get("AGX_MAIN_CHECKOUT", REPO)
 sys.path[:0] = [os.path.join(REPO, "tools"),
                 os.path.join(REPO, "src/agx_navigation/agx_planning"),
                 os.path.join(REPO, "src/rudn-ordjo-building")]
