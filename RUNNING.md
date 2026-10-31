@@ -30,13 +30,19 @@ make              # rosdep + pip dependencies, then colcon build
 make test         # unit tests of the pure Python modules, no ROS needed
 ```
 
-On a fresh machine `make setup` takes about 25 minutes; most of it is pip downloading
-PyTorch and its CUDA libraries (3-4 GB). If a download fails, run `make setup` again: the
+On a fresh machine `make setup` takes 25-60 minutes, depending on your connection; most of
+it is pip downloading PyTorch and its CUDA libraries (3-4 GB). If a download fails, run `make setup` again: the
 steps that already finished are repeated quickly. apt and pip use the usual proxy
 settings, if you need one.
 
 `make` sources ROS for you. In a new shell, run `source install/setup.bash` before any
 `ros2` command.
+
+Three messages during setup and build are expected and harmless: pip's
+`colcon-core ... requires setuptools<80` resolver error, its warnings that scripts were
+installed to `~/.local/bin`, which is not on `PATH`, and colcon's `packages had stderr output`
+summary for `agx_chassis`, `rslidar_sdk` and `ugv_sdk`. The test summary should read
+`379 passed`.
 
 ## 2. Start the emulator with the paper's configuration
 
@@ -52,7 +58,8 @@ domain. A foreign `/map` then replaces this one, and every goal is reported as o
 the map. `ros2 daemon stop` matters: a daemon started earlier keeps the old setting.
 
 ```bash
-make fixture FLOOR_NUMBER=6 CORRECTOR=tvlqr SURFACE_PATCHES=false
+make fixture FLOOR_NUMBER=6 CORRECTOR=tvlqr SURFACE_PATCHES=false \
+    FIXTURE_EXTRA_PARAMS="tvlqr_params:=sideslip_k=-0.10,sideslip_v_gate=0.3"
 ```
 
 This starts Gazebo with floor 6 of the building, the pre-built map of that floor,
@@ -62,6 +69,9 @@ the map, the field and the plan. The stack is ready for a goal when the log show
 
 - `CORRECTOR` is `identity` by default, which plays the plan back without feedback.
   The paper's controller is `tvlqr`.
+- `sideslip_k=-0.10` is the paper's side-slip term with a fixed k. Without it, the robot
+  slides wide in tight turns; on the goal in section 3 it catches the door jamb and stops
+  there, about 2.3 m short.
 - `SURFACE_PATCHES=false` removes the default low-friction patches. They sit under the
   spawn point, so leave them off for a first run.
 - Add `HEADLESS=true` to run without the Gazebo window.
@@ -91,9 +101,12 @@ that the goal has ended, successfully or not; read the outcome from the stack's 
 
 Not every goal can be solved. For some start/goal pairs the boundary-value solver gives
 up (`BVP solve failed ... The maximum number of mesh nodes is exceeded`); the planner
-then reports a failure and the robot does not move. Try another goal.
+then reports a failure and the robot does not move. Try another goal. Rarely, the solver
+gives no answer at all; if nothing follows `Got field` for a few minutes, restart the
+fixture and send the goal again.
 
-Restart the fixture before every goal. Wheel odometry is never reset, so a second goal
+Restart the fixture before every goal: stop it with Ctrl-C in its terminal, then run the
+`make fixture` command again. Wheel odometry is never reset, so a second goal
 plans from a start pose that has already drifted, and after a goal has ended the
 `-w 2` publish can wait forever.
 
@@ -122,12 +135,11 @@ ros2 topic echo /wheel_corrector/tvlqr_diagnostics      # errors and correction
 
 | what | how |
 | --- | --- |
-| side-slip term with a fixed k | `FIXTURE_EXTRA_PARAMS="tvlqr_params:=sideslip_k=-0.10,sideslip_v_gate=0.3"` |
+| plain TVLQR, no side-slip term | leave out `FIXTURE_EXTRA_PARAMS` |
 | adaptive TVLQR (online k) | `FIXTURE_EXTRA_PARAMS="tvlqr_params:=tvlqg.enabled=true,sideslip_v_gate=0.3"` |
 | adaptive TVLQR with a prior k | add `,tvlqg.k0=-0.10,tvlqg.k_plan=-0.10` to the line above |
 | AMCL localization (lidar) | `LOCALIZATION=amcl` |
-| RTAB-Map localization | `LOCALIZATION=rtab` |
-| SLAM from scratch, no pre-built map | `make run SIM=true FLOOR_NUMBER=6 CORRECTOR=tvlqr` |
+| RTAB-Map localization | `LOCALIZATION=rtab`; install `ros-jazzy-rtabmap-odom` once first |
 
 As in section 3, restart the fixture for each run.
 
@@ -141,7 +153,7 @@ following:
 3. sends the goal and waits for the end of the run;
 4. scores the run from Gazebo ground truth.
 
-It writes one JSON row per run and a track file. For example, one run of the
+It writes one JSON row per run and a track file. Run it from the repository root. For example, one run of the
 high-speed replication (fixed k, ground truth, calibrated tire, mu = 0.5 patches):
 
 ```bash
@@ -166,7 +178,7 @@ tools/with-worker 1 python3 tools/compare_run.py \
 - The stack of the last run keeps running after `compare_run.py` exits (each run tears
   down the previous one). Stop it with `bash tools/kill_stack.sh $PWD kill agx1` (the
   partition is `agx` plus the worker number).
-- At teardown the stack log shows `[Err] [UserCommands.cc] Entity named [door_leaf_...] not
+- At teardown the stack log may show `[Err] [UserCommands.cc] Entity named [door_leaf_...] not
   found, so not removed`. This is harmless.
 
 The exact command line of every experiment cell is in the `config.txt` of its directory
@@ -177,12 +189,13 @@ in the dataset record.
 Plan sets are built offline, with no ROS and no Gazebo:
 
 ```bash
-python3 tools/build_plan_set.py sample --out plans/ --floors 6
-python3 tools/build_plan_set.py solve  --out plans/ --jobs 8 --limit 16
+python3 tools/build_plan_set.py sample --out plan_set --floors 6
+python3 tools/build_plan_set.py solve  --out plan_set --jobs 8 --limit 16
 ```
 
 `sample` draws candidate start/goal pairs (250 per length band by default). `solve`
-solves them in parallel; `--limit 16` stops after 16, which is enough to try it out.
+solves them in parallel into `plan_set/plans/`; `--limit 16` stops after 16 (under a
+minute), which is enough to try it out.
 Without it, all the candidates are solved: about 1000 for one floor, roughly 40 minutes
 on 8 cores. About a third of the pairs fail to solve; that is expected (section 3).
 
