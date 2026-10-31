@@ -159,6 +159,15 @@ tools/with-worker 1 python3 tools/compare_run.py \
   from the robot's footprint against the map.
 - `tools/with-worker N` isolates the run in its own Gazebo partition and ROS domain,
   so several workers can run side by side.
+- The row is appended to `--out`. The track file and the stack's logs go to `--log-dir`
+  (default `/tmp/compare_runs/`); the row's `track_path` names the track. A run that
+  failed has `outcome` set to the failure (for example `stack-failed`) and no scores.
+  One run takes about a minute: about 10 s to bring the stack up, then the drive.
+- The stack of the last run keeps running after `compare_run.py` exits (each run tears
+  down the previous one). Stop it with `bash tools/kill_stack.sh $PWD kill agx1` (the
+  partition is `agx` plus the worker number).
+- At teardown the stack log shows `[Err] [UserCommands.cc] Entity named [door_leaf_...] not
+  found, so not removed`. This is harmless.
 
 The exact command line of every experiment cell is in the `config.txt` of its directory
 in the dataset record.
@@ -169,8 +178,13 @@ Plan sets are built offline, with no ROS and no Gazebo:
 
 ```bash
 python3 tools/build_plan_set.py sample --out plans/ --floors 6
-python3 tools/build_plan_set.py solve  --out plans/ --jobs 8
+python3 tools/build_plan_set.py solve  --out plans/ --jobs 8 --limit 16
 ```
+
+`sample` draws candidate start/goal pairs (250 per length band by default). `solve`
+solves them in parallel; `--limit 16` stops after 16, which is enough to try it out.
+Without it, all the candidates are solved: about 1000 for one floor, roughly 40 minutes
+on 8 cores. About a third of the pairs fail to solve; that is expected (section 3).
 
 Each solved plan is an `.npz` file with the poses, wheel speeds and costates on a 0.1 s
 grid. The format is described in the dataset record's `plans/README.md`.
