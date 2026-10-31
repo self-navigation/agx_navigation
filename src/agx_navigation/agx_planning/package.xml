@@ -25,7 +25,7 @@
   <exec_depend>scout_msgs</exec_depend>
   <exec_depend>scout_base</exec_depend>
   <exec_depend>tf_transformations</exec_depend>
-  <exec_depend>pmp_planner_msgs</exec_depend>
+  <exec_depend>agx_planning_msgs</exec_depend>
   <!-- RL corrector GazeboBridge: ground-truth pose / teleport / terrain spawn -->
   <exec_depend>rudn_ordjo_building</exec_depend>
 

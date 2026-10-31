@@ -107,7 +107,7 @@ setup: install-ros install-gazebo system-deps deps
 
 install-ros:
 	sudo apt update
-	sudo apt install software-properties-common
+	sudo apt install -y software-properties-common
 	sudo add-apt-repository -y universe
 	sudo apt install -y curl
 	export ROS_APT_SOURCE_VERSION=$$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F\" '{print $$4}') && \
@@ -125,23 +125,19 @@ install-gazebo:
 	echo "deb [arch=$$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable $$(lsb_release -cs) main" | \
 		sudo tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
 	sudo apt update
-	sudo apt install gz-harmonic
+	sudo apt install -y gz-harmonic
 
+# librealsense comes from the ROS repo through rosdep (realsense2_camera)
 system-deps:
-	sudo mkdir -p /etc/apt/keyrings
-	curl -sSf https://librealsense.realsenseai.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null
-	echo "deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.realsenseai.com/Debian/apt-repo `lsb_release -cs` main" | \
-		sudo tee /etc/apt/sources.list.d/librealsense.list && \
-	sudo apt update
 	sudo apt install -y \
 		libasio-dev \
 		libpcap-dev \
-		librealsense2-dev \
-		librealsense2-utils \
 		python3-pip
 
 ros-deps:
-	rosdep install --from-paths src --ignore-src -r -y
+	[ -e /etc/ros/rosdep/sources.list.d/20-default.list ] || sudo rosdep init
+	rosdep update
+	source /opt/ros/jazzy/setup.bash && rosdep install --from-paths src --ignore-src -y --skip-keys "catkin cmake_modules"
 
 .ros_python_deps.stamp: $(PYTHON_SETUP_FILES)
 	pip install --break-system-packages $(PYTHON_PACKAGES)
