@@ -238,8 +238,10 @@ for attempt in $(seq 1 "$TRIES"); do
     [ -n "$SCOPE_PREFIX" ] && systemctl --user reset-failed "$SCOPE_UNIT" >/dev/null 2>&1
     # tmux windows inherit the tmux SERVER's env, not ours: forward the DDS
     # transport override explicitly (#32 runs an arm with SHM disabled).
+    # VirtualGL puts rendering on the GPU where it is installed; headless runs do not need it.
+    VGL=$(command -v vglrun >/dev/null && echo "vglrun -d egl0")
     tm new-window -d -t "$SESSION" -n "$WINDOW" \
-        "cd $WORKSPACE && DISPLAY=:0 ${FASTDDS_BUILTIN_TRANSPORTS:+FASTDDS_BUILTIN_TRANSPORTS=$FASTDDS_BUILTIN_TRANSPORTS} $SCOPE_PREFIX vglrun -d egl0 make fixture FIXTURE_TARGET=launch $FLOOR_VAR $LAUNCH_VAR WORKER=$WORKER \
+        "cd $WORKSPACE && DISPLAY=:0 ${FASTDDS_BUILTIN_TRANSPORTS:+FASTDDS_BUILTIN_TRANSPORTS=$FASTDDS_BUILTIN_TRANSPORTS} $SCOPE_PREFIX $VGL make fixture FIXTURE_TARGET=launch $FLOOR_VAR $LAUNCH_VAR WORKER=$WORKER \
          CORRECTOR=$CORRECTOR LOCALIZATION=$LOCALIZATION FIXTURE_NAV_MODE=$NAV_MODE \
          HEADLESS=$HEADLESS_ USE_GPU_RENDER_ACCELERATION=false \
          FIXTURE_EXTRA_PARAMS=\"$EXTRA\" 2>&1 | tee $LOG"
