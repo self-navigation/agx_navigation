@@ -1,0 +1,26 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  grid:
+    shape: [61, 101]
+    resolution: 0.05
+    origin: [0.0, 0.0, 0.0]
+    rectangles:
+      - [0, 0, 101, 1, 100]
+      - [0, 60, 101, 61, 100]
+      - [0, 0, 1, 61, 100]
+      - [100, 0, 101, 61, 100]
+cases:
+  - id: straight
+    start: [1.025, 1.525, 0.0, 0.0, 0.0]
+    goal: [3.025, 1.525, 0.0]
+    updates:
+      - id: leaf
+        rectangles: [[50, 1, 52, 24, 100]]
+      - id: closed
+        rectangles: [[50, 24, 52, 60, 100]]
+      - id: reopened
+        rectangles: [[50, 24, 52, 60, 0]]
+  - id: already_at_goal
+    start: [1.025, 1.525, 0.0, 0.0, 0.0]
+    goal: [1.025, 1.525, 0.0]

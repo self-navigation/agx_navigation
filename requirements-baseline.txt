@@ -1,0 +1,10 @@
+# Tested with Python 3.12. Build depend/scikit-fmm separately.
+numpy==2.3.5
+scipy==1.17.0
+Pillow==13.0.0
+PyYAML==6.0.3
+pytest==9.2.0
+meson-python==0.22.1
+meson==1.12.1
+ninja==1.13.2
+wheel==0.48.0

@@ -1,0 +1,85 @@
+# Frozen measurement profile; all numerical defaults are explicit.
+schema_version: 1
+name: centred-full-packed-v1
+field_path: packed_float32
+occupancy_threshold: 65
+allow_unknown: true
+pin_tolerance: 1.0e-06
+planner:
+  mode: offline
+  N: 40
+  T_horizon: 2.5
+  control_rate: 10.0
+  wheel_radius: 0.08
+  track: 0.416503
+  slip_chi: 1.3736
+  v_max: 0.448
+  omega_max: 1.049
+  a_wheel_max: 17.6
+  gamma_wheel: 0.0016
+  w_wheel_max: 20.0
+  w_wheel_barrier: 50.0
+  rejoin_w_wheel_barrier: 50.0
+  rejoin_w_v_barrier: 0.0
+  rejoin_w_omega_barrier: 0.0
+  rejoin_wheel_tol: 0.5
+  cmd_deadzone_v: 0.03
+  cmd_deadzone_omega: 0.05
+  alpha_t: 1.0
+  beta: 5.0
+  w_h: 10.0
+  w_v: 3.0
+  w_brake: 200.0
+  L_brake: 1.5
+  align_gate_power: 15.0
+  w_omega_run: 0.1
+  w_v_barrier: 200.0
+  w_omega_barrier: 50.0
+  field_eps: 0.01
+  w_T_terminal: 2.0
+  w_pp: 0.5
+  w_th: 2.0
+  w_v_terminal: 15.0
+  w_omega_terminal: 5.0
+  pursuit_lookahead_mult: 0.6
+  w_xt: 0.0
+  xt_horizon_m: 2.5
+  xt_sigma_mult: 3.0
+  w_fp: 0.0
+  fp_margin: 0.05
+  fp_half_length: 0.315
+  fp_half_width: 0.2925
+  fp_smooth_sigma: 0.05
+  fp_sample_spacing: 0.08
+  goal_tolerance_xy: 0.05
+  goal_tolerance_th: 0.2
+  bvp_tol: 0.001
+  bvp_max_nodes: 3000
+  bvp_verbose: 0
+  reuse_previous_solution: true
+  dt_segment: 0.5
+  field_diff_threshold: 0.5
+  max_rollout_sim_time: 60.0
+  tau_wheel: 0.0
+  wheel_cmd_max: 20.0
+field:
+  inflation_radius: 0.5
+  speed_v_min: 0.1
+  speed_v_max: 1.0
+  speed_profile: exponential
+  speed_decay_rate: 1.5
+  centring: true
+  centring_cap: 0.8
+  centring_smooth: 0.0
+  bottleneck_align: false
+  bottleneck_max_width: 1.2
+  bottleneck_approach: 1.0
+  bottleneck_exit: 0.6
+  bottleneck_lateral: 0.8
+  bottleneck_fade: 0.3
+  bottleneck_converge_deg: 80.0
+  bottleneck_converge_dist: 0.15
+  smooth_T_before_grad: false
+  smooth_T_sigma: 0.1
+  early_exit_enable: false
+  early_exit_margin: 0.5

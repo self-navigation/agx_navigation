@@ -1,0 +1,8 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  yaml: ../../src/rudn-ordjo-building/maps/floor_6.yaml
+cases:
+  - id: floor6_straight
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
