@@ -97,10 +97,8 @@ class VectorFieldConfig:
     smooth_T_sigma: float = 0.10  # [m]
 
     early_exit_enable: bool = True
-    # Physical margin past the robot. The wavefront keeps propagating
-    # until its T exceeds T_at_robot + (margin_m / dx) cells of nominal
-    # travel. Pick this >= the NMPC's prediction horizon length so the
-    # gradient stays valid wherever the controller may try to step.
+    # Travel-time buffer: ceil(margin / resolution) * resolution.
+    # This does not guarantee a physical radius around the robot.
     early_exit_margin: float = 0.5
 
 
@@ -574,8 +572,7 @@ def _compute_prepared_field(prepared, goal_col, goal_row, resolution,
 
     if use_early_exit:
         early_exit_target = (int(robot_row), int(robot_col))
-        # Convert physical margin to cells, rounded up so we never under-
-        # shoot the configured buffer.
+        # Round up the configured buffer to a whole number of cells.
         early_exit_margin_cells = int(
             np.ceil(max(0.0, cfg.early_exit_margin) / resolution)
         )

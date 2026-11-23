@@ -81,8 +81,9 @@ avoids mixing the known differing direct and transported field paths.
 This profile is a versioned experiment choice, not a new launch default.
 Copy it under a new name to change parameters. Both expanded settings and
 their hash are saved; the summary never pools different run directories.
-The current FMM early-exit behavior and interpolation conventions remain
-unchanged. A future corrected baseline must carry its own revision/profile.
+The pinned FMM fork fixes early exit for tied targets and initial source cells.
+Interpolation conventions remain unchanged. Keep the recorded source revision
+when comparing partial-field results with older runs.
 
 The supplied synthetic cases are fixtures, not a replacement for the original
 83-route/60-variant dataset. Those route files are not present in this checkout.

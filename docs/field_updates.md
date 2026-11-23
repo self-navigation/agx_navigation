@@ -28,9 +28,9 @@ Exceptions also clear the cache and are raised to the caller.
 
 This step does not reuse the FMM march after a map edit. Additions, removals,
 and mixed changes all trigger full recomputation. The second-order FMM,
-centring formula, early-exit behavior, and gradient rules are unchanged.
-The known early-exit tie issue still needs a separate fix before partial-field
-performance claims. The supplied measurement profile uses complete fields.
+centring formula and gradient rules are unchanged. The pinned fork handles
+early-exit targets in equal-time groups and in the initial source cells.
+The supplied measurement profile uses complete fields.
 
 ## Python use
 
