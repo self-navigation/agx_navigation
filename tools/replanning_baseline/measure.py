@@ -18,10 +18,10 @@ def finite_number(value):
     return value if np.isfinite(value) else None
 
 
-def measure_field(occupancy, metadata, profile):
+def measure_field(occupancy, metadata, profile, updater=None):
     geometry = metadata["geometry"]
     sc, gc = cell(metadata["start"], geometry), cell(metadata["goal"], geometry)
-    stages = {}
+    stages = dict.fromkeys(("edt_s", "speed_s", "fmm_s", "gradient_s"), 0.0)
     active = []
 
     def timer(name, function):
@@ -42,10 +42,12 @@ def measure_field(occupancy, metadata, profile):
         for name, label in (("distance_transform_edt", "edt_s"), ("build_speed_field", "speed_s"),
                             ("solve_eikonal", "fmm_s"), ("field_from_T", "gradient_s")):
             stack.enter_context(patch.object(vf, name, timer(label, getattr(vf, name))))
-        result = vf.compute_field(occupancy, *gc, geometry["resolution"], *geometry["origin"][:2],
-                                  vf.VectorFieldConfig(**profile["field"]), *sc,
-                                  profile["occupancy_threshold"], profile["allow_unknown"])
+        compute = vf.compute_field if updater is None else updater.update
+        result = compute(occupancy, *gc, geometry["resolution"], *geometry["origin"][:2],
+                         vf.VectorFieldConfig(**profile["field"]), *sc,
+                         profile["occupancy_threshold"], profile["allow_unknown"])
     stages["compute_field_s"] = time.perf_counter() - start
+    stages["field_update"] = "full_recompute" if updater is None else updater.last_update
     return (result[0] if result else None), stages
 
 
@@ -150,7 +152,8 @@ def measure_rollout(field, metadata, profile):
             "collision_checked": False, "execution_simulated": False}, arrays
 
 
-def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields=False):
+def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields=False,
+                     updater=None):
     record = {"status": "exception", "field_only": field_only, "solves": []}
     arrays = {}
     start, cpu = time.perf_counter(), time.process_time()
@@ -160,9 +163,11 @@ def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields
             obstacles |= occupancy < 0
         sc, gc = cell(metadata["start"], metadata["geometry"]), cell(metadata["goal"], metadata["geometry"])
         if obstacles[sc[1], sc[0]] or obstacles[gc[1], gc[0]]:
+            if updater is not None:
+                updater.clear()
             record["status"] = "blocked_start" if obstacles[sc[1], sc[0]] else "blocked_goal"
             return record, arrays
-        result, stages = measure_field(occupancy, metadata, profile)
+        result, stages = measure_field(occupancy, metadata, profile, updater)
         record.update(stages)
         if result is None:
             record["status"] = "field_failed"

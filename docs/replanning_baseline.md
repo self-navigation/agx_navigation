@@ -4,9 +4,10 @@ This harness measures the existing FM^2 and PMP kernels on explicit occupancy
 snapshots. It provides a full-recomputation reference for later field updates
 and planner reuse. It requires neither ROS nor Gazebo.
 
-Every sample builds a new field and a new planner. The first BVP is cold; later
+By default, every sample builds a new field and a new planner. The first BVP is cold; later
 segments use the planner's ordinary within-rollout warm starts. Snapshots do
-not share solver state. Production algorithms and launch files are unchanged.
+not share solver state. Use `--field-backend cached` to measure field reuse;
+see [field_updates.md](field_updates.md) for its scope and cache reset rules.
 
 This is a computation benchmark, not the moving-robot full-stop reference arm.
 It does not simulate discovery, braking, command execution, collision checking,
@@ -111,7 +112,8 @@ Map arrays have row zero at minimum world y. Rectangles are half-open integer
 `[col0, row0, col1, row1, occupancy]` ranges. Values are -1 for unknown or 0–100.
 Updates apply cumulatively within each case. Each case starts from the base
 map; each snapshot produces an independent full plan. An omitted update start
-retains the previous start. Explicit moving states are supported, but the
+retains the previous start. An update may set `goal`; otherwise it retains the
+previous goal. Explicit moving states are supported, but the
 harness does not derive them by executing the preceding plan.
 
 For synthetic maps, replace `map.yaml` with `map.grid`, containing `shape`
@@ -161,8 +163,9 @@ Map loading, rectangle application, input hashing, environment capture and
 result-file writes are outside sample timing. The manifest's setup time covers
 input preparation/provenance, not Python startup or all artifact I/O. These
 numbers therefore measure computation from an available occupancy snapshot,
-not sensor-to-command latency. Diff detection/update application must be timed
-separately when an incremental backend is added.
+not sensor-to-command latency. With the cached field backend, mask comparison
+and result copies are included in `compute_field_s`; map loading and rectangle
+application remain outside it.
 
 Trajectory artifacts have N commands, accelerations, poses and costates, with
 N+1 raw five-state boundaries and times. Command k acts over `[times[k],

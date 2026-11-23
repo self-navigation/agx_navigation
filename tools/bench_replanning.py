@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure full FM² recomputation and cold-start PMP plans without ROS."""
+"""Measure field construction and cold-start PMP plans without ROS."""
 
 import argparse
 from datetime import datetime, timezone
@@ -21,13 +21,16 @@ def run(args):
     import numpy as np
     from replanning_baseline.inputs import digest, load_suite, provenance, write_json
     from replanning_baseline.measure import measure_snapshot
+    from agx_planning.vector_field import FieldUpdater
 
     setup = time.perf_counter()
     profile, snapshots, source = load_suite(args.config, args.case)
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=False)
+    updater = FieldUpdater() if args.field_backend == "cached" else None
+    arm = "cached_field_fresh_plan" if updater is not None else "full_recompute_fresh_plan"
     manifest = {"schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
-                "arm": "full_recompute_fresh_plan", "profile": profile, "profile_sha256": digest(profile),
+                "arm": arm, "profile": profile, "profile_sha256": digest(profile),
                 "source": source, "snapshots": [m for m, _ in snapshots], "environment": provenance(),
                 "options": vars(args), "setup_wall_s": time.perf_counter() - setup}
     write_json(output / "manifest.json", manifest)
@@ -36,8 +39,10 @@ def run(args):
         for repetition in range(args.warmups + args.repeat):
             warmup = repetition < args.warmups
             for index, (metadata, occupancy) in enumerate(snapshots):
+                if updater is not None and metadata["snapshot_id"] == "base":
+                    updater.clear()
                 record, arrays = measure_snapshot(occupancy, metadata, profile,
-                                                   args.field_only, args.save_fields)
+                                                   args.field_only, args.save_fields, updater)
                 record.update(schema_version=1, snapshot_index=index, **metadata,
                               repetition=repetition - args.warmups, warmup=warmup,
                               profile_sha256=manifest["profile_sha256"])
@@ -64,6 +69,8 @@ def main():
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--field-only", action="store_true")
+    parser.add_argument("--field-backend", choices=("full", "cached"), default="full",
+                        help="reuse field work within each case with cached")
     parser.add_argument("--save-fields", action="store_true", help="save raw fields outside the timed region")
     args = parser.parse_args()
     if min(args.repeat, args.threads) < 1 or args.warmups < 0:

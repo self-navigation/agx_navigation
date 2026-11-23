@@ -56,12 +56,15 @@ def summarize(directory):
         metrics["completed_total_wall_s"] = distribution([r["total_wall_s"] for r in samples
                                                           if r["status"] == "completed"])
         summaries.append({**metadata, "samples": len(samples), "outcomes": outcomes,
+                          "field_updates": dict(Counter(r["field_update"] for r in samples
+                                                        if "field_update" in r)),
                           "bvp_calls": len(solves), "bvp_failures": sum(not s["success"] for s in solves),
                           "metrics": metrics})
     options = manifest["options"]
     expected = (options["repeat"] + options["warmups"]) * len(manifest["snapshots"])
     complete = (directory / "COMPLETE").exists() and len(records) == expected
     return {"run": str(directory.resolve()), "complete": complete,
+            "field_backend": options.get("field_backend", "full"),
             "profile_sha256": manifest["profile_sha256"], "environment": manifest["environment"],
             "field_only": options["field_only"], "groups": summaries}
 

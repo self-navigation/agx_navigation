@@ -161,6 +161,7 @@ def load_suite(path, selected=()):
             seen.add(name)
             new = apply_rectangles(occupancy, update.get("rectangles", []))
             start = vector(update.get("start", start), 5, "start")
+            goal = vector(update.get("goal", goal), 3, "goal")
             cell(start, geometry)
             cell(goal, geometry)
             metadata = {"case_id": case["id"], "snapshot_id": name,
