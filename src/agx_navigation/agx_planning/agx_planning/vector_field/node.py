@@ -55,7 +55,7 @@ from agx_planning.vector_field import (
     VectorFieldResult,
     world_to_grid,
     grid_to_world,
-    compute_field,
+    FieldUpdater,
     pack_field_array,
 )
 
@@ -101,6 +101,7 @@ class VectorFieldNode(Node):
         self.map_array: Optional[np.ndarray] = None
         self.current_goal: Optional[PoseStamped] = None
         self._field_result: Optional[VectorFieldResult] = None
+        self._field_updater = FieldUpdater()
 
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -126,14 +127,6 @@ class VectorFieldNode(Node):
             self._publish_optimal_path,
         )
 
-        # NOTE on caching. EDT and the speed field depend only on the
-        # static obstacle map and could be cached when /map has not
-        # changed. Not implemented here: the deployment runs in unknown
-        # environments where /map updates frequently. If the deployment
-        # ever switches to a static map, hash the obstacle mask in
-        # _map_cb and reuse the EDT and speed arrays in _recompute_field
-        # whenever the hash matches.
-
         self.get_logger().info(
             "VectorFieldNode (FM2) ready. Waiting for /map and /goal_pose..."
         )
@@ -154,6 +147,8 @@ class VectorFieldNode(Node):
     def _goal_cb(self, msg: PoseStamped):
         if msg.header.frame_id == "":
             self.current_goal = None
+            self._field_result = None
+            self._field_updater.clear()
             self.get_logger().info("Goal was removed")
             return
 
@@ -188,6 +183,7 @@ class VectorFieldNode(Node):
 
     def _recompute_field(self) -> bool:
         """Run FM2 and store the result.  Returns True on success."""
+        self._field_result = None
         if self.map_msg is None or self.current_goal is None:
             return False
 
@@ -227,7 +223,7 @@ class VectorFieldNode(Node):
                 robot_col, robot_row = robot
 
         t0 = time.monotonic()
-        outcome = compute_field(
+        outcome = self._field_updater.update(
             self.map_array,
             goal_col,
             goal_row,
@@ -244,12 +240,14 @@ class VectorFieldNode(Node):
 
         if outcome is None:
             self.get_logger().error(
-                "compute_field() failed (goal in obstacle or outside grid)."
+                "Field update failed (invalid goal or early-exit target)."
             )
             return False
 
         self._field_result, message = outcome
-        self.get_logger().info(f"{message}, {elapsed_ms:.1f} ms")
+        self.get_logger().info(
+            f"{self._field_updater.last_update}: {message}, {elapsed_ms:.1f} ms"
+        )
         return True
 
     def _get_current_pose_2d(self, frame: str) -> Optional[tuple[float, float]]:
