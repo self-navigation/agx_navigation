@@ -1,0 +1,14 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  yaml: ../../src/rudn-ordjo-building/maps/floor_6.yaml
+cases:
+  - id: floor6_local_edit
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[255, 565, 257, 569, 100]]
+      - id: repeated
+      - id: removed
+        rectangles: [[255, 565, 257, 569, 0]]

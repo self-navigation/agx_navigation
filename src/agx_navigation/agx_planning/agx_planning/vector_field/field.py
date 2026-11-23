@@ -358,6 +358,59 @@ def build_speed_field(
     return v
 
 
+def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
+    total = obstacles.size
+    info = dict(status="full_recompute", reason="new_map", changed_cells=None,
+                updated_cells=total, computed_cells=total, total_cells=total)
+
+    def full(reason):
+        info["reason"] = reason
+        return build_speed_field(edt_free, obstacles, cfg, resolution), info
+
+    if previous is None or previous.obstacle_mask.shape != obstacles.shape:
+        return full("new_map")
+    if not cfg.centring:
+        return full("centring_disabled")
+    if cfg.centring_smooth != 0.0:
+        return full("smoothing")
+    cap = cfg.centring_cap
+    if not np.isfinite(resolution) or resolution <= 0 or not np.isfinite(cap) or cap <= 0:
+        return full("unsupported_geometry")
+
+    levels = int(np.floor(cap / resolution + 1e-9))
+    radius = levels * resolution
+    # Include the final level even when rounding places its threshold above cap.
+    cutoff = max(cap, radius - 1e-9)
+    old_edt = np.maximum(previous.wall_dist, 0.0)
+    dirty = ((np.minimum(old_edt, cutoff) != np.minimum(edt_free, cutoff))
+             | (previous.obstacle_mask != obstacles))
+    info["changed_cells"] = int(np.count_nonzero(dirty))
+    if not info["changed_cells"]:
+        info.update(status="unchanged", reason="inputs_unchanged",
+                    updated_cells=0, computed_cells=0)
+        return previous.speed.copy(), info
+
+    halo = int(np.ceil((radius + 1e-9) / resolution)) if levels else 0
+    rows = np.flatnonzero(np.any(dirty, axis=1))
+    cols = np.flatnonzero(np.any(dirty, axis=0))
+    h, w = obstacles.shape
+    r0, r1 = max(0, int(rows[0]) - halo), min(h, int(rows[-1]) + halo + 1)
+    c0, c1 = max(0, int(cols[0]) - halo), min(w, int(cols[-1]) + halo + 1)
+    # Changed centres affect one radius; computing those cells needs one more.
+    sr0, sr1 = max(0, r0 - halo), min(h, r1 + halo)
+    sc0, sc1 = max(0, c0 - halo), min(w, c1 + halo)
+    if sr0 == sc0 == 0 and sr1 == h and sc1 == w:
+        return full("full_region")
+    source = np.s_[sr0:sr1, sc0:sc1]
+    local_speed = build_speed_field(edt_free[source], obstacles[source], cfg, resolution)
+    speed = previous.speed.copy()
+    speed[r0:r1, c0:c1] = local_speed[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0]
+    info.update(status="local_update", reason="changed_region",
+                updated_cells=(r1 - r0) * (c1 - c0),
+                computed_cells=(sr1 - sr0) * (sc1 - sc0))
+    return speed, info
+
+
 def solve_eikonal(
     obstacle_mask: np.ndarray,
     speed: np.ndarray,
@@ -489,6 +542,7 @@ class _MapData:
     obstacle_mask: np.ndarray
     speed: np.ndarray
     wall_dist: np.ndarray
+    speed_update: Optional[dict] = None
 
 
 def _obstacle_mask(map_array, occupancy_threshold, allow_unknown):
@@ -514,11 +568,15 @@ def _valid_cells(obstacles, goal_col, goal_row, cfg, robot_col, robot_row):
     return True
 
 
-def _prepare_map(obstacles, resolution, cfg):
+def _prepare_map(obstacles, resolution, cfg, previous=None, incremental=False):
     edt_free = distance_transform_edt(~obstacles) * resolution
-    speed = build_speed_field(edt_free, obstacles, cfg, resolution)
+    speed_update = None
+    if incremental:
+        speed, speed_update = _update_speed_field(edt_free, obstacles, cfg, resolution, previous)
+    else:
+        speed = build_speed_field(edt_free, obstacles, cfg, resolution)
     wall_dist = edt_free - distance_transform_edt(obstacles) * resolution
-    return _MapData(obstacles, speed, wall_dist)
+    return _MapData(obstacles, speed, wall_dist, speed_update)
 
 
 def compute_field(

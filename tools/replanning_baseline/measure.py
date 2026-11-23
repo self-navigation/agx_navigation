@@ -40,6 +40,7 @@ def measure_field(occupancy, metadata, profile, updater=None):
     start = time.perf_counter()
     with ExitStack() as stack:
         for name, label in (("distance_transform_edt", "edt_s"), ("build_speed_field", "speed_s"),
+                            ("_update_speed_field", "speed_s"),
                             ("solve_eikonal", "fmm_s"), ("field_from_T", "gradient_s")):
             stack.enter_context(patch.object(vf, name, timer(label, getattr(vf, name))))
         compute = vf.compute_field if updater is None else updater.update
@@ -50,6 +51,8 @@ def measure_field(occupancy, metadata, profile, updater=None):
     stages["field_update"] = "full_recompute" if updater is None else updater.last_update
     if updater is not None and updater.last_fmm:
         stages["fmm_update"] = dict(updater.last_fmm)
+    if updater is not None and updater.last_speed:
+        stages["speed_update"] = dict(updater.last_speed)
     return (result[0] if result else None), stages
 
 

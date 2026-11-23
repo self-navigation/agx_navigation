@@ -7,7 +7,8 @@ and planner reuse. It requires neither ROS nor Gazebo.
 By default, every sample builds a new field and a new planner. The first BVP is cold; later
 segments use the planner's ordinary within-rollout warm starts. Snapshots do
 not share planner state. Use `--field-backend cached` for map and result reuse,
-or `--field-backend incremental` for experimental FMM checkpoint replay. See
+or `--field-backend incremental` for experimental local speed updates and FMM
+checkpoint replay. See
 [field_updates.md](field_updates.md) for their scope and cache reset rules.
 The ROS node keeps its default cached backend.
 
@@ -66,6 +67,12 @@ Run commands from the repository root. Each output directory must be new.
   --field-backend incremental --checkpoint-interval 100 \
   --max-checkpoints 4 --field-cache-mib 256 --out run_data/field-replay
 
+# Local centred speed updates on floor 6, including full FMM fallback.
+.venv-baseline/bin/python tools/bench_replanning.py \
+  --config config/replanning/floor6_field_updates.yaml --field-only \
+  --field-backend incremental --warmups 1 --repeat 5 \
+  --out run_data/floor6-field-updates
+
 .venv-baseline/bin/python tools/summarize_replanning.py \
   run_data/baseline-repeated run_data/baseline-field \
   --out run_data/baseline-summary
@@ -80,8 +87,10 @@ Imports are excluded from sample timing. No external processes are timed.
 The incremental backend requires a positive checkpoint interval and nonnegative
 checkpoint count and cache MiB. Defaults are 10000 batches, four checkpoints,
 and 256 MiB. Each case starts cold in every repetition and warmup. Replay is
-limited to complete fields; early exit uses full recomputation. Map edits still
-run global preprocessing. The budget covers retained native working and
+limited to complete fields; early exit uses full FMM computation. Map edits still
+run both global distance transforms and rebuild signed wall distance. Compatible
+centring requests with smoothing disabled use local speed construction; other
+settings use full speed construction. The budget covers retained native working and
 checkpoint arrays, excluding temporary initialization, preprocessing, output,
 and other process memory. See [fmm_state.md](fmm_state.md) for exact native checks.
 
@@ -161,7 +170,7 @@ floor field is large. Artifacts use ordinary NPZ arrays, never pickled objects.
 | `total_wall_s`, `total_cpu_s`     | Endpoint/occupancy checks, field construction, pack/parse, planning and in-memory diagnostics |
 | `compute_field_s`                 | Field computation or update, including cache checks, result copies, and stage timing overhead |
 | `edt_s`                           | Top-level free and occupied distance transforms                                               |
-| `speed_s`                         | Speed profile, including centring's internal EDT calls and optional smoothing                 |
+| `speed_s`                         | Speed change detection, local or full construction, and copies; includes internal EDT and smoothing |
 | `fmm_s`                           | Eikonal wrapper, including replay checks, checkpoints, marching, and output masking          |
 | `gradient_s`                      | Production gradient/direction construction                                                    |
 | `pack_s`, `parse_s`               | Float32 packing and planner-grid construction, including its derivatives/wall smoothing       |
@@ -183,6 +192,16 @@ has null values for unavailable counts. Field result cache hits omit this
 object. JSON summaries count FMM statuses and reasons per snapshot. Replay can
 reuse zero batches, so inspect `reused_batches` and total measured cost before
 interpreting any timing difference.
+
+Incremental map preprocessing also includes `speed_update`: status, reason,
+changed input cells, updated output cells, computed crop cells, and total map
+cells. Changed cells count differences in clipped free distance or mask values;
+the count is null when not checked. Status is `local_update`, `full_recompute`,
+or `unchanged`. Map and field cache hits omit this object. JSON summaries count
+speed statuses and reasons. Local speed construction preserves the full formula
+with a halo based on the centring radii and tolerance. It does not change either
+global distance transform. Compare `speed_s` and total measured cost alongside
+the diagnostics; a smaller crop alone does not establish a speed improvement.
 
 Map loading, rectangle application, input hashing, environment capture and
 result-file writes are outside sample timing. The manifest's setup time covers

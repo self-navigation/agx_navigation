@@ -13,9 +13,10 @@ class FieldUpdater:
     """Keep one map and one field in memory.
 
     Identical requests reuse the field. A new goal or early-exit target reuses
-    map preprocessing. With incremental=True, changed obstacles can replay
-    the complete FMM solve from a checked checkpoint. Other cases use a full
-    solve. Returned results are copies, so callers can change them safely.
+    map preprocessing. With incremental=True, changed obstacles can update
+    local centring speeds and replay FMM from a checked checkpoint. Other
+    cases use full computation. Returned results are copies, so callers can
+    change them safely.
     cache_bytes bounds retained native arrays, excluding map and output arrays
     and temporary replay checks.
     Use one instance per serial stream of requests.
@@ -36,6 +37,7 @@ class FieldUpdater:
         self._outcome = None
         self.last_update = "empty"
         self.last_fmm = {}
+        self.last_speed = {}
 
     def update(
         self,
@@ -54,11 +56,12 @@ class FieldUpdater:
         """Match compute_field(), including None for invalid request cells.
 
         last_update reports full_recompute, map_reuse, field_reuse, fmm_replay,
-        fmm_reuse, or invalid. last_fmm holds optional native replay diagnostics.
+        fmm_reuse, or invalid. last_fmm and last_speed hold stage diagnostics.
         An invalid request or exception clears the cache.
         """
         try:
             self.last_fmm = {}
+            self.last_speed = {}
             obstacles = vf._obstacle_mask(map_array, occupancy_threshold, allow_unknown)
             if not vf._valid_cells(obstacles, goal_col, goal_row, cfg, robot_col, robot_row):
                 self.clear()
@@ -67,7 +70,9 @@ class FieldUpdater:
 
             map_key = (resolution, origin_x, origin_y, occupancy_threshold,
                        allow_unknown, astuple(cfg))
-            same_map = (map_key == self._map_key and self._map_data is not None
+            compatible_map = (map_key == self._map_key and self._map_data is not None
+                              and obstacles.shape == self._map_data.obstacle_mask.shape)
+            same_map = (compatible_map
                         and np.array_equal(obstacles, self._map_data.obstacle_mask))
             target = (robot_col, robot_row) if cfg.early_exit_enable else None
             field_key = (goal_col, goal_row, target)
@@ -80,8 +85,13 @@ class FieldUpdater:
                 or self._map_data is None or obstacles.shape != self._map_data.obstacle_mask.shape
             ):
                 self._eikonal.clear()
-            prepared = (self._map_data if same_map
-                        else vf._prepare_map(obstacles, resolution, cfg))
+            prepared = (self._map_data if same_map else vf._prepare_map(
+                obstacles, resolution, cfg,
+                previous=self._map_data if compatible_map else None,
+                incremental=self._eikonal is not None,
+            ))
+            if not same_map and prepared.speed_update is not None:
+                self.last_speed = dict(prepared.speed_update)
             outcome = vf._compute_prepared_field(
                 prepared, goal_col, goal_row, resolution, origin_x, origin_y,
                 cfg, robot_col, robot_row,
