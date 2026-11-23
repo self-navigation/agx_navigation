@@ -482,6 +482,43 @@ def field_from_T(
     return gx, gy, mag
 
 
+@dataclass
+class _MapData:
+    obstacle_mask: np.ndarray
+    speed: np.ndarray
+    wall_dist: np.ndarray
+
+
+def _obstacle_mask(map_array, occupancy_threshold, allow_unknown):
+    obstacles = map_array >= occupancy_threshold
+    if not allow_unknown:
+        obstacles |= map_array < 0
+    return obstacles
+
+
+def _valid_cells(obstacles, goal_col, goal_row, cfg, robot_col, robot_row):
+    h, w = obstacles.shape
+    if not (0 <= goal_col < w and 0 <= goal_row < h):
+        return False
+    if obstacles[goal_row, goal_col]:
+        return False
+    if cfg.early_exit_enable:
+        if robot_col is None or robot_row is None:
+            return False
+        if not (0 <= robot_col < w and 0 <= robot_row < h):
+            return False
+        if obstacles[robot_row, robot_col]:
+            return False
+    return True
+
+
+def _prepare_map(obstacles, resolution, cfg):
+    edt_free = distance_transform_edt(~obstacles) * resolution
+    speed = build_speed_field(edt_free, obstacles, cfg, resolution)
+    wall_dist = edt_free - distance_transform_edt(obstacles) * resolution
+    return _MapData(obstacles, speed, wall_dist)
+
+
 def compute_field(
     map_array: np.ndarray,
     goal_col: int,
@@ -519,29 +556,23 @@ def compute_field(
     (VectorFieldResult, message_str) on success,
     None                             on failure.
     """
-    h, w = map_array.shape
-
-    obstacle_mask = map_array >= occupancy_threshold
-    if not allow_unknown:
-        obstacle_mask = obstacle_mask | (map_array < 0)
-
-    if not (0 <= goal_col < w and 0 <= goal_row < h):
+    obstacles = _obstacle_mask(map_array, occupancy_threshold, allow_unknown)
+    if not _valid_cells(obstacles, goal_col, goal_row, cfg, robot_col, robot_row):
         return None
-    if obstacle_mask[goal_row, goal_col]:
-        return None
+    prepared = _prepare_map(obstacles, resolution, cfg)
+    return _compute_prepared_field(prepared, goal_col, goal_row, resolution,
+                                   origin_x, origin_y, cfg, robot_col, robot_row)
 
-    # ---- Early-exit setup ------------------------------------------------
+
+def _compute_prepared_field(prepared, goal_col, goal_row, resolution,
+                            origin_x, origin_y, cfg, robot_col, robot_row):
+    obstacle_mask, speed = prepared.obstacle_mask, prepared.speed
+    h, w = obstacle_mask.shape
     early_exit_target: Optional[Tuple[int, int]] = None
     early_exit_margin_cells = 0
-    use_early_exit = cfg is not None and cfg.early_exit_enable
+    use_early_exit = cfg.early_exit_enable
 
     if use_early_exit:
-        if robot_col is None or robot_row is None:
-            return None
-        if not (0 <= robot_col < w and 0 <= robot_row < h):
-            return None
-        if obstacle_mask[robot_row, robot_col]:
-            return None
         early_exit_target = (int(robot_row), int(robot_col))
         # Convert physical margin to cells, rounded up so we never under-
         # shoot the configured buffer.
@@ -549,8 +580,6 @@ def compute_field(
             np.ceil(max(0.0, cfg.early_exit_margin) / resolution)
         )
 
-    edt_free = distance_transform_edt(~obstacle_mask) * resolution
-    speed = build_speed_field(edt_free, obstacle_mask, cfg, resolution)
     tt = solve_eikonal(
         obstacle_mask,
         speed,
@@ -597,7 +626,7 @@ def compute_field(
         origin_x=origin_x,
         origin_y=origin_y,
         resolution=resolution,
-        wall_dist=edt_free - distance_transform_edt(obstacle_mask) * resolution,
+        wall_dist=prepared.wall_dist,
     )
     if cfg.bottleneck_align:
         from agx_planning.vector_field.bottleneck import find_bottlenecks, shape_direction

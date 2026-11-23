@@ -9,11 +9,13 @@ from .field import (
     compute_field,
     pack_field_array,
 )
+from .update import FieldUpdater
 
 __all__ = [
     "VectorFieldGrid",
     "VectorFieldConfig",
     "VectorFieldResult",
+    "FieldUpdater",
     "world_to_grid",
     "grid_to_world",
     "compute_field",
