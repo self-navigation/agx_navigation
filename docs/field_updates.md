@@ -32,6 +32,9 @@ centring formula and gradient rules are unchanged. The pinned fork handles
 early-exit targets in equal-time groups and in the initial source cells.
 The supplied measurement profile uses complete fields.
 
+The fork also has a fixed-input checkpoint API. See
+[fmm_state.md](fmm_state.md) for its limits and validation commands.
+
 ## Python use
 
 Use the environment from [replanning_baseline.md](replanning_baseline.md).
