@@ -366,6 +366,7 @@ def solve_eikonal(
     resolution: float,
     early_exit_target: Optional[Tuple[int, int]] = None,
     early_exit_margin_cells: int = 0,
+    updater=None,
 ) -> np.ndarray:
     """Run FMM via skfmm.
 
@@ -378,6 +379,9 @@ def solve_eikonal(
     early-exit patch. If not present, raises a TypeError at the
     skfmm.travel_time call.
     """
+    if updater is not None:
+        return updater.solve(obstacle_mask, speed, goal_col, goal_row, resolution,
+                             early_exit_target, early_exit_margin_cells)
     h, w = obstacle_mask.shape
     phi = np.ones((h, w), dtype=np.float64)
     phi[goal_row, goal_col] = -1.0
@@ -563,7 +567,8 @@ def compute_field(
 
 
 def _compute_prepared_field(prepared, goal_col, goal_row, resolution,
-                            origin_x, origin_y, cfg, robot_col, robot_row):
+                            origin_x, origin_y, cfg, robot_col, robot_row,
+                            eikonal_updater=None):
     obstacle_mask, speed = prepared.obstacle_mask, prepared.speed
     h, w = obstacle_mask.shape
     early_exit_target: Optional[Tuple[int, int]] = None
@@ -585,6 +590,7 @@ def _compute_prepared_field(prepared, goal_col, goal_row, resolution,
         resolution,
         early_exit_target=early_exit_target,
         early_exit_margin_cells=early_exit_margin_cells,
+        updater=eikonal_updater,
     )
 
     free_tt = tt[np.isfinite(tt)]

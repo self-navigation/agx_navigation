@@ -48,6 +48,8 @@ def measure_field(occupancy, metadata, profile, updater=None):
                          profile["occupancy_threshold"], profile["allow_unknown"])
     stages["compute_field_s"] = time.perf_counter() - start
     stages["field_update"] = "full_recompute" if updater is None else updater.last_update
+    if updater is not None and updater.last_fmm:
+        stages["fmm_update"] = dict(updater.last_fmm)
     return (result[0] if result else None), stages
 
 

@@ -6,8 +6,10 @@ and planner reuse. It requires neither ROS nor Gazebo.
 
 By default, every sample builds a new field and a new planner. The first BVP is cold; later
 segments use the planner's ordinary within-rollout warm starts. Snapshots do
-not share solver state. Use `--field-backend cached` to measure field reuse;
-see [field_updates.md](field_updates.md) for its scope and cache reset rules.
+not share planner state. Use `--field-backend cached` for map and result reuse,
+or `--field-backend incremental` for experimental FMM checkpoint replay. See
+[field_updates.md](field_updates.md) for their scope and cache reset rules.
+The ROS node keeps its default cached backend.
 
 This is a computation benchmark, not the moving-robot full-stop reference arm.
 It does not simulate discovery, braking, command execution, collision checking,
@@ -58,6 +60,12 @@ Run commands from the repository root. Each output directory must be new.
   --config config/replanning/synthetic.yaml --field-only \
   --warmups 1 --repeat 10 --out run_data/baseline-field
 
+# Complete-field replay smoke test; inspect reused batches and total cost.
+.venv-baseline/bin/python tools/bench_replanning.py \
+  --config config/replanning/field_updates.yaml --field-only --save-fields \
+  --field-backend incremental --checkpoint-interval 100 \
+  --max-checkpoints 4 --field-cache-mib 256 --out run_data/field-replay
+
 .venv-baseline/bin/python tools/summarize_replanning.py \
   run_data/baseline-repeated run_data/baseline-field \
   --out run_data/baseline-summary
@@ -68,6 +76,14 @@ libraries. It runs serially. Repetitions use the manifest order; warmup means
 process/library/hardware warmup, not reuse of a previous plan or FMM state.
 Use separate invocations with zero warmups to examine first-invocation effects.
 Imports are excluded from sample timing. No external processes are timed.
+
+The incremental backend requires a positive checkpoint interval and nonnegative
+checkpoint count and cache MiB. Defaults are 10000 batches, four checkpoints,
+and 256 MiB. Each case starts cold in every repetition and warmup. Replay is
+limited to complete fields; early exit uses full recomputation. Map edits still
+run global preprocessing. The budget covers retained native working and
+checkpoint arrays, excluding temporary initialization, preprocessing, output,
+and other process memory. See [fmm_state.md](fmm_state.md) for exact native checks.
 
 ## Inputs
 
@@ -110,7 +126,7 @@ cases:
 Paths are relative to the manifest. Start is `[x, y, yaw, left_wheel_speed,
 right_wheel_speed]`; goal is `[x, y, yaw]`, in metres/radians/radians per second.
 Map arrays have row zero at minimum world y. Rectangles are half-open integer
-`[col0, row0, col1, row1, occupancy]` ranges. Values are -1 for unknown or 0–100.
+`[col0, row0, col1, row1, occupancy]` ranges. Values are -1 for unknown or 0-100.
 Updates apply cumulatively within each case. Each case starts from the base
 map; each snapshot produces an independent full plan. An omitted update start
 retains the previous start. An update may set `goal`; otherwise it retains the
@@ -143,10 +159,10 @@ floor field is large. Artifacts use ordinary NPZ arrays, never pickled objects.
 | Measurement                       | Included work                                                                                 |
 | --------------------------------- | --------------------------------------------------------------------------------------------- |
 | `total_wall_s`, `total_cpu_s`     | Endpoint/occupancy checks, field construction, pack/parse, planning and in-memory diagnostics |
-| `compute_field_s`                 | Production `compute_field`, including stage timing overhead                                   |
+| `compute_field_s`                 | Field computation or update, including cache checks, result copies, and stage timing overhead |
 | `edt_s`                           | Top-level free and occupied distance transforms                                               |
 | `speed_s`                         | Speed profile, including centring's internal EDT calls and optional smoothing                 |
-| `fmm_s`                           | Production eikonal wrapper, including initialization and output masking                       |
+| `fmm_s`                           | Eikonal wrapper, including replay checks, checkpoints, marching, and output masking          |
 | `gradient_s`                      | Production gradient/direction construction                                                    |
 | `pack_s`, `parse_s`               | Float32 packing and planner-grid construction, including its derivatives/wall smoothing       |
 | `planner_wall_s`, `planner_cpu_s` | Rollout, BVPs, sampling and numerical checks                                                  |
@@ -160,11 +176,19 @@ Stage timers are nested within total timings: do not add both levels together.
 Instrumentation and extra state sampling remain part of measured computation
 and should stay identical across comparisons.
 
+Samples that call the incremental FMM controller include `fmm_update`: status,
+reason, changed cells, reused batches, first affected batch, total and computed
+batches, checkpoint count, and retained native array bytes. Stateless fallback
+has null values for unavailable counts. Field result cache hits omit this
+object. JSON summaries count FMM statuses and reasons per snapshot. Replay can
+reuse zero batches, so inspect `reused_batches` and total measured cost before
+interpreting any timing difference.
+
 Map loading, rectangle application, input hashing, environment capture and
 result-file writes are outside sample timing. The manifest's setup time covers
 input preparation/provenance, not Python startup or all artifact I/O. These
 numbers therefore measure computation from an available occupancy snapshot,
-not sensor-to-command latency. With the cached field backend, mask comparison
+not sensor-to-command latency. With cached or incremental fields, mask comparison
 and result copies are included in `compute_field_s`; map loading and rectangle
 application remain outside it.
 

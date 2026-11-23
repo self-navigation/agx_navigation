@@ -27,8 +27,15 @@ def run(args):
     profile, snapshots, source = load_suite(args.config, args.case)
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=False)
-    updater = FieldUpdater() if args.field_backend == "cached" else None
-    arm = "cached_field_fresh_plan" if updater is not None else "full_recompute_fresh_plan"
+    updater = None
+    if args.field_backend == "cached":
+        updater = FieldUpdater()
+    elif args.field_backend == "incremental":
+        updater = FieldUpdater(incremental=True, checkpoint_interval=args.checkpoint_interval,
+                               max_checkpoints=args.max_checkpoints,
+                               cache_bytes=args.field_cache_mib * 1024**2)
+    arm = ("full_recompute_fresh_plan" if updater is None
+           else f"{args.field_backend}_field_fresh_plan")
     manifest = {"schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                 "arm": arm, "profile": profile, "profile_sha256": digest(profile),
                 "source": source, "snapshots": [m for m, _ in snapshots], "environment": provenance(),
@@ -69,12 +76,20 @@ def main():
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--field-only", action="store_true")
-    parser.add_argument("--field-backend", choices=("full", "cached"), default="full",
-                        help="reuse field work within each case with cached")
+    parser.add_argument("--field-backend", choices=("full", "cached", "incremental"), default="full",
+                        help="select full computation, cached fields, or experimental FMM replay")
+    parser.add_argument("--checkpoint-interval", type=int, default=10000,
+                        help="equal-time batches between incremental checkpoints")
+    parser.add_argument("--max-checkpoints", type=int, default=4,
+                        help="maximum retained incremental checkpoints")
+    parser.add_argument("--field-cache-mib", type=int, default=256,
+                        help="incremental native working and checkpoint array budget in MiB")
     parser.add_argument("--save-fields", action="store_true", help="save raw fields outside the timed region")
     args = parser.parse_args()
     if min(args.repeat, args.threads) < 1 or args.warmups < 0:
         parser.error("repeat and threads must be positive; warmups must be nonnegative")
+    if args.checkpoint_interval < 1 or args.max_checkpoints < 0 or args.field_cache_mib < 0:
+        parser.error("checkpoint interval must be positive; checkpoint count and cache MiB must be nonnegative")
     try:
         return run(args)
     except (ValueError, OSError, KeyError, TypeError) as error:
