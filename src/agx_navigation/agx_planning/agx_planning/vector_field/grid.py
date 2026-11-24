@@ -1,5 +1,10 @@
 from typing import Optional, Tuple
+import copy
+import hashlib
+import json
 import numpy as np
+
+from .preparation import prepare_travel_time
 
 
 class VectorFieldGrid:
@@ -42,6 +47,9 @@ class VectorFieldGrid:
         self._field_eps = 1e-2
         self._ready = False
         self._version = 0
+        self._identity = None
+        self._field_key = None
+        self._frozen = False
 
     @property
     def ready(self) -> bool:
@@ -50,6 +58,41 @@ class VectorFieldGrid:
     @property
     def version(self) -> int:
         return self._version
+
+    @property
+    def identity(self):
+        """Identity of the actual query data, settings, and known field key."""
+        return self._identity
+
+    @property
+    def field_key(self):
+        return self._field_key
+
+    @property
+    def identified(self) -> bool:
+        return self._field_key is not None
+
+    def require_goal(self, goal):
+        """Reject a goal whose source cell differs from an identified field."""
+        goal = np.asarray(goal, dtype=float)
+        if goal.shape != (3,) or not np.isfinite(goal).all():
+            raise ValueError("goal must contain three finite values")
+        if self._field_key is not None:
+            cell = self._field_key.geometry.world_to_cell(goal[0], goal[1])
+            if cell != self._field_key.goal_cell:
+                raise ValueError("goal does not match the field source cell")
+
+    def frozen_copy(self):
+        """Own immutable buffers for one rollout, independent of later updates."""
+        if self._frozen:
+            return self
+        result = copy.copy(self)
+        for name, value in self.__dict__.items():
+            if isinstance(value, np.ndarray):
+                packed = np.ascontiguousarray(value)
+                result.__dict__[name] = np.frombuffer(packed.tobytes(), dtype=packed.dtype).reshape(packed.shape)
+        result._frozen = True
+        return result
 
     def update(
         self,
@@ -61,39 +104,80 @@ class VectorFieldGrid:
         wall_dist: Optional[np.ndarray] = None,
         wall_sigma: float = 0.05,
         direction: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        field_key=None,
     ):
-        T = T_field.astype(np.float64)
-        finite_mask = np.isfinite(T)
-        T_max_finite = float(T[finite_mask].max()) if finite_mask.any() else 1.0
-        T_filled = np.where(finite_mask, T, T_max_finite)
-
-        # np.gradient returns (dT/drow, dT/dcol); rows index y, cols index x.
+        if self._frozen:
+            raise ValueError("a frozen field cannot be updated")
+        T = np.asarray(T_field, dtype=np.float64)
+        if T.ndim != 2 or min(T.shape) < 2:
+            raise ValueError("travel time requires a two-dimensional grid of at least 2x2")
+        if (not np.isfinite([origin_x, origin_y, resolution, field_eps, wall_sigma]).all()
+                or resolution <= 0 or field_eps <= 0 or wall_sigma < 0):
+            raise ValueError("invalid field geometry or query settings")
+        if field_key is not None:
+            geometry = field_key.geometry
+            if (geometry.shape != T.shape or geometry.resolution != resolution
+                    or geometry.origin != (origin_x, origin_y, 0.0)):
+                raise ValueError("field data does not match its key geometry")
+        T_filled = prepare_travel_time(T)
         d_drow, d_dcol = np.gradient(T_filled, resolution, resolution)
-
-        self._tt = T_filled
-        self._dT_dx = d_dcol
-        self._dT_dy = d_drow
+        wd = w_dcol = w_drow = None
         if wall_dist is not None:
             from scipy.ndimage import gaussian_filter
-            wd = wall_dist.astype(np.float64)
+            wd = np.array(wall_dist, dtype=np.float64, copy=True)
+            if wd.shape != T.shape or not np.isfinite(wd).all():
+                raise ValueError("wall distance must be finite and match travel time")
             if wall_sigma > 0.0:
                 wd = gaussian_filter(wd, wall_sigma / resolution, mode="nearest")
             w_drow, w_dcol = np.gradient(wd, resolution, resolution)
-            self._wd, self._dwd_dx, self._dwd_dy = wd, w_dcol, w_drow
-        else:
-            self._wd = self._dwd_dx = self._dwd_dy = None
+        fx = fy = None
         if direction is not None:
-            self._fx = np.asarray(direction[0], dtype=np.float64)
-            self._fy = np.asarray(direction[1], dtype=np.float64)
-        else:
-            self._fx = self._fy = None
-        self._origin_x = origin_x
-        self._origin_y = origin_y
-        self._res = resolution
-        self._tt_max = T_max_finite
+            fx, fy = (np.array(value, dtype=np.float64, copy=True) for value in direction)
+            if any(value.shape != T.shape or not np.isfinite(value).all() for value in (fx, fy)):
+                raise ValueError("directions must be finite and match travel time")
+
+        # A content identity also protects legacy fields, whose packed transport
+        # does not contain source or map-revision metadata. It cannot invent them.
+        metadata = dict(origin=[float(origin_x), float(origin_y)], resolution=float(resolution),
+                        field_eps=float(field_eps), wall_sigma=float(wall_sigma),
+                        convention="cell-centres-v1", key=None if field_key is None else field_key.to_dict())
+        digest = hashlib.sha256(json.dumps(metadata, sort_keys=True, allow_nan=False).encode())
+        for value in (T_filled, wd, fx, fy):
+            if value is None:
+                digest.update(b"none")
+            else:
+                digest.update(str((value.shape, value.dtype.str)).encode())
+                digest.update(np.ascontiguousarray(value).tobytes())
+
+        self._tt, self._dT_dx, self._dT_dy = T_filled, d_dcol, d_drow
+        self._wd, self._dwd_dx, self._dwd_dy = wd, w_dcol, w_drow
+        self._fx, self._fy = fx, fy
+        self._origin_x, self._origin_y, self._res = origin_x, origin_y, resolution
+        self._tt_max = float(T_filled.max())
         self._field_eps = field_eps
+        self._field_key = field_key
+        self._identity = digest.hexdigest()
         self._ready = True
         self._version += 1
+
+    def _interpolation_coordinates(self, px, py, shape):
+        # Occupancy geometry uses cell corners; sampled arrays use cell centres.
+        # The outer half-cell band holds the nearest centre value. Physical map
+        # bounds remain half-open, including the full first and last cells.
+        rows, cols = shape
+        wx, wy = np.asarray(px), np.asarray(py)
+        x = (wx - self._origin_x) / self._res
+        y = (wy - self._origin_y) / self._res
+        inside = ((wx >= self._origin_x) & (wx < self._origin_x + cols * self._res)
+                  & (wy >= self._origin_y) & (wy < self._origin_y + rows * self._res)
+                  & (x >= 0) & (x < cols) & (y >= 0) & (y < rows))
+        # Invalid positions use the same outside result without producing an
+        # invalid array index before the result mask is applied.
+        u = np.clip(np.where(np.isfinite(x), x - 0.5, 0.0), 0.0, cols - 1)
+        v = np.clip(np.where(np.isfinite(y), y - 0.5, 0.0), 0.0, rows - 1)
+        x0 = np.minimum(u.astype(int), cols - 2)
+        y0 = np.minimum(v.astype(int), rows - 2)
+        return inside, x0, y0, u - x0, v - y0
 
     def query_vec(
         self,
@@ -111,18 +195,7 @@ class VectorFieldGrid:
             zero = np.zeros_like(px)
             return zero.copy(), zero.copy(), zero.copy(), zero.copy(), zero.copy()
 
-        u = (px - self._origin_x) / self._res
-        w = (py - self._origin_y) / self._res
-
-        rows, cols = self._tt.shape
-        in_bounds = (u >= 0) & (u <= cols - 1) & (w >= 0) & (w <= rows - 1)
-        u_c = np.clip(u, 0.0, cols - 1.0001)
-        w_c = np.clip(w, 0.0, rows - 1.0001)
-
-        x0 = u_c.astype(int)
-        y0 = w_c.astype(int)
-        fx = u_c - x0
-        fy = w_c - y0
+        in_bounds, x0, y0, fx, fy = self._interpolation_coordinates(px, py, self._tt.shape)
 
         def bilerp(arr: np.ndarray) -> np.ndarray:
             return (
@@ -174,16 +247,9 @@ class VectorFieldGrid:
         Returns (d, dd/dx, dd/dy). Out of bounds counts as deep inside a
         wall with zero gradient, so it costs but does not steer.
         """
-        u = (px - self._origin_x) / self._res
-        w = (py - self._origin_y) / self._res
-        rows, cols = self._wd.shape
-        in_bounds = (u >= 0) & (u <= cols - 1) & (w >= 0) & (w <= rows - 1)
-        u_c = np.clip(u, 0.0, cols - 1.0001)
-        w_c = np.clip(w, 0.0, rows - 1.0001)
-        x0 = u_c.astype(int)
-        y0 = w_c.astype(int)
-        fx = u_c - x0
-        fy = w_c - y0
+        if self._wd is None:
+            raise ValueError("field has no wall-distance channel")
+        in_bounds, x0, y0, fx, fy = self._interpolation_coordinates(px, py, self._wd.shape)
 
         def bilerp(arr: np.ndarray) -> np.ndarray:
             return (
@@ -209,10 +275,8 @@ class VectorFieldGrid:
     def in_bounds(self, px: np.ndarray, py: np.ndarray) -> np.ndarray:
         if not self._ready:
             return np.zeros_like(px, dtype=bool)
-        u = (px - self._origin_x) / self._res
-        w = (py - self._origin_y) / self._res
-        rows, cols = self._tt.shape
-        return (u >= 0) & (u <= cols - 1) & (w >= 0) & (w <= rows - 1)
+        inside, _, _, _, _ = self._interpolation_coordinates(px, py, self._tt.shape)
+        return inside
 
     def trace_streamline(
         self,

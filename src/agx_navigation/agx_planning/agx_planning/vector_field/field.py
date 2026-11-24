@@ -30,7 +30,9 @@ import numpy as np
 import skfmm
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 
+from agx_planning.maps.grid import GridGeometry
 from agx_planning.vector_field import VectorFieldGrid
+from agx_planning.vector_field.preparation import prepare_travel_time
 
 
 @dataclass
@@ -148,17 +150,22 @@ class VectorFieldResult:
 
         Returns a shape-(3,) array so callers can slice by component index,
         e.g. result[0], result[:2], etc.
-        Returns None if (wx, wy) falls outside the interpolable interior.
+        Samples are at cell centres. The outer half-cell band holds the
+        nearest centre value. Returns None outside the physical map bounds.
         """
         gx = (wx - self.origin_x) / self.resolution
         gy = (wy - self.origin_y) / self.resolution
 
         h, w = self.grad_x.shape
-        if not (0 <= gx < w - 1 and 0 <= gy < h - 1):
+        if not (h >= 2 and w >= 2
+                and self.origin_x <= wx < self.origin_x + w * self.resolution
+                and self.origin_y <= wy < self.origin_y + h * self.resolution
+                and 0 <= gx < w and 0 <= gy < h):
             return None
 
-        x0, y0 = int(gx), int(gy)
-        fx, fy = gx - x0, gy - y0
+        u, v = np.clip(gx - 0.5, 0.0, w - 1), np.clip(gy - 0.5, 0.0, h - 1)
+        x0, y0 = min(int(u), w - 2), min(int(v), h - 2)
+        fx, fy = u - x0, v - y0
 
         # Bilinear weights for the four surrounding corners
         w00 = (1.0 - fx) * (1.0 - fy)
@@ -245,11 +252,11 @@ def world_to_grid(
     height: int,
 ) -> Optional[Tuple[int, int]]:
     """Convert world (wx, wy) to (col, row). Returns None if out of bounds."""
-    col = int((wx - origin_x) / resolution)
-    row = int((wy - origin_y) / resolution)
-    if 0 <= col < width and 0 <= row < height:
-        return col, row
-    return None
+    try:
+        geometry = GridGeometry((height, width), resolution, (origin_x, origin_y, 0.0))
+        return geometry.world_to_cell(wx, wy)
+    except ValueError:
+        return None
 
 
 def grid_to_world(
@@ -721,15 +728,11 @@ def field_from_T(
     else:
         tt_for_grad = tt.copy()
 
-    finite = tt_for_grad[np.isfinite(tt_for_grad)]
-    big = float(finite.max()) * 4.0 + 1.0 if finite.size else 1.0
-
     # No-go = obstacle OR unreached. Treating these uniformly with the
     # same big-T sentinel does double duty: it gives the boundary cells
     # a recovery gradient and it gives the cost-to-go (T itself) a high
     # value everywhere the robot shouldn't be.
-    no_go = obstacle_mask | ~np.isfinite(tt_for_grad)
-    tt_diff = np.where(no_go, big, tt_for_grad)
+    tt_diff = prepare_travel_time(tt_for_grad, invalid_mask=obstacle_mask)
 
     d_row, d_col = np.gradient(tt_diff, resolution)
     raw_gx = -d_col
@@ -942,8 +945,7 @@ def pack_field_array(result: VectorFieldResult) -> np.ndarray:
     Corresponding grad_mag entries are already zero from field_from_T().
     """
     h, w = result.travel_time.shape
-    big_T = result.free_max_T * 4.0 + 1.0
-    tt_out = np.where(np.isfinite(result.travel_time), result.travel_time, big_T)
+    tt_out = prepare_travel_time(result.travel_time, max_finite=result.free_max_T)
     mag_out = np.where(np.isfinite(result.grad_mag), result.grad_mag, 0.0)
 
     header = np.array(
@@ -973,14 +975,12 @@ def field_result_to_grid(
     when the generator and the planner share a Python process (sim,
     offline batch planning, unit tests).
 
-    Note: result.travel_time may contain NaN cells (obstacles + any
-    region the FMM didn't reach under early exit). VectorFieldGrid.update
-    must handle NaN, or the caller should pre-fill NaN with a sentinel
-    (free_max_T * 4 + 1 matches what pack_field_array does).
+    Invalid cells use the same result.free_max_T sentinel as pack_field_array.
+    This path retains float64 values; the packed path rounds to float32.
     """
     grid = VectorFieldGrid()
     grid.update(
-        result.travel_time,
+        prepare_travel_time(result.travel_time, max_finite=result.free_max_T),
         result.origin_x,
         result.origin_y,
         result.resolution,

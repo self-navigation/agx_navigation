@@ -141,7 +141,8 @@ def test_pack_parse_roundtrip_carries_wall_dist():
                             resolution=RES, wall_dist=wd)
     grid = parse_field_array(pack_field_array(res), PlannerConfig(fp_smooth_sigma=0.0))
     assert grid.has_wall_dist
-    d, _, _ = grid.query_dist(np.array([10 * RES]), np.array([5 * RES]))
+    # Grid arrays are samples at cell centres; the origin is a cell corner.
+    d, _, _ = grid.query_dist(np.array([10.5 * RES]), np.array([5.5 * RES]))
     assert d[0] == pytest.approx(wd[5, 10], abs=1e-6)
     res.wall_dist = None
     assert not parse_field_array(pack_field_array(res), PlannerConfig()).has_wall_dist
