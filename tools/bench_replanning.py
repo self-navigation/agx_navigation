@@ -24,6 +24,10 @@ def run(args):
     from agx_planning.vector_field import FieldUpdater
 
     setup = time.perf_counter()
+    native_checks = None
+    if args.field_backend == "incremental":
+        from replanning_baseline.native_check import check_incremental_native
+        native_checks = check_incremental_native()
     profile, snapshots, source = load_suite(args.config, args.case)
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=False)
@@ -37,9 +41,12 @@ def run(args):
                                cache_bytes=args.field_cache_mib * 1024**2)
     arm = ("full_recompute_fresh_plan" if updater is None
            else f"{args.field_backend}_field_fresh_plan")
+    environment = provenance()
+    if native_checks is not None:
+        environment["native_checks"] = native_checks
     manifest = {"schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
                 "arm": arm, "profile": profile, "profile_sha256": digest(profile),
-                "source": source, "snapshots": [m for m, _ in snapshots], "environment": provenance(),
+                "source": source, "snapshots": [m for m, _ in snapshots], "environment": environment,
                 "options": vars(args), "setup_wall_s": time.perf_counter() - setup}
     write_json(output / "manifest.json", manifest)
     np.savez(output / "inputs.npz", **{f"map_{i}": a for i, (_, a) in enumerate(snapshots)})
