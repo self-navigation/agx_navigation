@@ -1,6 +1,5 @@
 """Benchmark inputs and provenance; no ROS dependencies."""
 
-from dataclasses import asdict
 import hashlib
 import importlib.metadata
 import json
@@ -11,11 +10,11 @@ import subprocess
 import sys
 
 import numpy as np
-from PIL import Image
 import yaml
 
-from agx_planning.pmp_planner import PlannerConfig
-from agx_planning.vector_field import VectorFieldConfig
+from agx_planning.maps import GridGeometry
+from agx_planning.maps.io import apply_rectangles, load_map
+from agx_planning.profiles import load_profile as load_core_profile
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -37,94 +36,11 @@ def write_json(path, value):
 
 
 def load_profile(path):
-    profile = yaml.safe_load(Path(path).read_text())
-    if profile.get("schema_version") != 1:
-        raise ValueError("Unsupported profile schema_version")
-    planner = PlannerConfig(**profile["planner"])
-    field = VectorFieldConfig(**profile["field"])
-    if field.bottleneck_align:
-        raise ValueError("The packed field path does not transport bottleneck directions")
-    if profile["field_path"] != "packed_float32":
-        raise ValueError("Only the production packed_float32 field path is supported")
-    if not isinstance(profile["allow_unknown"], bool):
-        raise ValueError("allow_unknown must be a boolean")
-    threshold = profile["occupancy_threshold"]
-    if not isinstance(threshold, int) or not 1 <= threshold <= 100:
-        raise ValueError("occupancy_threshold must be an integer in [1, 100]")
-    if min(planner.control_rate, planner.dt_segment, planner.T_horizon,
-           planner.max_rollout_sim_time) <= 0:
-        raise ValueError("Planner timing parameters must be positive")
-    period = 1.0 / planner.control_rate
-    ticks = min(planner.dt_segment, planner.T_horizon) / period
-    if ticks < 1 or not np.isclose(ticks, round(ticks)):
-        raise ValueError("Committed duration must be an integer number of sample periods")
-    if profile["pin_tolerance"] <= 0:
-        raise ValueError("pin_tolerance must be positive")
-    return {**profile, "planner": asdict(planner), "field": asdict(field)}
-
-
-def apply_rectangles(occupancy, rectangles):
-    """Apply half-open [col0, row0, col1, row1, value] rectangles."""
-    result = occupancy.copy()
-    height, width = result.shape
-    for rectangle in rectangles:
-        if len(rectangle) != 5 or any(type(v) is not int for v in rectangle):
-            raise ValueError("Rectangles require five integers")
-        c0, r0, c1, r1, value = rectangle
-        if not (0 <= c0 < c1 <= width and 0 <= r0 < r1 <= height):
-            raise ValueError(f"Rectangle outside map: {rectangle}")
-        if not -1 <= value <= 100:
-            raise ValueError("Occupancy values must be in [-1, 100]")
-        result[r0:r1, c0:c1] = value
-    return result
-
-
-def load_map(spec, directory):
-    if set(spec) == {"yaml"}:
-        path = (directory / spec["yaml"]).resolve()
-        meta = yaml.safe_load(path.read_text())
-        if meta.get("mode", "trinary") != "trinary":
-            raise ValueError("Only trinary map YAML is supported")
-        lo, hi = float(meta["free_thresh"]), float(meta["occupied_thresh"])
-        if not 0 <= lo < hi <= 1 or meta.get("negate", 0) not in (0, 1):
-            raise ValueError("Invalid map thresholds or negate")
-        image_path = (path.parent / meta["image"]).resolve()
-        with Image.open(image_path) as image:
-            pixels = np.flipud(np.asarray(image.convert("L"))).astype(float)
-        probability = (255.0 - pixels) / 255.0
-        if meta.get("negate", 0):
-            probability = 1.0 - probability
-        occupancy = np.full(pixels.shape, -1, dtype=np.int8)
-        occupancy[probability >= hi] = 100
-        occupancy[probability <= lo] = 0
-        source = {"yaml": str(path), "yaml_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                  "image": str(image_path), "image_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest()}
-    elif set(spec) == {"grid"}:
-        meta = spec["grid"]
-        shape = meta["shape"]
-        if len(shape) != 2 or any(type(n) is not int or n < 3 for n in shape):
-            raise ValueError("Grid shape must contain two integers >= 3")
-        occupancy = apply_rectangles(np.zeros(shape, dtype=np.int8), meta.get("rectangles", []))
-        source = {"synthetic": spec}
-    else:
-        raise ValueError("Map requires exactly one of yaml or grid")
-    resolution = float(meta["resolution"])
-    origin = np.asarray(meta["origin"], dtype=float)
-    if not np.isfinite(resolution) or resolution <= 0 or origin.shape != (3,) or not np.isfinite(origin).all():
-        raise ValueError("Invalid map geometry")
-    if origin[2] != 0:
-        raise ValueError("Rotated map origins are unsupported")
-    geometry = {"shape": list(occupancy.shape), "resolution": resolution, "origin": origin.tolist()}
-    return occupancy, geometry, source
+    return load_core_profile(path, allowed_field_paths=("packed_float32",))
 
 
 def cell(pose, geometry):
-    xy = (np.asarray(pose[:2]) - geometry["origin"][:2]) / geometry["resolution"]
-    col, row = np.floor(xy).astype(int)
-    height, width = geometry["shape"]
-    if not (0 <= col < width and 0 <= row < height):
-        raise ValueError(f"Pose outside map: {pose}")
-    return int(col), int(row)
+    return GridGeometry.from_dict(geometry).world_to_cell(*pose[:2])
 
 
 def vector(value, size, name):
