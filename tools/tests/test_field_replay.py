@@ -93,6 +93,7 @@ def test_far_edit_reuses_completed_batches(field_request):
     assert updater.last_update == "fmm_replay"
     stats = updater.last_fmm
     assert stats["status"] == "replay"
+    assert stats["initialization_check"] == "unchanged_support"
     assert stats["changed_cells"] > 0
     assert 0 < stats["reused_batches"] < stats["first_affected_batch"]
     assert stats["computed_batches"] == stats["total_batches"] - stats["reused_batches"]
@@ -110,6 +111,7 @@ def test_edit_in_disconnected_region_reuses_the_completed_march(field_request):
     assert updater.last_update == "fmm_replay"
     assert updater.last_fmm["reused_batches"] == completed_batches
     assert updater.last_fmm["computed_batches"] == 0
+    assert updater.last_fmm["initialization_check"] == "unchanged_support"
 
 
 def test_map_edit_rebuilds_speed_and_gradients(field_request):
@@ -223,6 +225,7 @@ def test_source_neighbour_edit_matches_fresh_initialization(field_request):
     field_request["map_array"][20, 11] = 100
     assert_same(updater.update(**field_request), vf.compute_field(**field_request))
     assert updater.last_fmm["status"] == "full_recompute"
+    assert updater.last_fmm["initialization_check"] == "full_comparison"
     assert updater.last_fmm["reused_batches"] == 0
 
 

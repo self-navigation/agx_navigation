@@ -120,6 +120,9 @@ def summarize(directory):
                                                         if "field_update" in r)),
                           "fmm_updates": dict(Counter(r["status"] for r in fmm_updates)),
                           "fmm_reasons": dict(Counter(r["reason"] for r in fmm_updates)),
+                          "fmm_initialization_checks": dict(Counter(
+                              r["initialization_check"] for r in fmm_updates
+                              if "initialization_check" in r)),
                           "fmm_work": work_distributions(fmm_updates, FMM_WORK),
                           "speed_updates": dict(Counter(r["status"] for r in speed_updates)),
                           "speed_reasons": dict(Counter(r["reason"] for r in speed_updates)),

@@ -35,11 +35,12 @@ def test_installed_native_reuses_the_complete_state_without_another_advance(monk
     monkeypatch.setattr(skfmm, "TravelTimeState", ObservedState)
     report = check_incremental_native()
     assert report["complete_state_reuse"] == "passed"
+    assert report["initialization_support"] == "passed"
     assert report["replay"]["reason"] == "complete_state_reused"
     assert calls == ["advance", "replay"]
 
 
-@pytest.mark.parametrize("failure", ["old_replay", "incomplete", "batch_change", "field_change"])
+@pytest.mark.parametrize("failure", ["old_replay", "old_initialization", "incomplete", "batch_change", "field_change"])
 def test_rejected_behavior_has_an_actionable_same_python_rebuild_command(monkeypatch, failure):
     class WrongState:
         def __init__(self, *args, **kwargs):
@@ -60,7 +61,10 @@ def test_rejected_behavior_has_an_actionable_same_python_rebuild_command(monkeyp
             self.replayed = True
             if failure == "old_replay":
                 return {"status": "full_required", "reason": "no_safe_checkpoint"}
-            return {"status": "replay", "reason": "complete_state_reused"}
+            report = {"status": "replay", "reason": "complete_state_reused"}
+            if failure != "old_initialization":
+                report["initialization_check"] = "unchanged_support"
+            return report
 
     monkeypatch.setattr(skfmm, "TravelTimeState", WrongState)
     with pytest.raises(ValueError, match="Incremental native preflight failed") as caught:
@@ -82,7 +86,6 @@ def test_cli_rejects_old_native_before_creating_output(tmp_path):
 import sys
 sys.path.insert(0, sys.argv[1])
 import skfmm
-original = skfmm.TravelTimeState.replay
 def old_replay(self, *args):
     return {'status': 'full_required', 'reason': 'no_safe_checkpoint'}
 skfmm.TravelTimeState.replay = old_replay
@@ -135,6 +138,7 @@ raise SystemExit(main())
     checks = manifest["environment"].get("native_checks")
     if backend == "incremental":
         assert checks["complete_state_reuse"] == "passed"
+        assert checks["initialization_support"] == "passed"
         assert checks["replay"]["reason"] == "complete_state_reused"
         from summarize_replanning import summarize
         assert summarize(output)["environment"]["native_checks"] == checks

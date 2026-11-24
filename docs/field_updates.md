@@ -93,7 +93,10 @@ changes use the same checks; there is no assumption that travel times can only
 increase.
 
 The native state records the first batch that reads each cell's inputs.
-It checks new initialization exactly. If all changed inputs are unread and
+It proves that initialization is unchanged from fixed-phi source support, or
+reconstructs and compares initialization exactly. The local support check uses
+only changed cells and their neighbors; it adds no full-grid cache array.
+If all changed inputs are unread and
 their cells remain Far or Mask with no heap entry, it can retain the current
 complete march. Otherwise it selects a checkpoint before the first affected
 read. Every changed cell must still be Far or Mask with no heap ID at that

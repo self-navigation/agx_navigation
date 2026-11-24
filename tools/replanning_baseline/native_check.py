@@ -26,6 +26,8 @@ def check_incremental_native():
         after = state.stats
         if report.get("status") != "replay" or report.get("reason") != "complete_state_reused":
             raise ValueError(f"expected complete_state_reused, got {report}")
+        if report.get("initialization_check") != "unchanged_support":
+            raise ValueError(f"expected unchanged_support initialization check, got {report}")
         if not before["complete"] or not after["complete"] or after["batches"] != before["batches"]:
             raise ValueError("hidden edit did not preserve the complete march")
         if not np.array_equal(np.ma.filled(state.result(), np.nan), expected, equal_nan=True):
@@ -40,4 +42,5 @@ def check_incremental_native():
             f'PATH={bindir}:"$PATH" {executable} -m pip install '
             "--no-build-isolation --no-deps --force-reinstall ./depend/scikit-fmm"
         ) from error
-    return {"complete_state_reuse": "passed", "replay": dict(report)}
+    return {"complete_state_reuse": "passed", "initialization_support": "passed",
+            "replay": dict(report)}

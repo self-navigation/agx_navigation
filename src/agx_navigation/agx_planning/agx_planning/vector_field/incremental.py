@@ -34,6 +34,7 @@ class IncrementalEikonal:
         result = solve_eikonal(obstacles, speed, goal_col, goal_row, resolution,
                                early_exit_target=target, early_exit_margin_cells=margin)
         self.last_stats = dict(status="full_recompute", reason=reason, changed_cells=None,
+                               initialization_check="not_needed",
                                reused_batches=0, first_affected_batch=None,
                                total_batches=None, computed_batches=None,
                                checkpoint_count=0, cache_array_bytes=0,
@@ -82,6 +83,7 @@ class IncrementalEikonal:
 
         key = (obstacles.shape, goal_col, goal_row, resolution)
         info = dict(status="full_required", reason="new_field", changed_cells=0,
+                    initialization_check="not_needed",
                     reused_batches=0, first_affected_batch=-1)
         copies, copy_bytes = 0, 0
         if self._state is not None and key == self._key:

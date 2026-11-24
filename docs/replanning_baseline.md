@@ -272,7 +272,8 @@ application remain outside it.
 
 Incremental runs first check the installed native behavior on a small
 disconnected grid. A hidden edit must reuse the completed state without a
-checkpoint or another march, and must preserve the exact field. This check runs
+checkpoint or another march, use the initialization support check, and preserve
+the exact field. This check runs
 before creating the output directory and outside sample timing. Successful
 manifests and summaries include `environment.native_checks` with the observed
 replay report. Full and cached runs do not require this native check.
@@ -280,7 +281,7 @@ replay report. Full and cached runs do not require this native check.
 If the check fails, the CLI stops with a rebuild command using the current
 Python executable. A source checkout and its installed extension can differ;
 matching field values alone does not show that a new native optimization ran.
-This behavior check detects the older replay path, but does not prove that
+This behavior check detects older replay and initialization paths, but does not prove that
 every installed source file matches the checkout. Keep the recorded native
 binary hash when comparing runs.
 

@@ -63,9 +63,15 @@ The native replay checks are exact:
 
 - Record the first runtime read of each cell's inputs. Mask checks are recorded
   before rejecting a masked neighbor. Speed reads are recorded in the solver.
-- Reinitialize the new inputs and compare all initial Frozen and Narrow cells,
-  raw values, heap IDs, and heap contents and order. Inert Far/Mask differences
-  are allowed.
+- Check whether changed inputs can affect initialization. Possible initial
+  Frozen cells are fixed-phi zeros and endpoints of axial sign crossings,
+  including masked cells. Their axial neighbors can become initial Narrow
+  cells. Changes outside this area leave initialization unchanged.
+- Check that area only around changed cells, without a full-grid cache or
+  another scan during construction. If a changed cell can affect it, or the
+  changed count exceeds grid size divided by `2 * dimensions + 1`, reconstruct
+  initialization and compare all active values, heap IDs, and heap order
+  exactly. Inert Far/Mask differences are allowed.
 - If no changed input was read and every changed cell is currently Far or
   Mask with no heap entry, retain the current complete march. This needs no
   checkpoint and does not restore or advance the heap.
@@ -94,6 +100,12 @@ to one state and one input revision.
 The native report also contains `changed_cells`, `reused_batches`, and
 `first_affected_batch`. Batches are numbered from one for input reads; -1 means
 no affected runtime read. Initialization is checked separately.
+
+`initialization_check` records `unchanged_support` when the local check proves
+that initialization inputs are unchanged, `full_comparison` when initialization
+was reconstructed, or `not_needed` when replay returned before this check.
+The field controller carries this value in `last_fmm`; summaries count it under
+`fmm_initialization_checks`. It describes the selected check, not elapsed time.
 
 The state API supports complete fields only. It does not support early exit,
 narrow bands, or periodic grids. Use the stateless `travel_time` API for those

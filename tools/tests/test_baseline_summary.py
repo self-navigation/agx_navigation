@@ -152,11 +152,13 @@ def test_native_work_filters_unknown_values_and_warmups_and_keeps_options(tmp_pa
     samples = [
         {"snapshot_index": 0, "repetition": -1, "total_wall_s": 100,
          "fmm_update": {"status": "replay", "reason": "checkpoint_replayed",
+                        "initialization_check": "full_comparison",
                         **{key: 10000 for key in fmm_work}},
          "speed_update": {"status": "local_update", "reason": "changed_region",
                           **{key: 10000 for key in speed_work}}},
         {"snapshot_index": 0, "repetition": 0, "total_wall_s": 1,
-         "fmm_update": {"status": "replay", "reason": "checkpoint_replayed", **fmm_work},
+         "fmm_update": {"status": "replay", "reason": "checkpoint_replayed",
+                        "initialization_check": "unchanged_support", **fmm_work},
          "speed_update": {"status": "local_update", "reason": "changed_region", **speed_work}},
         {"snapshot_index": 0, "repetition": 1, "total_wall_s": 2,
          "fmm_update": {"status": "full_recompute", "reason": "cache_budget",
@@ -189,6 +191,7 @@ def test_native_work_filters_unknown_values_and_warmups_and_keeps_options(tmp_pa
     assert group["speed_work"]["region_count"]["n"] == 1
     assert group["speed_work"]["region_count"]["median"] == 2
     assert group["fmm_updates"] == {"replay": 1, "full_recompute": 1}
+    assert group["fmm_initialization_checks"] == {"unchanged_support": 1}
     assert group["speed_updates"] == {"local_update": 1, "unchanged": 1}
 
 
@@ -204,6 +207,7 @@ def test_old_results_have_empty_work_counters_and_valid_case_totals(tmp_path):
     assert all(values == empty for values in group["fmm_work"].values())
     assert all(values == empty for values in group["speed_work"].values())
     assert group["interior_updates"] == group["interior_reasons"] == {}
+    assert group["fmm_initialization_checks"] == {}
     assert group["interior_work"]
     assert all(values == empty for values in group["interior_work"].values())
     case = report["case_totals"][0]
