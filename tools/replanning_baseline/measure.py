@@ -96,7 +96,9 @@ def measure_field(occupancy, metadata, profile, updater=None):
 
     start = time.perf_counter()
     with ExitStack() as stack:
-        for name, label in (("distance_transform_edt", "edt_s"), ("build_speed_field", "speed_s"),
+        for name, label in (("distance_transform_edt", "edt_s"),
+                            ("_update_interior_distance", "edt_s"),
+                            ("build_speed_field", "speed_s"),
                             ("_update_speed_field", "speed_s"),
                             ("solve_eikonal", "fmm_s"), ("field_from_T", "gradient_s")):
             stack.enter_context(patch.object(vf, name, timer(label, getattr(vf, name))))
@@ -110,6 +112,9 @@ def measure_field(occupancy, metadata, profile, updater=None):
         stages["fmm_update"] = dict(updater.last_fmm)
     if updater is not None and updater.last_speed:
         stages["speed_update"] = dict(updater.last_speed)
+    interior = getattr(updater, "last_interior", None)
+    if interior:
+        stages["interior_update"] = dict(interior)
     return (result[0] if result else None), stages
 
 

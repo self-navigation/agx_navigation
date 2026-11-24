@@ -203,7 +203,107 @@ def test_old_results_have_empty_work_counters_and_valid_case_totals(tmp_path):
     assert group["fmm_work"] and group["speed_work"]
     assert all(values == empty for values in group["fmm_work"].values())
     assert all(values == empty for values in group["speed_work"].values())
+    assert group["interior_updates"] == group["interior_reasons"] == {}
+    assert group["interior_work"]
+    assert all(values == empty for values in group["interior_work"].values())
     case = report["case_totals"][0]
     assert case["complete_repetitions"] == 1
     assert case["metrics"]["total_wall_s"]["median"] == 4
     assert case["metrics"]["verification_wall_s"] == empty
+
+
+def test_interior_work_counts_retries_and_omits_unknown_values_and_warmups(tmp_path):
+    counters = ("changed_cells", "updated_cells", "computed_cells", "total_cells",
+                "region_count", "transform_calls")
+    samples = [
+        {"snapshot_index": 0, "repetition": -1,
+         "interior_update": {"status": "full_recompute", "reason": "new_map",
+                             **dict.fromkeys(counters, 10000)}},
+        {"snapshot_index": 0, "repetition": 0,
+         "interior_update": {"status": "local_update", "reason": "changed_region",
+                             "changed_cells": 3, "updated_cells": 16, "computed_cells": 30,
+                             "total_cells": 100, "region_count": 1, "transform_calls": 1}},
+        {"snapshot_index": 0, "repetition": 1,
+         "interior_update": {"status": "full_recompute", "reason": "work_limit",
+                             "changed_cells": 4, "updated_cells": 100, "computed_cells": 150,
+                             "total_cells": 100, "region_count": 1, "transform_calls": 3}},
+        {"snapshot_index": 0, "repetition": 2,
+         "interior_update": {"status": "unchanged", "reason": "inputs_unchanged",
+                             **dict.fromkeys(counters, 0), "total_cells": 100}},
+        {"snapshot_index": 0, "repetition": 3,
+         "interior_update": {"status": "unchanged", "reason": "inputs_unchanged",
+                             "changed_cells": None, "transform_calls": None}},
+        {"snapshot_index": 0, "repetition": 4},
+    ]
+    write_run(tmp_path, [("route", "updated")], samples, repeat=5, warmups=1)
+    group = summarize(tmp_path)["groups"][0]
+    assert group["interior_updates"] == {"local_update": 1, "full_recompute": 1, "unchanged": 2}
+    assert group["interior_reasons"] == {"changed_region": 1, "work_limit": 1, "inputs_unchanged": 2}
+    assert set(group["interior_work"]) == set(counters)
+    assert all(values["n"] == 3 for values in group["interior_work"].values())
+    assert group["interior_work"]["changed_cells"]["median"] == 3
+    assert group["interior_work"]["computed_cells"]["median"] == 30
+    assert group["interior_work"]["computed_cells"]["max"] == 150
+    assert group["interior_work"]["transform_calls"]["median"] == 1
+    assert group["interior_work"]["transform_calls"]["min"] == 0
+
+
+def test_field_timing_includes_interior_checks_and_copies_without_nested_edt(monkeypatch):
+    from types import SimpleNamespace
+    import numpy as np
+
+    repo = Path(__file__).resolve().parents[2]
+    monkeypatch.syspath_prepend(str(repo / "src/agx_navigation/agx_planning"))
+    _rclpy_mock = sys.modules.pop("rclpy", None)
+    try:
+        from replanning_baseline import measure
+    finally:
+        if _rclpy_mock is not None:
+            sys.modules["rclpy"] = _rclpy_mock
+
+    clock = [0.0]
+    monkeypatch.setattr(measure.time, "perf_counter", lambda: clock[0])
+
+    def edt(obstacles):
+        clock[0] += 3
+        return np.zeros_like(obstacles, dtype=float)
+
+    diagnostics = {"status": "local_update", "reason": "changed_region",
+                   "computed_cells": 9, "transform_calls": 1}
+
+    def update_interior(obstacles, resolution, previous):
+        clock[0] += 2  # Bounds and source checks.
+        result = measure.vf.distance_transform_edt(obstacles)
+        clock[0] += 2  # Copy the accepted region into the result.
+        return result, diagnostics
+
+    monkeypatch.setattr(measure.vf, "distance_transform_edt", edt)
+    monkeypatch.setattr(measure.vf, "_update_interior_distance", update_interior)
+    updater = SimpleNamespace(last_update="full_recompute", last_speed={}, last_fmm={})
+
+    def compute(occupancy, *args):
+        measure.vf.distance_transform_edt(occupancy)
+        _, updater.last_interior = measure.vf._update_interior_distance(occupancy, 1.0, None)
+        return "field", "message"
+
+    updater.update = compute
+    metadata = {"geometry": {"shape": [3, 3], "resolution": 1.0, "origin": [0, 0, 0]},
+                "start": [0.5, 0.5, 0, 0, 0], "goal": [1.5, 1.5, 0]}
+    profile = {"field": {}, "occupancy_threshold": 65, "allow_unknown": False}
+    result, stages = measure.measure_field(np.zeros((3, 3)), metadata, profile, updater)
+    assert result == "field"
+    assert stages["edt_s"] == stages["compute_field_s"] == 10
+    assert stages["speed_s"] == stages["fmm_s"] == stages["gradient_s"] == 0
+    assert stages["interior_update"] == diagnostics
+    stages["interior_update"]["computed_cells"] = 123
+    assert updater.last_interior["computed_cells"] == 9
+
+    # Older callers and test doubles do not need to provide the optional record.
+    del updater.last_interior
+    updater.last_update = "field_reuse"
+    updater.update = lambda *args: ("cached", "message")
+    result, stages = measure.measure_field(np.zeros((3, 3)), metadata, profile, updater)
+    assert result == "cached"
+    assert stages["field_update"] == "field_reuse"
+    assert stages["edt_s"] == stages["compute_field_s"] == 0
+    assert "interior_update" not in stages

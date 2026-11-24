@@ -198,9 +198,12 @@ def test_incremental_map_callbacks_keep_exact_fields_and_publication_order(node)
             assert updater.last_fmm["status"] == "replay"
             assert updater.last_fmm["reused_batches"] > 0
             assert updater.last_speed["status"] == "local_update"
+            assert updater.last_interior["status"] == "local_update"
+            assert updater.last_interior["transform_calls"] >= 1
     assert published.mock_calls == [call.planner(), call.cost(), call.arrows()] * 3
     messages = [item.args[0] for item in node.get_logger().info.call_args_list]
-    assert any("speed=local_update/changed_region" in message
+    assert any("interior=local_update/changed_region" in message
+               and "speed=local_update/changed_region" in message
                and "fmm=replay/checkpoint_replayed" in message
                and "reused_batches=" in message for message in messages)
 
@@ -208,10 +211,10 @@ def test_incremental_map_callbacks_keep_exact_fields_and_publication_order(node)
     node._goal_cb(SimpleNamespace(header=SimpleNamespace(frame_id="map"),
                                   pose=node.current_goal.pose))
     assert updater.last_update == "field_reuse"
-    assert updater.last_fmm == updater.last_speed == {}
+    assert updater.last_fmm == updater.last_speed == updater.last_interior == {}
     message = next(item.args[0] for item in node.get_logger().info.call_args_list
                    if item.args[0].startswith("field_reuse:"))
-    assert "speed=" not in message and "fmm=" not in message and "reused_batches=" not in message
+    assert all(name not in message for name in ("interior=", "speed=", "fmm=", "reused_batches="))
     assert published.mock_calls == [call.planner(), call.cost(), call.arrows()] * 4
 
 
@@ -240,7 +243,8 @@ def test_existing_invalid_request_paths_clear_incremental_cache(node, change):
         node._recompute_and_publish()
     assert node._field_result is None
     assert node._field_updater._eikonal._state is None
-    assert node._field_updater.last_fmm == node._field_updater.last_speed == {}
+    updater = node._field_updater
+    assert updater.last_fmm == updater.last_speed == updater.last_interior == {}
     assert node._publish_planner_data.call_count == 1
     node.current_goal = goal
     node.map_array[20, 15] = 0
@@ -248,6 +252,40 @@ def test_existing_invalid_request_paths_clear_incremental_cache(node, change):
     assert_fresh_field(node)
     assert node._field_updater.last_fmm["status"] == "full_recompute"
     assert node._field_updater.last_fmm["reused_batches"] == 0
+
+
+def test_interior_failure_clears_incremental_state_and_retries_exactly(node):
+    node = incremental_node(node)
+    node._recompute_and_publish()
+    updater = node._field_updater
+    assert updater.last_interior
+    node.map_array[5:8, 65] = 100
+    with patch.object(vf, "_update_interior_distance", side_effect=RuntimeError("interior failed")):
+        with pytest.raises(RuntimeError, match="interior failed"):
+            node._recompute_and_publish()
+    assert node._field_result is None
+    assert updater._eikonal._state is None
+    assert updater.last_fmm == updater.last_speed == updater.last_interior == {}
+    assert node._publish_planner_data.call_count == 1
+    node._recompute_and_publish()
+    assert_fresh_field(node)
+    assert updater.last_interior["reason"] == "new_map"
+    assert updater.last_fmm["status"] == "full_recompute"
+    assert node._publish_planner_data.call_count == 2
+
+
+def test_node_accepts_updater_without_optional_interior_diagnostics(node):
+    node._recompute_and_publish()
+    node._field_updater = SimpleNamespace(
+        update=MagicMock(return_value=(node._field_result, "cached test")),
+        last_update="field_reuse", last_speed={}, last_fmm={},
+    )
+    node.get_logger().info.reset_mock()
+    node._recompute_and_publish()
+    assert node._field_result is not None
+    message = next(item.args[0] for item in node.get_logger().info.call_args_list
+                   if item.args[0].startswith("field_reuse:"))
+    assert "interior=" not in message
 
 
 def test_launch_defaults_and_typed_field_parameter_wiring():

@@ -18,9 +18,16 @@ change them; runtime parameter changes do not rebuild the updater.
 The node validates these settings during startup, including in cached mode.
 The cache limit covers retained native FMM arrays, not total process memory.
 Zero checkpoints or zero cache MiB disables FMM replay. Incremental map speed
-updates can still run. Growth 1 keeps fixed checkpoint intervals; larger growth
-spreads the retained points. Keep 1 unless measurements support another value
-for the expected edits. See [fmm_state.md](fmm_state.md).
+and obstacle-interior distance updates can still run. The free-distance
+transform stays global. Interior crops need a real free source and a distance
+certificate that excludes any closer source outside the crop; otherwise the
+updater expands the crop or rebuilds the full interior array. That rebuild,
+including on the first map, can transform just the occupied bounding box plus
+a one-cell free halo. Its status remains `full_recompute`, while work counters
+report the actual transform area. Full and cached backends keep their existing
+behavior. Growth 1 keeps fixed checkpoint intervals;
+larger growth spreads the retained points. Keep 1 unless measurements support
+another value for the expected edits. See [fmm_state.md](fmm_state.md).
 
 The launch argument `field_early_exit` defaults to `true` and sets the existing
 node parameter `early_exit_enable`. FMM replay needs complete fields, so set it
@@ -77,11 +84,11 @@ starts the planner and runtime corrector. The existing corrector default is
 ## Read the logs
 
 Startup logs show the backend, early-exit setting, checkpoint settings, and
-cache budget. A computed incremental field also logs speed and FMM status and
-reason, plus `reused_batches`. For example:
+cache budget. A computed incremental field also logs interior distance, speed,
+and FMM status and reason when those stages run, plus `reused_batches`. For example:
 
 ```text
-speed=local_update/changed_region; fmm=replay/checkpoint_replayed, reused_batches=10000
+interior=local_update/changed_region; speed=local_update/changed_region; fmm=replay/checkpoint_replayed, reused_batches=10000
 ```
 
 A replay can reuse zero batches. Source initialization changes and missing

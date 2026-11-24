@@ -30,12 +30,32 @@ Exceptions also clear the cache and are raised to the caller.
 
 ## Experimental field updates
 
-With incremental mode enabled, map edits still run both global distance
-transforms and rebuild signed wall distance. Compatible requests with centring
-enabled and `centring_smooth=0` update speed in affected rectangles. Cap and
-resolution must be finite and positive. Other settings, an incompatible
-previous map, or source crops whose total area reaches the map area use full
-speed construction.
+With incremental mode enabled, map edits still run the global distance
+transform from free cells to obstacles. The updater can recompute only affected
+regions of the obstacle-interior distance, which supplies the negative part of
+signed wall distance. It then rebuilds signed wall distance from both parts.
+The full and cached backends keep both original global transforms.
+
+The maximum previous interior distance bounds the output regions that can be
+affected by changed cells. A local transform needs a real free cell in its
+source crop. Each output distance is accepted only when it is no greater than
+the distance to any excluded grid cell. This certifies that an omitted source
+cannot change the result. Crops can expand or fall back to full interior
+reconstruction when the certificate fails.
+
+The first map and full fallback can transform the occupied bounding box plus
+a one-cell free halo, then fill the rest of the interior distance array with
+zero. The halo contains a source at least as near as any omitted free cell.
+Thus `full_recompute` means the whole interior array was rebuilt; it does not
+always mean a full-grid transform. Empty masks, full-extent boxes, and
+unsupported geometry keep the original full-grid call. All-blocked masks also
+keep that call to preserve SciPy's boundary behavior. These checks change
+neither the signed distance definition nor the default backend.
+
+Compatible requests with centring enabled and `centring_smooth=0` update speed
+in affected rectangles. Cap and resolution must be finite and positive.
+Other settings, an incompatible previous map, or source crops whose total area
+reaches the map area use full speed construction.
 
 Affected regions start from changed mask or clipped free-distance values.
 They include the influence of the centring level radii. A second halo supplies
@@ -81,12 +101,14 @@ checks and checkpoint rules.
 
 `last_update` is `fmm_replay` after accepted replay, or `fmm_reuse` when the
 complete FMM inputs are unchanged. Other requests use the modes in the table.
-`last_fmm` records the FMM status and reason when the FMM controller runs. It is
-empty for a copied field result. `last_speed` records local speed construction,
-full speed construction, or unchanged speed inputs when incremental map
-preprocessing runs. It is empty for the default backend and when map
+`last_interior` records obstacle-interior distance work when incremental map
+preprocessing runs. It is empty when preprocessing is skipped and in the
+default backend. `last_fmm` records the FMM status and reason when the FMM
+controller runs. It is empty for a copied field result. `last_speed` records
+local speed construction, full speed construction, or unchanged speed inputs
+when incremental map preprocessing runs. It is empty for the default backend and when map
 preprocessing is skipped. A `full_recompute` field mode can still use local
-speed construction; inspect the two stage reports separately.
+speed construction; inspect the stage reports separately.
 
 ## Python use
 
@@ -138,9 +160,9 @@ check.
 ## Compare against full recomputation
 
 The benchmark defaults to `--field-backend full`. Select `cached` for map and
-result caching, or `incremental` for local speed updates and FMM replay. All modes create
-a fresh planner per snapshot. An update may supply a new `goal`; otherwise it
-keeps the previous goal.
+result caching, or `incremental` for interior distance updates, local speed
+updates, and FMM replay. All modes create a fresh planner per snapshot.
+An update may supply a new `goal`; otherwise it keeps the previous goal.
 
 ```bash
 .venv-baseline/bin/python tools/bench_replanning.py \
@@ -168,10 +190,20 @@ speed work when centring changes source speeds and FMM must restart. It does
 not represent route coverage or a moving robot experiment. Compare `added`
 and `removed` separately from the initial solve and repeated-input cache hit.
 
+The [interior distance fixture](../config/replanning/interior_field_updates.yaml)
+closes and reopens free cavities inside obstacle blocks, including two separated
+cavities in one request. These changes can affect negative wall distances
+beyond the edited cells even when the cavities are unreachable from the goal.
+Use `--verify-fields` to compare every field component with full recomputation
+outside the timers. The repeated snapshot checks that a cache hit performs no
+interior, speed, or FMM work.
+
 `compute_field_s` includes mask construction and comparison, cache lookup,
 numerical work, and copies of the returned result. `speed_s` includes change
 detection, cropped or full speed construction, and speed array copies. Nested
-speed and EDT calls are counted once. `fmm_s` includes replay
+speed and EDT calls are counted once. `edt_s` includes the global free-distance
+transform and interior update checks, transforms, and copies. Nested interior
+transform calls are counted once under that helper. `fmm_s` includes replay
 validation, checkpoint work, the remaining march, and result export. Stage
 times are zero for skipped stages. `field_update` records the mode per sample.
 When the FMM controller runs, `fmm_update` contains:
@@ -198,8 +230,24 @@ Incremental map preprocessing also records `speed_update`:
 | `total_cells` | Full map area |
 | `region_count` | Number of speed crops: up to four for local updates, one for full construction, zero for unchanged inputs |
 
-JSON summaries include backend, field mode counts, and FMM and speed status and
-reason counts. A full solve with reason `new_field` starts a tracked field;
+Incremental preprocessing also records `interior_update` for the obstacle-side
+distance only; its work counters exclude the global free-distance transform:
+
+| Key | Meaning |
+| --- | --- |
+| `status`, `reason` | Interior distance update mode and its cause |
+| `changed_cells` | Changed obstacle-mask cells; null when not checked |
+| `updated_cells` | Area of output regions replaced in the interior distance array |
+| `computed_cells` | Sum of interior transform input areas, including overlapping crops, retries, and any final full fallback; can exceed map area |
+| `total_cells` | Full map area |
+| `region_count` | Number of output regions used |
+| `transform_calls` | Number of interior distance transform calls, including retries and full fallback |
+
+JSON summaries include backend, field mode counts, and FMM, speed, and interior
+status and reason counts. `interior_work` summarizes the numerical work counters;
+missing or null counters are excluded rather than treated as zero. Older
+records without interior diagnostics still load, with empty interior counts.
+A full solve with reason `new_field` starts a tracked field;
 other full-solve reasons explain why replay was unavailable. Map loading and
 rectangle application remain outside sample timing. Cache release at case
 boundaries is setup work.

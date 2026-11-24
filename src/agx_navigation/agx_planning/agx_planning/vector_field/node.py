@@ -287,6 +287,9 @@ class VectorFieldNode(Node):
 
         self._field_result, message = outcome
         stages = []
+        interior = getattr(self._field_updater, "last_interior", None)
+        if interior:
+            stages.append(f"interior={interior['status']}/{interior['reason']}")
         if self._field_updater.last_speed:
             speed = self._field_updater.last_speed
             stages.append(f"speed={speed['status']}/{speed['reason']}")

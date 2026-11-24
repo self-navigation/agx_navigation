@@ -15,6 +15,7 @@ METRICS = ("total_wall_s", "total_cpu_s", "compute_field_s", "edt_s", "speed_s",
 FMM_WORK = ("reused_batches", "total_batches", "computed_batches", "checkpoint_count",
             "checkpoint_copies", "checkpoint_copy_bytes", "cache_array_bytes")
 SPEED_WORK = ("changed_cells", "updated_cells", "computed_cells", "total_cells", "region_count")
+INTERIOR_WORK = SPEED_WORK + ("transform_calls",)
 
 
 def distribution(values):
@@ -108,6 +109,7 @@ def summarize(directory):
                                                           if r["status"] == "completed"])
         fmm_updates = [r["fmm_update"] for r in samples if r.get("fmm_update")]
         speed_updates = [r["speed_update"] for r in samples if r.get("speed_update")]
+        interior_updates = [r["interior_update"] for r in samples if r.get("interior_update")]
         verification = [r["verification"] for r in samples if r.get("verification")]
         metrics["verification_wall_s"] = distribution([r["wall_s"] for r in verification
                                                        if r.get("wall_s") is not None])
@@ -120,6 +122,9 @@ def summarize(directory):
                           "speed_updates": dict(Counter(r["status"] for r in speed_updates)),
                           "speed_reasons": dict(Counter(r["reason"] for r in speed_updates)),
                           "speed_work": work_distributions(speed_updates, SPEED_WORK),
+                          "interior_updates": dict(Counter(r["status"] for r in interior_updates)),
+                          "interior_reasons": dict(Counter(r["reason"] for r in interior_updates)),
+                          "interior_work": work_distributions(interior_updates, INTERIOR_WORK),
                           "field_verification": dict(Counter(r["status"] for r in verification)),
                           "bvp_calls": len(solves), "bvp_failures": sum(not s["success"] for s in solves),
                           "metrics": metrics})
