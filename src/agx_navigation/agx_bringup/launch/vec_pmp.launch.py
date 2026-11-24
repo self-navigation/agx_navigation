@@ -131,6 +131,30 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            "field_backend", default_value="cached",
+            description="Field updater: cached (default) or experimental incremental.",
+        ),
+        DeclareLaunchArgument(
+            "field_checkpoint_interval", default_value="10000",
+            description="Initial checkpoint interval in equal-time FMM batches.",
+        ),
+        DeclareLaunchArgument(
+            "field_checkpoint_growth", default_value="1",
+            description="Checkpoint offset growth; 1 keeps fixed intervals.",
+        ),
+        DeclareLaunchArgument(
+            "field_max_checkpoints", default_value="4",
+            description="Maximum retained FMM checkpoints; 0 disables replay.",
+        ),
+        DeclareLaunchArgument(
+            "field_cache_mib", default_value="256",
+            description="Retained native FMM array budget in MiB; 0 disables replay.",
+        ),
+        DeclareLaunchArgument(
+            "field_early_exit", default_value="true",
+            description="Keep partial FMM fields; false allows complete-field replay.",
+        ),
+        DeclareLaunchArgument(
             "wheel_bias",
             default_value="",
             description=(
@@ -158,6 +182,24 @@ def generate_launch_description():
                 "map_frame": "map",
                 "robot_frame": "base_link",
                 "allow_unknown": True,
+                "field_backend": ParameterValue(
+                    LaunchConfiguration("field_backend"), value_type=str,
+                ),
+                "field_checkpoint_interval": ParameterValue(
+                    LaunchConfiguration("field_checkpoint_interval"), value_type=int,
+                ),
+                "field_checkpoint_growth": ParameterValue(
+                    LaunchConfiguration("field_checkpoint_growth"), value_type=int,
+                ),
+                "field_max_checkpoints": ParameterValue(
+                    LaunchConfiguration("field_max_checkpoints"), value_type=int,
+                ),
+                "field_cache_mib": ParameterValue(
+                    LaunchConfiguration("field_cache_mib"), value_type=int,
+                ),
+                "early_exit_enable": ParameterValue(
+                    LaunchConfiguration("field_early_exit"), value_type=bool,
+                ),
                 "speed_profile": "exponential",
                 "inflation_radius": 0.5,
                 "smooth_T_before_grad": False,

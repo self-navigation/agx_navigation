@@ -25,6 +25,7 @@ planner (low |grad T| means cut locus or near-goal -> field unreliable).
 
 import array
 import math
+import operator
 import time
 from dataclasses import dataclass, replace
 from typing import Optional
@@ -66,6 +67,11 @@ class NodeConfig:
     robot_frame: str = "base_link"
     occupancy_threshold: int = 65
     allow_unknown: bool = False
+    field_backend: str = "cached"
+    field_checkpoint_interval: int = 10000
+    field_checkpoint_growth: int = 1
+    field_max_checkpoints: int = 4
+    field_cache_mib: int = 256
     viz_subsample: int = 4
     viz_arrow_length: float = 0.3  # [m]; max arrow length
     viz_scale_arrows: bool = True  # scale by |grad T|
@@ -75,6 +81,33 @@ class NodeConfig:
     viz_path_step: float = 0.5
     viz_path_max_iter: int = 2000
     viz_path_rate: float = 5.0  # [Hz] -- path only; field data is event-driven
+
+    def make_updater(self) -> FieldUpdater:
+        """Validate startup settings and create one persistent field updater."""
+        if self.field_backend not in ("cached", "incremental"):
+            raise ValueError("field_backend must be 'cached' or 'incremental'")
+        settings = {}
+        for name, minimum in (("field_checkpoint_interval", 1),
+                              ("field_checkpoint_growth", 1),
+                              ("field_max_checkpoints", 0),
+                              ("field_cache_mib", 0)):
+            value = getattr(self, name)
+            try:
+                if isinstance(value, bool):
+                    raise TypeError
+                value = operator.index(value)
+            except TypeError:
+                raise ValueError(f"{name} must be an integer >= {minimum}") from None
+            if value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+            settings[name] = value
+        return FieldUpdater(
+            incremental=self.field_backend == "incremental",
+            checkpoint_interval=settings["field_checkpoint_interval"],
+            checkpoint_growth=settings["field_checkpoint_growth"],
+            max_checkpoints=settings["field_max_checkpoints"],
+            cache_bytes=settings["field_cache_mib"] * 1024**2,
+        )
 
 
 class VectorFieldNode(Node):
@@ -94,6 +127,8 @@ class VectorFieldNode(Node):
         if self.field_cfg.speed_v_min <= 0.0:
             raise ValueError("speed_v_min must be > 0 (eikonal diverges as v -> 0)")
 
+        self._field_updater = self.node_cfg.make_updater()
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -101,7 +136,6 @@ class VectorFieldNode(Node):
         self.map_array: Optional[np.ndarray] = None
         self.current_goal: Optional[PoseStamped] = None
         self._field_result: Optional[VectorFieldResult] = None
-        self._field_updater = FieldUpdater()
 
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -128,7 +162,14 @@ class VectorFieldNode(Node):
         )
 
         self.get_logger().info(
-            "VectorFieldNode (FM2) ready. Waiting for /map and /goal_pose..."
+            "VectorFieldNode (FM2) ready: "
+            f"field_backend={self.node_cfg.field_backend}, "
+            f"early_exit_enable={self.field_cfg.early_exit_enable}, "
+            f"checkpoint_interval={self.node_cfg.field_checkpoint_interval}, "
+            f"checkpoint_growth={self.node_cfg.field_checkpoint_growth}, "
+            f"max_checkpoints={self.node_cfg.field_max_checkpoints}, "
+            f"cache_mib={self.node_cfg.field_cache_mib}. "
+            "Waiting for /map and /goal_pose..."
         )
 
     def _map_cb(self, msg: OccupancyGrid):
@@ -245,8 +286,17 @@ class VectorFieldNode(Node):
             return False
 
         self._field_result, message = outcome
+        stages = []
+        if self._field_updater.last_speed:
+            speed = self._field_updater.last_speed
+            stages.append(f"speed={speed['status']}/{speed['reason']}")
+        if self._field_updater.last_fmm:
+            fmm = self._field_updater.last_fmm
+            stages.append(f"fmm={fmm['status']}/{fmm['reason']}, "
+                          f"reused_batches={fmm['reused_batches']}")
+        detail = " [" + "; ".join(stages) + "]" if stages else ""
         self.get_logger().info(
-            f"{self._field_updater.last_update}: {message}, {elapsed_ms:.1f} ms"
+            f"{self._field_updater.last_update}: {message}, {elapsed_ms:.1f} ms{detail}"
         )
         return True
 
