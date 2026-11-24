@@ -95,13 +95,36 @@ array bytes include dependency history and the sparse initialization signature.
 Snapshots do not copy dependency history. `max_bytes` limits one checkpoint's
 array payload. Direct API callers own and budget their checkpoint lists.
 
-The field controller stores checkpoints at a fixed batch interval up to a
-configured count and byte budget. After accepted replay it drops the previous
+The field controller stores checkpoints up to a configured count and byte
+budget. Its default `checkpoint_growth=1` keeps the fixed interval: offsets
+`0, I, 2*I, 3*I` for interval `I` and four slots. An integer growth greater
+than one spaces the offsets geometrically. For example,
+`checkpoint_growth=4` uses `0, I, 4*I, 16*I`. The count and byte limits still
+apply, and a solve that finishes before the next offset can store its completed
+state when a slot and enough bytes remain. Growth must be an integer of at
+least one.
+
+Set the option on `FieldUpdater(incremental=True, checkpoint_growth=4)` or
+pass `--checkpoint-growth 4` to `tools/bench_replanning.py`. Growth is opt-in:
+later checkpoints can save more work for distant edits, but give less coverage
+between early offsets. Compare complete base and update costs with
+`--verify-fields`; a larger reused prefix alone does not establish a speedup.
+
+After accepted replay the controller drops the previous
 revision's checkpoints and stores new ones from the reused point onward. An
-edit affecting earlier work can therefore require a full solve. The budget
+offset is relative to that reused point, not the original batch zero. An edit
+affecting earlier work can therefore require a full solve. The budget
 covers retained native working and checkpoint arrays only. Temporary
 initialization, preprocessing, returned fields, Python objects, and other
 process memory are outside this budget.
+
+`last_fmm` and the benchmark's `fmm_update` include `checkpoint_batches`, the
+batch numbers of retained checkpoints. `checkpoint_copies` and
+`checkpoint_copy_bytes` count checkpoint copies and their array payload for
+the current request. Unchanged FMM inputs retain the batch list but report
+zero new copies and bytes. Stateless fallback reports an empty list and zero
+copy work. These values describe snapshot work, not elapsed copy time or total
+process memory.
 
 ## Validation
 
@@ -109,7 +132,8 @@ process memory are outside this budget.
 .venv-baseline/bin/python -m pytest -q depend/scikit-fmm/tests
 .venv-baseline/bin/python -c 'import skfmm; raise SystemExit(skfmm.test())'
 PYTHONPATH=src/agx_navigation/agx_planning .venv-baseline/bin/python -m pytest -q \
-  tools/tests/test_fmm_state.py tools/tests/test_field_replay.py
+  tools/tests/test_fmm_state.py tools/tests/test_field_replay.py \
+  tools/tests/test_checkpoint_spacing.py
 ```
 
 The fork tests compare reached masks and times exactly after pauses, restores,

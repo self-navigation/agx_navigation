@@ -23,8 +23,9 @@ class FieldUpdater:
     """
 
     def __init__(self, *, incremental=False, checkpoint_interval=10000,
-                 max_checkpoints=4, cache_bytes=256 * 1024**2):
-        self._eikonal = (IncrementalEikonal(checkpoint_interval, max_checkpoints, cache_bytes)
+                 max_checkpoints=4, cache_bytes=256 * 1024**2, checkpoint_growth=1):
+        self._eikonal = (IncrementalEikonal(checkpoint_interval, max_checkpoints, cache_bytes,
+                                          checkpoint_growth=checkpoint_growth)
                          if incremental else None)
         self.clear()
 

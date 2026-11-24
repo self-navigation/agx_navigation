@@ -32,6 +32,7 @@ def run(args):
         updater = FieldUpdater()
     elif args.field_backend == "incremental":
         updater = FieldUpdater(incremental=True, checkpoint_interval=args.checkpoint_interval,
+                               checkpoint_growth=args.checkpoint_growth,
                                max_checkpoints=args.max_checkpoints,
                                cache_bytes=args.field_cache_mib * 1024**2)
     arm = ("full_recompute_fresh_plan" if updater is None
@@ -86,7 +87,9 @@ def main():
     parser.add_argument("--field-backend", choices=("full", "cached", "incremental"), default="full",
                         help="select full computation, cached fields, or experimental FMM replay")
     parser.add_argument("--checkpoint-interval", type=int, default=10000,
-                        help="equal-time batches between incremental checkpoints")
+                        help="initial interval in equal-time batches for incremental checkpoints")
+    parser.add_argument("--checkpoint-growth", type=int, default=1,
+                        help="checkpoint offset growth; 1 keeps fixed intervals")
     parser.add_argument("--max-checkpoints", type=int, default=4,
                         help="maximum retained incremental checkpoints")
     parser.add_argument("--field-cache-mib", type=int, default=256,
@@ -99,6 +102,8 @@ def main():
         parser.error("repeat and threads must be positive; warmups must be nonnegative")
     if args.checkpoint_interval < 1 or args.max_checkpoints < 0 or args.field_cache_mib < 0:
         parser.error("checkpoint interval must be positive; checkpoint count and cache MiB must be nonnegative")
+    if args.checkpoint_growth < 1:
+        parser.error("checkpoint growth must be at least one")
     try:
         return run(args)
     except (ValueError, OSError, KeyError, TypeError) as error:

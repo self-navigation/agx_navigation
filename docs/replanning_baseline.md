@@ -86,7 +86,10 @@ Imports are excluded from sample timing. No external processes are timed.
 
 The incremental backend requires a positive checkpoint interval and nonnegative
 checkpoint count and cache MiB. Defaults are 10000 batches, four checkpoints,
-and 256 MiB. Each case starts cold in every repetition and warmup. Replay is
+and 256 MiB. `--checkpoint-growth 4` spreads four checkpoint offsets over
+0, 10000, 40000, and 160000 batches; the default 1 keeps fixed intervals.
+Growth must be an integer at least one. Count and byte limits still apply.
+Each case starts cold in every repetition and warmup. Replay is
 limited to complete fields; early exit uses full FMM computation. Map edits still
 run both global distance transforms and rebuild signed wall distance. Compatible
 centring requests with smoothing disabled use local speed construction; other
@@ -173,6 +176,9 @@ samples were recorded; inspect `verification` for correctness.
 Run timing repetitions separately without verification, since a reference solve
 changes the process and CPU cache state between samples. Compare matching
 snapshots and include initial solves when assessing checkpoint overhead.
+Compare growth 1 and 4 in separate timing runs. Inspect retained batch positions,
+copy counts, copy bytes, and reused batches; wider spacing does not guarantee
+a faster request.
 
 ## Outputs and timing boundaries
 

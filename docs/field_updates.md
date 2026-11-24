@@ -105,6 +105,11 @@ neighbor updates. It must be positive. The checkpoint count and byte budget
 must be nonnegative. Setting either the count or budget to zero disables FMM
 replay and uses full solves. The defaults are 10000 batches, four checkpoints,
 and 256 MiB. Checkpoints use this fixed interval up to the count and byte limits.
+`checkpoint_growth=4` instead uses offsets 0, I, 4I, and 16I for four slots,
+where I is the initial interval. Offsets start at the current revision's reused
+point. This can retain more work for distant edits while retaining less work
+for some early edits. The default growth is 1. Compare full request costs,
+including checkpoint copies, before choosing a different value.
 Accepted replay drops all previous revision checkpoints. New checkpoints start
 at the reused point, so a later edit that affects earlier work may need a full
 solve.
@@ -170,6 +175,8 @@ When the FMM controller runs, `fmm_update` contains:
 | `first_affected_batch` | First affected input-read batch, -1 when no such read was recorded, or null for stateless fallback |
 | `total_batches`, `computed_batches` | Final batch count and batches computed for this request; null for stateless fallback |
 | `checkpoint_count`, `cache_array_bytes` | Retained checkpoint count and native array payload |
+| `checkpoint_batches` | Batch positions of retained checkpoints |
+| `checkpoint_copies`, `checkpoint_copy_bytes` | Checkpoint array copies and bytes copied for this request |
 
 Incremental map preprocessing also records `speed_update`:
 

@@ -10,12 +10,15 @@ class IncrementalEikonal:
     """Keep one tracked march and a bounded set of checkpoints."""
 
     def __init__(self, checkpoint_interval=10000, max_checkpoints=4,
-                 cache_bytes=256 * 1024**2):
+                 cache_bytes=256 * 1024**2, checkpoint_growth=1):
         self.interval = operator.index(checkpoint_interval)
+        self.growth = operator.index(checkpoint_growth)
         self.max_checkpoints = operator.index(max_checkpoints)
         self.cache_bytes = operator.index(cache_bytes)
         if self.interval <= 0 or self.max_checkpoints < 0 or self.cache_bytes < 0:
             raise ValueError("checkpoint interval must be positive; count and bytes must be nonnegative")
+        if self.growth < 1:
+            raise ValueError("checkpoint growth must be at least one")
         self.clear()
 
     def clear(self):
@@ -33,22 +36,31 @@ class IncrementalEikonal:
         self.last_stats = dict(status="full_recompute", reason=reason, changed_cells=None,
                                reused_batches=0, first_affected_batch=None,
                                total_batches=None, computed_batches=None,
-                               checkpoint_count=0, cache_array_bytes=0)
+                               checkpoint_count=0, cache_array_bytes=0,
+                               checkpoint_batches=[], checkpoint_copies=0,
+                               checkpoint_copy_bytes=0)
         return result
 
     def _finish(self):
         stored_bytes = 0
+        start_batch = self._state.stats["batches"]
+        offset = self.interval
         while len(self._checkpoints) < self.max_checkpoints:
             stats = self._state.stats
             size = stats["checkpoint_array_bytes"]
             if stats["working_array_bytes"] + stored_bytes + size > self.cache_bytes:
                 break
-            self._checkpoints.append((self._state.checkpoint(max_bytes=size), size))
+            self._checkpoints.append((self._state.checkpoint(max_bytes=size),
+                                      size, stats["batches"]))
             stored_bytes += size
             if stats["complete"] or len(self._checkpoints) == self.max_checkpoints:
                 break
-            self._state.advance(self.interval)
+            count = start_batch + offset - stats["batches"]
+            # The native batch limit is a C int; this also covers its grid limit.
+            self._state.advance(min(count, np.iinfo(np.int32).max))
+            offset = offset + self.interval if self.growth == 1 else offset * self.growth
         self._state.advance()
+        return len(self._checkpoints), stored_bytes
 
     def solve(self, obstacles, speed, goal_col, goal_row, resolution,
               early_exit_target=None, early_exit_margin_cells=0):
@@ -71,8 +83,9 @@ class IncrementalEikonal:
         key = (obstacles.shape, goal_col, goal_row, resolution)
         info = dict(status="full_required", reason="new_field", changed_cells=0,
                     reused_batches=0, first_affected_batch=-1)
+        copies, copy_bytes = 0, 0
         if self._state is not None and key == self._key:
-            info = self._state.replay(speed, obstacles, [c for c, _ in self._checkpoints])
+            info = self._state.replay(speed, obstacles, [c for c, _, _ in self._checkpoints])
         if info["status"] == "unchanged":
             pass
         else:
@@ -91,7 +104,7 @@ class IncrementalEikonal:
                 if initial["working_array_bytes"] + initial["checkpoint_array_bytes"] > self.cache_bytes:
                     return self._full(obstacles, speed, goal_col, goal_row, resolution,
                                       target, margin, "cache_budget")
-            self._finish()
+            copies, copy_bytes = self._finish()
 
         stats = self._state.stats
         self.last_stats = {
@@ -100,7 +113,10 @@ class IncrementalEikonal:
             "computed_batches": (0 if info["status"] == "unchanged"
                                  else stats["batches"] - info["reused_batches"]),
             "checkpoint_count": len(self._checkpoints),
+            "checkpoint_batches": [batch for _, _, batch in self._checkpoints],
+            "checkpoint_copies": copies,
+            "checkpoint_copy_bytes": copy_bytes,
             "cache_array_bytes": (stats["working_array_bytes"]
-                                  + sum(size for _, size in self._checkpoints)),
+                                  + sum(size for _, size, _ in self._checkpoints)),
         }
         return np.ma.filled(self._state.result(), np.nan)
