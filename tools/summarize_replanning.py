@@ -12,6 +12,9 @@ import sys
 
 METRICS = ("total_wall_s", "total_cpu_s", "compute_field_s", "edt_s", "speed_s", "fmm_s",
            "gradient_s", "pack_s", "parse_s", "planner_wall_s", "planner_cpu_s")
+FMM_WORK = ("reused_batches", "total_batches", "computed_batches", "checkpoint_count",
+            "checkpoint_copies", "checkpoint_copy_bytes", "cache_array_bytes")
+SPEED_WORK = ("changed_cells", "updated_cells", "computed_cells", "total_cells", "region_count")
 
 
 def distribution(values):
@@ -25,6 +28,53 @@ def distribution(values):
     return {"n": len(values), "median": statistics.median(values),
             "p95": values[lo] + (values[hi] - values[lo]) * (index - lo),
             "min": values[0], "max": values[-1]}
+
+
+def work_distributions(updates, names):
+    return {name: distribution([update[name] for update in updates
+                                if update.get(name) is not None]) for name in names}
+
+
+def summarize_cases(snapshots, groups, repetitions):
+    cases = defaultdict(list)
+    for index, metadata in enumerate(snapshots):
+        cases[metadata["case_id"]].append(index)
+    totals = []
+    for case_id, indices in cases.items():
+        samples = [sample for index in indices for sample in groups[index]]
+        by_repetition = defaultdict(dict)
+        for sample in samples:
+            by_repetition[sample["repetition"]][sample["snapshot_index"]] = sample
+        complete, incomplete = [], []
+        for repetition in range(repetitions):
+            observed = by_repetition[repetition]
+            missing = [snapshots[index]["snapshot_id"] for index in indices if index not in observed]
+            if missing:
+                incomplete.append({"repetition": repetition, "missing_snapshot_ids": missing,
+                                   "samples": len(observed),
+                                   "outcomes": dict(Counter(sample["status"]
+                                                            for sample in observed.values()))})
+            else:
+                complete.append([observed[index] for index in indices])
+        metrics = {
+            name: distribution([sum(sample[name] for sample in repetition)
+                                for repetition in complete
+                                if all(sample.get(name) is not None for sample in repetition)])
+            for name in METRICS
+        }
+        metrics["verification_wall_s"] = distribution([
+            sum(sample["verification"]["wall_s"] for sample in repetition)
+            for repetition in complete
+            if all((sample.get("verification") or {}).get("wall_s") is not None
+                   for sample in repetition)
+        ])
+        totals.append({"case_id": case_id,
+                       "snapshot_ids": [snapshots[index]["snapshot_id"] for index in indices],
+                       "expected_repetitions": repetitions, "complete_repetitions": len(complete),
+                       "incomplete_repetitions": incomplete,
+                       "outcomes": dict(Counter(sample["status"] for sample in samples)),
+                       "metrics": metrics})
+    return totals
 
 
 def summarize(directory):
@@ -50,7 +100,8 @@ def summarize(directory):
     for index, metadata in enumerate(manifest["snapshots"]):
         samples = groups[index]
         outcomes = dict(Counter(r["status"] for r in samples))
-        metrics = {key: distribution([r[key] for r in samples if key in r]) for key in METRICS}
+        metrics = {key: distribution([r[key] for r in samples if r.get(key) is not None])
+                   for key in METRICS}
         solves = [s for r in samples for s in r["solves"]]
         metrics["bvp_wall_s"] = distribution([s["wall_s"] for s in solves])
         metrics["completed_total_wall_s"] = distribution([r["total_wall_s"] for r in samples
@@ -58,14 +109,17 @@ def summarize(directory):
         fmm_updates = [r["fmm_update"] for r in samples if r.get("fmm_update")]
         speed_updates = [r["speed_update"] for r in samples if r.get("speed_update")]
         verification = [r["verification"] for r in samples if r.get("verification")]
-        metrics["verification_wall_s"] = distribution([r["wall_s"] for r in verification])
+        metrics["verification_wall_s"] = distribution([r["wall_s"] for r in verification
+                                                       if r.get("wall_s") is not None])
         summaries.append({**metadata, "samples": len(samples), "outcomes": outcomes,
                           "field_updates": dict(Counter(r["field_update"] for r in samples
                                                         if "field_update" in r)),
                           "fmm_updates": dict(Counter(r["status"] for r in fmm_updates)),
                           "fmm_reasons": dict(Counter(r["reason"] for r in fmm_updates)),
+                          "fmm_work": work_distributions(fmm_updates, FMM_WORK),
                           "speed_updates": dict(Counter(r["status"] for r in speed_updates)),
                           "speed_reasons": dict(Counter(r["reason"] for r in speed_updates)),
+                          "speed_work": work_distributions(speed_updates, SPEED_WORK),
                           "field_verification": dict(Counter(r["status"] for r in verification)),
                           "bvp_calls": len(solves), "bvp_failures": sum(not s["success"] for s in solves),
                           "metrics": metrics})
@@ -73,9 +127,11 @@ def summarize(directory):
     expected = (options["repeat"] + options["warmups"]) * len(manifest["snapshots"])
     complete = (directory / "COMPLETE").exists() and len(records) == expected
     return {"run": str(directory.resolve()), "complete": complete,
+            "options": options,
             "field_backend": options.get("field_backend", "full"),
             "profile_sha256": manifest["profile_sha256"], "environment": manifest["environment"],
-            "field_only": options["field_only"], "groups": summaries}
+            "field_only": options["field_only"], "groups": summaries,
+            "case_totals": summarize_cases(manifest["snapshots"], groups, options["repeat"])}
 
 
 def main():

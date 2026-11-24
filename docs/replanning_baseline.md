@@ -189,7 +189,8 @@ a faster request.
 | `results.jsonl`                        | One record per snapshot/repetition, including warmups and failures                                                                                                    |
 | `sample_XXXX_XXXX.npz`                 | Accepted nominal trajectory prefix; optionally raw fields with `--save-fields`                                                                                        |
 | `COMPLETE`                             | All requested samples were recorded; does not mean every plan completed                                                                                               |
-| Summary `summary.json` / `timings.csv` | Per-run/per-snapshot distributions, outcome counts and metric sample counts                                                                                           |
+| Summary `summary.json`                | Run options, per-snapshot distributions and work counters, and complete-case timing totals                                                                            |
+| Summary `timings.csv`                 | Per-run/per-snapshot timing distributions, outcome counts and metric sample counts                                                                                     |
 
 Use a clean committed tree for recorded campaigns. Dirty status and a tracked
 diff hash are diagnostic, not a substitute for preserving uncommitted sources.
@@ -276,7 +277,37 @@ include failures that reached that stage; each metric has its own `n`.
 pool calls within the indicated snapshot, not independent route trials. Small
 sample p95 values are descriptive only. Incomplete runs are labelled; malformed
 or duplicate records are rejected. The CLI exits zero when it recorded the
-requested experiments, even if every plan failed; inspect outcome counts.
+requested experiments, even if every plan failed, unless requested field
+verification found a mismatch or error; inspect outcome counts.
+
+## Summary accounting
+
+`summary.json` includes the manifest's complete `options` object. Snapshot
+groups keep timing distributions, outcome counts, and field verification
+counts separate. Their `fmm_work` and `speed_work` objects contain distributions
+of the recorded work counters. Null or missing counters are excluded, while
+zero counts remain valid samples. A field cache hit therefore does not become
+a zero-work native sample when no native diagnostics were recorded.
+
+`case_totals` keeps each case separate. Within each requested repetition, it
+sums the times for every expected snapshot, including the initial field and
+all updates. It then forms distributions of those sums. This gives the cost
+of the complete request sequence; adding snapshot medians can give a different
+answer.
+
+Only repetitions with the complete expected snapshot set enter these totals.
+Failed snapshots remain included when that set is complete. A timing metric
+also needs a non-null value in every snapshot of that repetition; missing
+stages are not filled with zero. Each metric's `n` shows how many complete
+repetitions supplied it. `verification_wall_s` is summed separately and is
+never added to `total_wall_s` or the other computation timings.
+
+Each case reports `expected_repetitions`, `complete_repetitions`, and an
+`incomplete_repetitions` list with missing snapshot IDs and observed outcomes.
+The list also includes repetitions with no records. Case outcome counts cover
+all observed non-warmup snapshots, including incomplete repetitions. Warmups
+are excluded from all summary distributions. `timings.csv` retains its
+per-snapshot format; complete-case totals are in `summary.json`.
 
 ## Validation and next use
 
