@@ -28,11 +28,12 @@ _logger = logging.getLogger(__name__)
 
 from agx_planning.vector_field import VectorFieldGrid
 from agx_planning.pmp_planner import PMPShootingSolver, PlannerConfig
+from agx_planning.pmp_planner.outcomes import SolveDiagnostics
 
 
 @dataclass(frozen=True)
 class RolloutChunk:
-    """One committed BVP segment. All arrays are parallel: row i is the
+    """One committed BVP segment. Command arrays are parallel: row i is the
     quantity at tick i, and wheel_cmds[i] is applied at poses[i].
 
     wheel_cmds (N, 2) float64 -- publication-ready wheel-group velocity
@@ -55,6 +56,9 @@ class RolloutChunk:
                                  field snapshot, so it cannot be
                                  reconstructed downstream -- it is
                                  exported here or never.
+    raw_states (N+1, 5) -- raw state at every command boundary, including
+                                 the terminal boundary of this chunk.
+    solution             -- full-horizon spline from this solve, if available.
     """
 
     chunk_idx: int
@@ -63,18 +67,24 @@ class RolloutChunk:
     accels: np.ndarray
     poses: np.ndarray
     costates: np.ndarray
+    raw_states: Optional[np.ndarray] = None
+    solution: object = None
+    solve_diagnostics: Optional[SolveDiagnostics] = None
+    field_key: object = None
 
 
 @dataclass(frozen=True)
 class RolloutResult:
     """Terminal event yielded as the very last item by rollout_generator.
 
-    status  -- "success" | "failed" | "preempted" | "cancelled"
+    status  -- "success" | "stagnated" | "failed" | stop reason
     message -- human-readable details safe to log or surface to a UI
     """
 
     status: str
     message: str
+    solve_status: Optional[str] = None
+    diagnostics: Optional[SolveDiagnostics] = None
 
 
 def parse_field_array(
@@ -161,7 +171,7 @@ def compute_diag_values(
     return lam_th_0, lam_om_0, alpha_cmd_0
 
 
-def rollout_generator(
+def _rollout_generator(
     solver: PMPShootingSolver,
     cfg: PlannerConfig,
     x0: np.ndarray,
@@ -226,6 +236,8 @@ def rollout_generator(
     n_samples = max(1, int(round(seg_len_s / dt_sample)))
 
     state = x0.copy()
+    active_field = solver.field
+    active_key = solver._field_goal_key(goal)
     sim_t = 0.0
     chunk_idx = 0
 
@@ -248,6 +260,9 @@ def rollout_generator(
         stop_reason = stop_fn()
         if stop_reason is not None:
             return RolloutResult(status=stop_reason, message=stop_reason.capitalize())
+        if solver.field is not active_field or solver._field_goal_key(goal) != active_key:
+            return RolloutResult(status="failed", message="Field changed during rollout",
+                                 solve_status="field_changed")
 
         # Termination (a): state at the iteration boundary is in the goal ball.
         if goal_reached(state, goal, cfg):
@@ -256,11 +271,24 @@ def rollout_generator(
         # Warm = the solver will seed from the previous solution (solve()
         # drops it on a new field). Logged beside solve= so the paper's
         # warm/cold solve time can be read off any stack log (#5).
-        _warm = (solver._prev_sol is not None
-                 and solver.field.version == solver._last_field_version)
+        _warm = solver._warm_start_matches(goal)
         _t_solve = time.perf_counter()
         result = solver.sample_committed_segment(state, goal, dt_sample, n_samples)
         _solve_ms = (time.perf_counter() - _t_solve) * 1e3
+
+        # A stop or field replacement during a blocking solve cannot publish a
+        # chunk from the completed but now obsolete invocation.
+        stop_reason = stop_fn()
+        if stop_reason is not None:
+            solver.reject_current_solve(stop_reason, f"Solve stopped: {stop_reason}")
+            return RolloutResult(status=stop_reason, message=stop_reason.capitalize(),
+                                 solve_status=stop_reason,
+                                 diagnostics=solver.last_outcome.diagnostics)
+        if solver.field is not active_field or solver._field_goal_key(goal) != active_key:
+            solver.reject_current_solve("field_changed", "Field changed during rollout")
+            return RolloutResult(status="failed", message=solver._last_error,
+                                 solve_status="field_changed",
+                                 diagnostics=solver.last_outcome.diagnostics)
 
         if result is None:
             return RolloutResult(
@@ -269,6 +297,8 @@ def rollout_generator(
                     f"BVP solve failed at sim_t={sim_t:.2f}s "
                     f"(chunk={chunk_idx}): {solver._last_error}"
                 ),
+                solve_status=solver.last_outcome.status,
+                diagnostics=solver.last_outcome.diagnostics,
             )
 
         wheel_cmds, accels, poses, costates, x_next = result
@@ -299,6 +329,10 @@ def rollout_generator(
                 accels=accels[:hit_idx],
                 poses=poses[:hit_idx],
                 costates=costates[:hit_idx],
+                raw_states=solver._last_segment_states[:hit_idx + 1],
+                solution=solver.last_outcome.solution,
+                solve_diagnostics=solver.last_outcome.diagnostics,
+                field_key=getattr(solver.field, "field_key", None),
             )
             _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
             _logger.info(
@@ -323,11 +357,15 @@ def rollout_generator(
             accels=accels,
             poses=poses,
             costates=costates,
+            raw_states=solver._last_segment_states,
+            solution=solver.last_outcome.solution,
+            solve_diagnostics=solver.last_outcome.diagnostics,
+            field_key=getattr(solver.field, "field_key", None),
         )
         _consumer_ms = (time.perf_counter() - _t_yield) * 1e3
 
         state = x_next
-        sim_t += n_samples * dt_sample
+        sim_t += wheel_cmds.shape[0] * dt_sample
         chunk_idx += 1
 
         # Termination (c): stagnation check (only meaningful when close to goal).
@@ -343,34 +381,13 @@ def rollout_generator(
         if new_d_xy < near_goal_thresh and (prev_d_xy - new_d_xy) < progress_eps:
             stagnation_count += 1
             if stagnation_count >= stagnation_limit:
-                # Stopping this close is ARRIVAL, not a planning failure.
-                #
-                # goal_reached needs d_xy < goal_tolerance_xy (0.05 m) AND
-                # d_th < goal_tolerance_th. 5 cm is tighter than this chassis
-                # holds open-loop, so a good run settles a little outside it,
-                # stops improving, and trips the guard below. Measured
-                # 2026-07-25 on the baked floor map: a 4.8 m run with the
-                # identity corrector finished 0.08 m from the goal (heading
-                # within 2.8 deg) and was reported as
-                #   'Plan failure (BVP / stagnation / sim-time cap)'
-                # -- indistinguishable, to any consumer, from the BVP never
-                # converging at all. It also suppressed the corrector's
-                # completion sentinel, which fires only on success, so
-                # everything waiting on that goal hung until its own timeout.
-                #
-                # Note this branch cannot fire far from the goal: the guard
-                # above already requires new_d_xy < near_goal_thresh, so
-                # "stagnated" here always means "stopped within 4x the goal
-                # tolerance". A robot that stalls out in open space is caught
-                # by the sim-time cap below instead, which is the honest
-                # failure signal.
+                # Near-goal lack of progress is distinct from strict success.
                 return RolloutResult(
-                    status="success",
+                    status="stagnated",
                     message=(
-                        f"Arrived near goal "
-                        f"(d_xy={new_d_xy:.3f} m, outside "
-                        f"goal_tolerance_xy={cfg.goal_tolerance_xy:.3f} m "
-                        f"but no longer improving)"
+                        f"Stagnated near goal "
+                        f"(d_xy={new_d_xy:.3f} m, goal tolerances not met "
+                        f"and no longer improving)"
                     ),
                 )
         else:
@@ -382,3 +399,43 @@ def rollout_generator(
         status="failed",
         message=f"Exceeded max_rollout_sim_time={cfg.max_rollout_sim_time} s",
     )
+
+
+def rollout_generator(
+    solver: PMPShootingSolver,
+    cfg: PlannerConfig,
+    x0: np.ndarray,
+    goal: np.ndarray,
+    stop_fn: Callable[[], Optional[str]] = lambda: None,
+) -> Generator[RolloutChunk, None, RolloutResult]:
+    """Plan with one owned field snapshot and explicit terminal status.
+
+    The generator restores the caller's original field when it still owns the
+    active snapshot. An external replacement is never overwritten on exit.
+    Each successful chunk has N commands, N+1 raw states, and the full spline
+    from that chunk's successful solve. Legacy unidentified fields remain usable
+    but do not establish a source/goal association.
+    """
+    try:
+        x0 = np.array(x0, dtype=float, copy=True)
+        goal = np.array(goal, dtype=float, copy=True)
+        if x0.shape != (5,) or goal.shape != (3,) or not np.isfinite(x0).all() or not np.isfinite(goal).all():
+            raise ValueError("Expected finite five-state start and three-value goal")
+        timing = [cfg.control_rate, cfg.dt_segment, cfg.T_horizon, cfg.max_rollout_sim_time]
+        if not np.isfinite(timing).all() or min(timing) <= 0:
+            raise ValueError("Rollout timing settings must be finite and positive")
+    except (ValueError, TypeError) as error:
+        return RolloutResult("failed", str(error), solve_status="invalid_input")
+    original = solver.field
+    try:
+        snapshot = original.frozen_copy() if hasattr(original, "frozen_copy") else original
+        if hasattr(snapshot, "require_goal"):
+            snapshot.require_goal(goal)
+    except (ValueError, TypeError) as error:
+        return RolloutResult("failed", str(error), solve_status="field_mismatch")
+    solver.field = snapshot
+    try:
+        return (yield from _rollout_generator(solver, cfg, x0, goal, stop_fn))
+    finally:
+        if solver.field is snapshot:
+            solver.field = original

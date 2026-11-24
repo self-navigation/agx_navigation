@@ -1,7 +1,8 @@
 import logging
 import time
 from math import hypot, atan2, pi, sin, cos, tanh
-from typing import Optional
+from dataclasses import replace
+from typing import Callable, Optional
 
 import numpy as np
 from scipy.integrate import solve_bvp
@@ -9,6 +10,7 @@ from scipy.integrate import solve_bvp
 _logger = logging.getLogger(__name__)
 
 from agx_planning.pmp_planner.config import PlannerConfig
+from agx_planning.pmp_planner.outcomes import SolveDiagnostics, SolveOutcome
 from agx_planning.vector_field import VectorFieldGrid
 
 
@@ -131,14 +133,18 @@ class PMPShootingSolver:
         self.cfg = cfg
         self.field = field
         self._prev_sol = None
+        self._warm_start_key = None
+        self.last_outcome = SolveOutcome(False, "not_started", "No solve has run")
+        self._last_segment_states = None
+        self._seed_was_warm = False
         # Cached per-solve for the BC/ODE closures.
         self._x0: Optional[np.ndarray] = None  # 5-vector
         self._goal: Optional[np.ndarray] = None
-        # Last successful trajectory for introspection / publishing.
+        # Current accepted trajectory; a failed invocation clears these arrays.
         self._last_state: Optional[np.ndarray] = None  # (m, 5)
         self._last_costate: Optional[np.ndarray] = None  # (m, 5)
         self._last_error: Optional[str] = None
-        # Field-version tracking: a replaced field invalidates the warm start.
+        # Legacy version readout; full field identity gates the warm cache.
         self._last_field_version: int = -1
         # Terminal targets (set per-solve in solve()):
         #   p_pursuit     -- streamline endpoint at the lookahead distance.
@@ -570,55 +576,163 @@ class PMPShootingSolver:
         wr_cmd = np.clip(wr_cmd, -cfg.wheel_cmd_max, +cfg.wheel_cmd_max)
         return wl_cmd, wr_cmd
 
-    def _fallback_command(self) -> Optional[tuple[float, float]]:
-        """Evaluate the fallback wheel command from the previous BVP
-        solution at the next control tick. Applies the same publication
-        transform as the main path. The prev_sol callable is freed on
-        failure to prevent a second fallback attempt with a
-        further-extrapolated bad solution.
+    def _field_goal_key(self, goal):
+        identity = getattr(self.field, "identity", None)
+        if identity is None:
+            identity = (id(self.field), getattr(self.field, "version", None))
+        return identity, tuple(np.asarray(goal, dtype=float))
+
+    def _warm_start_matches(self, goal):
+        return self._prev_sol is not None and self._warm_start_key == self._field_goal_key(goal)
+
+    def _publish_failure(self, status, message, diagnostics=None):
+        self._last_state = self._last_costate = self._last_segment_states = None
+        self._last_error = str(message)
+        self.last_outcome = SolveOutcome(False, status, str(message),
+                                         diagnostics=diagnostics or SolveDiagnostics())
+        return self.last_outcome
+
+    def reject_current_solve(self, status, message):
+        """Discard an uncommitted result after cancellation or segment rejection."""
+        diagnostics = self.last_outcome.diagnostics
+        if self.last_outcome.success and self._prev_sol is self.last_outcome.solution:
+            self.reset_warm_start()
+        return self._publish_failure(status, message, diagnostics)
+
+    def solve(self, x0: np.ndarray, goal: np.ndarray) -> Optional[tuple[float, float]]:
+        """Compatibility command API. A failed invocation always returns None."""
+        return self.solve_outcome(x0, goal).command
+
+    def solve_outcome(
+        self, x0: np.ndarray, goal: np.ndarray,
+        stop_fn: Optional[Callable[[], Optional[str]]] = None,
+        deadline: Optional[float] = None,
+    ) -> SolveOutcome:
+        """Solve once; only an accepted new solution may supply a command.
+
+        ``deadline`` is an absolute monotonic time. Stop/deadline checks run
+        before and after the blocking BVP call. Worker termination remains the
+        mechanism for interrupting an unresponsive numerical call.
         """
-        if self._prev_sol is None:
+        started = time.perf_counter()
+        self._last_state = self._last_costate = self._last_segment_states = None
+        self._last_error = None
+        self.last_outcome = SolveOutcome(False, "running", "Solve is in progress")
+        diagnostics = SolveDiagnostics()
+        candidate_started = False
+        self._seed_was_warm = False
+
+        def failed(status, message):
+            return self._publish_failure(
+                status, message, replace(diagnostics, wall_s=time.perf_counter() - started,
+                                         warm_start=self._seed_was_warm))
+
+        def stopped():
+            reason = stop_fn() if stop_fn is not None else None
+            if reason is not None:
+                return str(reason), f"Solve stopped: {reason}"
+            if deadline is not None and time.monotonic() >= deadline:
+                return "deadline_exceeded", "Solve deadline exceeded"
             return None
-        cfg = self.cfg
-        t_eval = min(1.0 / cfg.control_rate, cfg.T_horizon)
+
         try:
-            y_eval = self._prev_sol(t_eval)
-        except Exception:
-            self._prev_sol = None
-            return None
-        wl_cmd_a, wr_cmd_a = self._predistort(
-            wl_state=y_eval[3],
-            wr_state=y_eval[4],
-            lam_wl=y_eval[8],
-            lam_wr=y_eval[9],
-        )
-        return float(wl_cmd_a), float(wr_cmd_a)
+            x0 = np.array(x0, dtype=float, copy=True)
+            goal = np.array(goal, dtype=float, copy=True)
+            if x0.shape != (5,) or goal.shape != (3,):
+                return failed("invalid_input", "Expected a five-state start and three-value goal")
+            if not np.isfinite(x0).all() or not np.isfinite(goal).all():
+                return failed("invalid_input", "Start and goal must be finite")
+            cfg = self.cfg
+            if (not np.isfinite([cfg.T_horizon, cfg.control_rate, cfg.gamma_wheel,
+                                 cfg.a_wheel_max]).all()
+                    or min(cfg.T_horizon, cfg.control_rate, cfg.gamma_wheel, cfg.a_wheel_max) <= 0
+                    or not isinstance(cfg.N, (int, np.integer)) or cfg.N < 1):
+                return failed("invalid_input", "Invalid horizon, mesh, rate, or acceleration settings")
+            if deadline is not None and not np.isfinite(deadline):
+                return failed("invalid_input", "Deadline must be a finite monotonic time")
+            reason = stopped()
+            if reason is not None:
+                return failed(*reason)
+            if hasattr(self.field, "require_goal"):
+                try:
+                    self.field.require_goal(goal)
+                except ValueError as error:
+                    return failed("field_mismatch", str(error))
+            key = self._field_goal_key(goal)
+            if key != self._warm_start_key:
+                self.reset_warm_start()
+            self._last_field_version = getattr(self.field, "version", -1)
+            self._seed_was_warm = False
+            candidate_started = True
+            sol = self._solve_candidate(x0, goal)
+            residuals = np.asarray(getattr(sol, "rms_residuals", []), dtype=float)
+            maximum = float(np.max(residuals)) if residuals.size and np.isfinite(residuals).all() else None
+            diagnostics = SolveDiagnostics(
+                warm_start=self._seed_was_warm, nodes=int(np.asarray(sol.x).size),
+                iterations=int(getattr(sol, "niter", 0)),
+                scipy_status=int(getattr(sol, "status", -1)), max_rms_residual=maximum)
+            reason = stopped()
+            if reason is not None:
+                return failed(*reason)
+            if self._field_goal_key(goal) != key:
+                return failed("field_changed", "Field changed during the BVP solve")
+            if not sol.success:
+                status = {1: "mesh_exhausted", 2: "singular_jacobian"}.get(
+                    diagnostics.scipy_status, "solver_failed")
+                return failed(status, str(sol.message))
+            knots = np.asarray(sol.x, dtype=float)
+            values = np.asarray(sol.y, dtype=float)
+            if (knots.ndim != 1 or knots.size < 2 or not np.isfinite(knots).all()
+                    or not np.all(np.diff(knots) > 0)
+                    or abs(knots[0]) > 1e-12 or abs(knots[-1] - cfg.T_horizon) > 1e-12
+                    or values.shape != (10, knots.size) or not np.isfinite(values).all()
+                    or (residuals.size and not np.isfinite(residuals).all())):
+                return failed("nonfinite_solution", "Invalid or non-finite BVP mesh/state/residual data")
+            t_dense = np.linspace(0.0, cfg.T_horizon, max(201, cfg.N + 1))
+            t_check = np.unique(np.concatenate((knots, (knots[:-1] + knots[1:]) / 2, t_dense)))
+            y_check = np.asarray(sol.sol(t_check), dtype=float)
+            if y_check.shape != (10, t_check.size) or not np.isfinite(y_check).all():
+                return failed("nonfinite_solution", "BVP spline evaluation is not finite")
+            delta = y_check[:5, 0] - x0
+            heading_error = abs((float(delta[2]) + pi) % (2.0 * pi) - pi)
+            diagnostics = replace(diagnostics, position_pin_error=float(np.max(np.abs(delta[:2]))),
+                                  heading_pin_error=heading_error,
+                                  wheel_pin_error=float(np.max(np.abs(delta[3:]))))
+            if (diagnostics.position_pin_error > 1e-6 or heading_error > 1e-6
+                    or diagnostics.wheel_pin_error > 1e-6):
+                return failed("invalid_pin", "BVP initial state does not match the requested pin")
+            controls = cfg.a_wheel_max * np.tanh(-y_check[8:10] / (cfg.gamma_wheel * cfg.a_wheel_max))
+            diagnostics = replace(diagnostics, max_accel=float(np.max(np.abs(controls))))
+            if not np.isfinite(controls).all() or diagnostics.max_accel > cfg.a_wheel_max + 1e-9:
+                return failed("invalid_controls", "BVP controls exceed the finite acceleration bound")
+            y_at_dt = np.asarray(sol.sol(min(1.0 / cfg.control_rate, cfg.T_horizon)), dtype=float)
+            command = self._predistort(y_at_dt[3], y_at_dt[4], y_at_dt[8], y_at_dt[9])
+            command = float(command[0]), float(command[1])
+            if not np.isfinite(command).all():
+                return failed("invalid_controls", "Published wheel command is not finite")
+            reason = stopped()
+            if reason is not None:
+                return failed(*reason)
+            self._prev_sol = sol.sol
+            self._warm_start_key = key
+            self._last_seg_T = min(1.0 / cfg.control_rate, cfg.T_horizon)
+            dense = np.asarray(sol.sol(np.linspace(0.0, cfg.T_horizon, cfg.N + 1)), dtype=float)
+            self._last_state = dense[:5].T.copy()
+            self._last_costate = dense[5:10].T.copy()
+            self.last_outcome = SolveOutcome(
+                True, "ok", str(sol.message), solution=sol.sol,
+                diagnostics=replace(diagnostics, wall_s=time.perf_counter() - started), command=command)
+            return self.last_outcome
+        except (ValueError, TypeError, OverflowError) as error:
+            return failed("exception" if candidate_started else "invalid_input", f"{type(error).__name__}: {error}")
+        except Exception as error:
+            return failed("exception", f"{type(error).__name__}: {error}")
 
-    def solve(
-        self,
-        x0: np.ndarray,
-        goal: np.ndarray,
-    ) -> Optional[tuple[float, float]]:
-        """Solve the TPBVP. x0 is the 5-vector (px, py, theta, w_l, w_r).
-
-        Returns (wl_cmd, wr_cmd) -- the publication-ready wheel-group
-        velocity setpoints [rad/s] (post lead/deadzone/clip, see
-        _predistort) -- or None on failure. The caller duplicates each
-        per side for the four-joint controller message.
-
-        Side effects (used by both online and offline paths):
-          - self._prev_sol     : OdeSolution callable, t in [0, T_horizon]
-          - self._last_state   : (N+1, 5) dense state samples
-          - self._last_costate : (N+1, 5) dense costate samples
-          - self._last_error   : str or None
-        """
+    def _solve_candidate(self, x0, goal):
+        """Build one BVP candidate. Acceptance belongs to solve_outcome()."""
         cfg = self.cfg
         self._x0 = x0
         self._goal = goal
-
-        if self.field.version != self._last_field_version:
-            self.reset_warm_start()
-            self._last_field_version = self.field.version
 
         # Streamline trace from x_now -- one call serves two consumers:
         # (1) pursuit point + heading, sampled at pursuit_dist arc length;
@@ -720,7 +834,9 @@ class PMPShootingSolver:
                 # The tail of that solution -- prev_sol(t + seg_T) -- is the
                 # planner's best prior belief about the new time window.
                 t_shifted = np.minimum(t_mesh + self._last_seg_T, cfg.T_horizon)
-                y_init = self._prev_sol(t_shifted)
+                y_init = np.array(self._prev_sol(t_shifted), dtype=float, copy=True)
+                if y_init.shape != (10, t_mesh.size) or not np.isfinite(y_init).all():
+                    raise ValueError("invalid warm-start samples")
                 # Theta unwrap: if chassis crossed +-pi between cycles
                 # the warm-start theta(0) differs from x0[2] by ~2*pi*k.
                 # Shift the entire theta trajectory; then anchor all 5
@@ -730,72 +846,30 @@ class PMPShootingSolver:
                 if n_shift != 0:
                     y_init[2, :] -= n_shift * 2.0 * pi
                 y_init[0:5, 0] = x0
+                self._seed_was_warm = True
             except Exception:
                 y_init = self._rollout_guess(x0, goal, t_mesh)
         else:
             y_init = self._rollout_guess(x0, goal, t_mesh)
 
-        warm_start = self._prev_sol is not None
         _t_bvp = time.perf_counter()
-        try:
-            sol = solve_bvp(
-                self._ode,
-                self._bc,
-                t_mesh,
-                y_init,
-                tol=cfg.bvp_tol,
-                max_nodes=cfg.bvp_max_nodes,
-                verbose=cfg.bvp_verbose,
-            )
-        except Exception as e:
-            self._last_error = f"solve_bvp raised: {e}"
-            _logger.info("BVP EXCEPTION warm=%s dt=%.0fms: %s", warm_start,
-                         (time.perf_counter() - _t_bvp) * 1e3, e)
-            return self._fallback_command()
-
-        _bvp_ms = (time.perf_counter() - _t_bvp) * 1e3
+        sol = solve_bvp(
+            self._ode, self._bc, t_mesh, y_init, tol=cfg.bvp_tol,
+            max_nodes=cfg.bvp_max_nodes, verbose=cfg.bvp_verbose,
+        )
         _logger.info(
-            "BVP %s  warm=%s  nodes=%d  niter=%d  dt=%.0fms  msg=%s",
-            "ok  " if sol.success else "FAIL",
-            warm_start,
-            sol.x.size,
-            getattr(sol, "niter", -1),
-            _bvp_ms,
+            "BVP %s warm=%s nodes=%d niter=%d dt=%.0fms msg=%s",
+            "ok" if sol.success else "FAIL", self._seed_was_warm,
+            np.asarray(sol.x).size, getattr(sol, "niter", -1),
+            (time.perf_counter() - _t_bvp) * 1e3,
             sol.message if not sol.success else "",
         )
-
-        if not sol.success:
-            self._last_error = sol.message
-            return self._fallback_command()
-
-        self._prev_sol = sol.sol
-        # For the next warm start: online commits one control tick.
-        self._last_seg_T = min(1.0 / cfg.control_rate, cfg.T_horizon)
-
-        # Online publication: the wheel-speed state at the next control
-        # tick, passed through the publication transform (lead +
-        # deadzone + clip). The chassis ramps toward where the plan says
-        # it should be one tick later.
-        t_lookahead = min(1.0 / cfg.control_rate, cfg.T_horizon)
-        y_at_dt = self._prev_sol(t_lookahead)
-        wl_cmd_a, wr_cmd_a = self._predistort(
-            wl_state=y_at_dt[3],
-            wr_state=y_at_dt[4],
-            lam_wl=y_at_dt[8],
-            lam_wr=y_at_dt[9],
-        )
-
-        # Densely resample for visualization and downstream introspection.
-        t_dense = np.linspace(0.0, cfg.T_horizon, cfg.N + 1)
-        y_dense = self._prev_sol(t_dense)
-        self._last_state = y_dense[0:5].T
-        self._last_costate = y_dense[5:10].T
-        self._last_error = None
-
-        return float(wl_cmd_a), float(wr_cmd_a)
+        return sol
 
     def reset_warm_start(self):
         self._prev_sol = None
+        self._warm_start_key = None
+        self._last_seg_T = 0.0
 
     # --- Re-join mode (Phase 0 of the re-join re-planner) ------------------
 
@@ -1041,46 +1115,53 @@ class PMPShootingSolver:
 
         Returns None if the BVP fails.
         """
-        if self.solve(x0, goal) is None:
+        try:
+            count = int(n_samples)
+            if count != n_samples or count < 1 or not np.isfinite(dt_sample) or dt_sample <= 0:
+                raise ValueError("sample period and integer count must be positive")
+            if dt_sample > self.cfg.T_horizon:
+                raise ValueError("sample period exceeds the solve horizon")
+            n_samples = min(count, int(np.floor((self.cfg.T_horizon + 1e-12) / dt_sample)))
+        except (TypeError, ValueError, OverflowError) as error:
+            self._publish_failure("invalid_sampling", str(error))
             return None
-        if self._prev_sol is None:
+        outcome = self.solve_outcome(x0, goal)
+        if not outcome.success:
             return None
 
         cfg = self.cfg
         seg_T = n_samples * dt_sample
-        if seg_T > cfg.T_horizon + 1e-9:
-            n_samples = max(1, int(cfg.T_horizon / dt_sample))
-            seg_T = n_samples * dt_sample
-
-        t_ticks = np.arange(n_samples + 1, dtype=np.float64) * dt_sample
-        t_ticks = np.minimum(t_ticks, cfg.T_horizon)
+        t_ticks = np.minimum(np.arange(n_samples + 1, dtype=np.float64) * dt_sample,
+                             cfg.T_horizon)
         try:
-            y_ticks = self._prev_sol(t_ticks)  # shape (10, n_samples + 1)
-        except Exception as e:
-            self._last_error = f"prev_sol resample failed: {e}"
+            # Use only this invocation's accepted solution, never the warm cache.
+            y_ticks = np.asarray(outcome.solution(t_ticks), dtype=float)
+            if y_ticks.shape != (10, n_samples + 1) or not np.isfinite(y_ticks).all():
+                raise ValueError("non-finite or invalid committed state samples")
+            delta = y_ticks[:5, 0] - np.asarray(x0, dtype=float)
+            if (np.max(np.abs(delta[:2])) > 1e-6
+                    or abs((float(delta[2]) + pi) % (2.0 * pi) - pi) > 1e-6
+                    or np.max(np.abs(delta[3:])) > 1e-6):
+                raise ValueError("committed segment does not match its initial state")
+            wl_cmd_v, wr_cmd_v = self._predistort(
+                wl_state=y_ticks[3, :n_samples], wr_state=y_ticks[4, :n_samples],
+                lam_wl=y_ticks[8, :n_samples], lam_wr=y_ticks[9, :n_samples],
+            )
+            wheel_cmds = np.column_stack([wl_cmd_v, wr_cmd_v])
+            sat = cfg.gamma_wheel * cfg.a_wheel_max
+            accels = (cfg.a_wheel_max * np.tanh(-y_ticks[8:10, :n_samples] / sat)).T.copy()
+            if (not np.isfinite(wheel_cmds).all() or not np.isfinite(accels).all()
+                    or np.max(np.abs(accels)) > cfg.a_wheel_max + 1e-9):
+                raise ValueError("committed controls are not finite or exceed the acceleration bound")
+        except Exception as error:
+            self.reject_current_solve("invalid_segment", f"Committed segment rejected: {error}")
             return None
 
-        wl_cmd_v, wr_cmd_v = self._predistort(
-            wl_state=y_ticks[3, :n_samples],
-            wr_state=y_ticks[4, :n_samples],
-            lam_wl=y_ticks[8, :n_samples],
-            lam_wr=y_ticks[9, :n_samples],
-        )
-        wheel_cmds = np.column_stack([wl_cmd_v, wr_cmd_v])
-
-        sat = cfg.gamma_wheel * cfg.a_wheel_max
-        accels = np.column_stack(
-            [
-                cfg.a_wheel_max * np.tanh(-y_ticks[8, :n_samples] / sat),
-                cfg.a_wheel_max * np.tanh(-y_ticks[9, :n_samples] / sat),
-            ]
-        )
-
-        poses = y_ticks[0:3, :n_samples].T.copy()
+        poses = y_ticks[:3, :n_samples].T.copy()
         costates = y_ticks[5:10, :n_samples].T.copy()
-        x_next = y_ticks[0:5, n_samples].copy()
-
-        # Record committed duration so solve() can time-shift the warm start.
+        raw_states = y_ticks[:5].T.copy()
+        raw_states.setflags(write=False)
+        self._last_segment_states = raw_states
+        x_next = raw_states[-1].copy()
         self._last_seg_T = seg_T
-
         return wheel_cmds, accels, poses, costates, x_next
