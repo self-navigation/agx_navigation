@@ -39,6 +39,7 @@ class FieldUpdater:
         self.last_update = "empty"
         self.last_fmm = {}
         self.last_speed = {}
+        self.last_interior = {}
 
     def update(
         self,
@@ -57,12 +58,14 @@ class FieldUpdater:
         """Match compute_field(), including None for invalid request cells.
 
         last_update reports full_recompute, map_reuse, field_reuse, fmm_replay,
-        fmm_reuse, or invalid. last_fmm and last_speed hold stage diagnostics.
+        fmm_reuse, or invalid. Stage diagnostics are in last_fmm, last_speed,
+        and last_interior.
         An invalid request or exception clears the cache.
         """
         try:
             self.last_fmm = {}
             self.last_speed = {}
+            self.last_interior = {}
             obstacles = vf._obstacle_mask(map_array, occupancy_threshold, allow_unknown)
             if not vf._valid_cells(obstacles, goal_col, goal_row, cfg, robot_col, robot_row):
                 self.clear()
@@ -93,6 +96,8 @@ class FieldUpdater:
             ))
             if not same_map and prepared.speed_update is not None:
                 self.last_speed = dict(prepared.speed_update)
+            if not same_map and prepared.interior_update is not None:
+                self.last_interior = dict(prepared.interior_update)
             outcome = vf._compute_prepared_field(
                 prepared, goal_col, goal_row, resolution, origin_x, origin_y,
                 cfg, robot_col, robot_row,

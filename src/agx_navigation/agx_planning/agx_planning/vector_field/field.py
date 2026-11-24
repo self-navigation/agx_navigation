@@ -527,6 +527,83 @@ def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
     return speed, info
 
 
+def _update_interior_distance(obstacles, resolution, previous):
+    """Update distances inside obstacles using certified source crops."""
+    total = obstacles.size
+    info = dict(status="full_recompute", reason="new_map", changed_cells=None,
+                updated_cells=total, computed_cells=0, total_cells=total,
+                region_count=1, transform_calls=0)
+
+    def full(reason):
+        info.update(status="full_recompute", reason=reason,
+                    updated_cells=total, region_count=1)
+        info["computed_cells"] += total
+        info["transform_calls"] += 1
+        return distance_transform_edt(obstacles) * resolution, info
+
+    if previous is None or previous.obstacle_mask.shape != obstacles.shape:
+        return full("new_map")
+    if obstacles.ndim != 2 or not np.isfinite(resolution) or resolution <= 0:
+        return full("unsupported_geometry")
+    changed = obstacles != previous.obstacle_mask
+    info["changed_cells"] = int(np.count_nonzero(changed))
+    # SciPy uses an implicit outside source when the whole map is blocked.
+    if previous.obstacle_mask.all() or obstacles.all():
+        return full("no_free_source")
+    if not info["changed_cells"]:
+        info.update(status="unchanged", reason="inputs_unchanged",
+                    updated_cells=0, region_count=0)
+        return np.maximum(-previous.wall_dist, 0.0), info
+
+    old_min = float(previous.wall_dist.min())
+    if not np.isfinite(old_min):
+        return full("unsupported_geometry")
+    old_max = max(0.0, -old_min) / resolution
+    if not np.isfinite(old_max):
+        return full("unsupported_geometry")
+    # The extra cell protects the bound after world-to-pixel conversion.
+    padding = int(np.ceil(old_max)) + 1
+    regions = _speed_update_regions(changed, padding)
+    if sum((r1 - r0) * (c1 - c0) for _, (r0, r1, c0, c1) in regions) >= total:
+        return full("full_region")
+
+    interior = np.maximum(-previous.wall_dist, 0.0)
+    h, w = obstacles.shape
+    for (r0, r1, c0, c1), _ in regions:
+        halo = padding
+        for _ in range(3):
+            sr0, sr1 = max(0, r0 - halo), min(h, r1 + halo)
+            sc0, sc1 = max(0, c0 - halo), min(w, c1 + halo)
+            source = obstacles[sr0:sr1, sc0:sc1]
+            if source.all():
+                halo *= 2
+                continue
+            if info["computed_cells"] + source.size >= total:
+                return full("work_limit")
+            distance = distance_transform_edt(source)
+            info["computed_cells"] += source.size
+            info["transform_calls"] += 1
+            local = distance[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0]
+            rows, cols = np.arange(r0, r1), np.arange(c0, c1)
+            row_bound = np.minimum(rows - sr0 + 1 if sr0 else np.inf,
+                                   sr1 - rows if sr1 < h else np.inf)
+            col_bound = np.minimum(cols - sc0 + 1 if sc0 else np.inf,
+                                   sc1 - cols if sc1 < w else np.inf)
+            bound = np.minimum(np.broadcast_to(row_bound, rows.shape)[:, None],
+                               np.broadcast_to(col_bound, cols.shape)[None, :])
+            if np.all(local <= bound):
+                interior[r0:r1, c0:c1] = local * resolution
+                break
+            halo *= 2
+        else:
+            return full("uncertified_region")
+    info.update(status="local_update", reason="changed_region",
+                updated_cells=sum((r1 - r0) * (c1 - c0)
+                                  for (r0, r1, c0, c1), _ in regions),
+                region_count=len(regions))
+    return interior, info
+
+
 def solve_eikonal(
     obstacle_mask: np.ndarray,
     speed: np.ndarray,
@@ -659,6 +736,7 @@ class _MapData:
     speed: np.ndarray
     wall_dist: np.ndarray
     speed_update: Optional[dict] = None
+    interior_update: Optional[dict] = None
 
 
 def _obstacle_mask(map_array, occupancy_threshold, allow_unknown):
@@ -691,8 +769,13 @@ def _prepare_map(obstacles, resolution, cfg, previous=None, incremental=False):
         speed, speed_update = _update_speed_field(edt_free, obstacles, cfg, resolution, previous)
     else:
         speed = build_speed_field(edt_free, obstacles, cfg, resolution)
-    wall_dist = edt_free - distance_transform_edt(obstacles) * resolution
-    return _MapData(obstacles, speed, wall_dist, speed_update)
+    interior_update = None
+    if incremental:
+        interior, interior_update = _update_interior_distance(obstacles, resolution, previous)
+        wall_dist = edt_free - interior
+    else:
+        wall_dist = edt_free - distance_transform_edt(obstacles) * resolution
+    return _MapData(obstacles, speed, wall_dist, speed_update, interior_update)
 
 
 def compute_field(
