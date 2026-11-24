@@ -184,3 +184,35 @@ The collector has 54 focused regression tests. The complete current tool test
 suite, including those checks, passed 595 tests. Tests cover pairing, frozen
 inputs, environment isolation, timeout cleanup, missing/duplicate records,
 corrupt artifacts, failed verification and native interface compatibility.
+
+## Targeted planner stopping check
+
+After a Python-only stopping fix, reuse the full collection's frozen planner
+inputs and its existing after venv. From the repository root, run:
+
+```bash
+python3 tools/check_planner_stopping.py \
+  --collection run_data/kt4-kt5-collection \
+  --out run_data/planner-stopping-check
+```
+
+The output directory must be new and outside the previous collection. The check
+uses the current checkout and current worker, with one thread, no warmups and one
+pass over the six saved planner snapshots. It preserves the original collection.
+It does not build the native dependency or rerun the field matrix, historical
+revision, native doctests, or full test suites. The native revision must be
+unchanged. If the old after venv was removed, use `--python PATH/TO/venv/bin/python`
+with an existing venv that contains the matching native build.
+
+The command requires the synthetic and floor6 base routes, plus the stationary
+already-at-goal case, to pass the independent common numerical acceptance check.
+The other three outcomes remain in the output; they are not required to retain
+their previous BVP failures. Every attempt, raw trajectory, source/environment
+record, worker log and the final `summary.json` are saved in the new directory.
+Exit codes are 0 for acceptance passed, 1 for a required case failing acceptance,
+and 2 for setup, worker or record-completeness errors. Inspect `summary.json` and
+the named worker log for details.
+
+This is a targeted correctness check. Its single-pass timings do not replace the
+original repeated timing experiment, and numerical acceptance does not prove
+collision-free or physical execution.
