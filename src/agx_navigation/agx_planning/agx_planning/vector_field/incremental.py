@@ -104,7 +104,8 @@ class IncrementalEikonal:
                 if initial["working_array_bytes"] + initial["checkpoint_array_bytes"] > self.cache_bytes:
                     return self._full(obstacles, speed, goal_col, goal_row, resolution,
                                       target, margin, "cache_budget")
-            copies, copy_bytes = self._finish()
+            if info["reason"] != "complete_state_reused":
+                copies, copy_bytes = self._finish()
 
         stats = self._state.stats
         self.last_stats = {

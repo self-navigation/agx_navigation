@@ -93,11 +93,18 @@ changes use the same checks; there is no assumption that travel times can only
 increase.
 
 The native state records the first batch that reads each cell's inputs.
-It checks new initialization exactly and selects a checkpoint before the first
-affected read. Every changed cell must still be Far or Mask with no heap ID at
-that checkpoint. Accepted replay restores the checkpoint, applies the changed
-inputs, and finishes the march. See [fmm_state.md](fmm_state.md) for the native
-checks and checkpoint rules.
+It checks new initialization exactly. If all changed inputs are unread and
+their cells remain Far or Mask with no heap entry, it can retain the current
+complete march. Otherwise it selects a checkpoint before the first affected
+read. Every changed cell must still be Far or Mask with no heap ID at that
+checkpoint. The controller resumes a selected checkpoint and finishes the
+march. See [fmm_state.md](fmm_state.md) for the native checks and checkpoint rules.
+
+An unread edit can return `status="replay"` with
+`reason="complete_state_reused"`. This needs no completed checkpoint. The
+controller reports zero computed batches, zero checkpoint copies, and zero
+retained checkpoints. It still updates map data and field derivatives. Later
+unread edits can reuse the complete state again without any checkpoints.
 
 `last_update` is `fmm_replay` after accepted replay, or `fmm_reuse` when the
 complete FMM inputs are unchanged. Other requests use the modes in the table.
@@ -141,9 +148,12 @@ where I is the initial interval. Offsets start at the current revision's reused
 point. This can retain more work for distant edits while retaining less work
 for some early edits. The default growth is 1. Compare full request costs,
 including checkpoint copies, before choosing a different value.
-Accepted replay drops all previous revision checkpoints. New checkpoints start
-at the reused point, so a later edit that affects earlier work may need a full
-solve.
+Accepted replay drops all previous revision checkpoints. When marching must
+resume, new checkpoints start at the reused point, so a later edit that affects
+earlier work may need a full solve. Complete-state reuse stores no new
+checkpoints. A later edit to an input that was read can therefore require a
+full solve, even if a checkpoint from the discarded revision would have been
+early enough. The count and byte-budget policy remains unchanged.
 
 The budget covers retained native working arrays and checkpoint arrays only.
 It includes dependency history and the initialization signature. It excludes

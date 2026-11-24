@@ -66,13 +66,24 @@ The native replay checks are exact:
 - Reinitialize the new inputs and compare all initial Frozen and Narrow cells,
   raw values, heap IDs, and heap contents and order. Inert Far/Mask differences
   are allowed.
-- Select the latest supplied checkpoint before the first affected read. Every
-  changed cell must be Far or Mask with no heap ID in that checkpoint.
+- If no changed input was read and every changed cell is currently Far or
+  Mask with no heap entry, retain the current complete march. This needs no
+  checkpoint and does not restore or advance the heap.
+- Otherwise select the latest supplied checkpoint before the first affected
+  read. Every changed cell must be Far or Mask with no heap ID in that checkpoint.
 
 An accepted replay returns `status="replay"` without advancing the march.
 It applies the new inputs and invalidates every checkpoint from the previous
-input revision. Ordinary restore with unchanged inputs keeps the accumulated
-read history. Changed-input replay drops reads after the selected checkpoint.
+input revision. Reason `checkpoint_replayed` means a saved checkpoint was
+restored. Reason `complete_state_reused` means the state is already complete;
+`reused_batches` is the current total and `first_affected_batch` is -1. An empty
+checkpoint sequence is allowed for this complete-state case. Every supplied
+checkpoint is still validated.
+
+Ordinary restore with unchanged inputs keeps the accumulated read history.
+Checkpoint replay drops reads after the selected checkpoint. Complete-state
+reuse keeps the full read history so that a later edit to a previously read
+input cannot take the unread path.
 
 `status="unchanged"` preserves the state and its checkpoints. A result of
 `full_required` with reason `initialization_changed` or `no_safe_checkpoint`
@@ -110,10 +121,19 @@ later checkpoints can save more work for distant edits, but give less coverage
 between early offsets. Compare complete base and update costs with
 `--verify-fields`; a larger reused prefix alone does not establish a speedup.
 
-After accepted replay the controller drops the previous
-revision's checkpoints and stores new ones from the reused point onward. An
-offset is relative to that reused point, not the original batch zero. An edit
-affecting earlier work can therefore require a full solve. The budget
+After accepted checkpoint replay the controller drops the previous revision's
+checkpoints and stores new ones from the reused point onward. An offset is
+relative to that reused point, not the original batch zero. An edit affecting
+earlier work can therefore require a full solve.
+
+For `complete_state_reused`, the controller drops the old checkpoints and
+skips both marching and checkpoint creation. It reports zero computed batches,
+zero checkpoint copies, and zero retained checkpoints. Later unread edits can
+reuse the complete state again with an empty checkpoint list. A later edit to
+a previously read input can require a full solve because checkpoints from the
+old input revision were discarded. The existing count and byte-budget policy
+still applies; disabling checkpoints continues to select stateless full solves.
+The budget
 covers retained native working and checkpoint arrays only. Temporary
 initialization, preprocessing, returned fields, Python objects, and other
 process memory are outside this budget.
@@ -122,9 +142,10 @@ process memory are outside this budget.
 batch numbers of retained checkpoints. `checkpoint_copies` and
 `checkpoint_copy_bytes` count checkpoint copies and their array payload for
 the current request. Unchanged FMM inputs retain the batch list but report
-zero new copies and bytes. Stateless fallback reports an empty list and zero
-copy work. These values describe snapshot work, not elapsed copy time or total
-process memory.
+zero new copies and bytes. Complete-state reuse and stateless fallback report
+an empty list and zero copy work. Complete-state reuse retains the working
+state, which is still included in `cache_array_bytes`. These values describe
+snapshot work, not elapsed copy time or total process memory.
 
 ## Validation
 
@@ -133,7 +154,7 @@ process memory.
 .venv-baseline/bin/python -c 'import skfmm; raise SystemExit(skfmm.test())'
 PYTHONPATH=src/agx_navigation/agx_planning .venv-baseline/bin/python -m pytest -q \
   tools/tests/test_fmm_state.py tools/tests/test_field_replay.py \
-  tools/tests/test_checkpoint_spacing.py
+  tools/tests/test_checkpoint_spacing.py tools/tests/test_complete_state_reuse.py
 ```
 
 The fork tests compare reached masks and times exactly after pauses, restores,
