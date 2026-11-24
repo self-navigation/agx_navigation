@@ -32,16 +32,22 @@ Exceptions also clear the cache and are raised to the caller.
 
 With incremental mode enabled, map edits still run both global distance
 transforms and rebuild signed wall distance. Compatible requests with centring
-enabled and `centring_smooth=0` update speed in an affected rectangle. Cap and
+enabled and `centring_smooth=0` update speed in affected rectangles. Cap and
 resolution must be finite and positive. Other settings, an incompatible
-previous map, or a source crop covering the whole map use full speed construction.
+previous map, or source crops whose total area reaches the map area use full
+speed construction.
 
-The affected rectangle starts from changed mask or clipped free-distance
-values. It includes the influence of the centring level radii. A second halo
-supplies all centres needed to recompute that rectangle with the existing
-speed function. Both bounds include its `1e-9` distance tolerance. Empty centre
-sets use the existing stop rule. This keeps the global EDT algorithm and the
-centring formula unchanged.
+Affected regions start from changed mask or clipped free-distance values.
+They include the influence of the centring level radii. A second halo supplies
+all centres needed to recompute each region with the existing speed function.
+Both bounds include its `1e-9` distance tolerance. Empty centre sets use the
+existing stop rule. This keeps the global EDT algorithm and the centring
+formula unchanged.
+
+Separated edits can use up to four output rectangles. The updater splits at
+empty row or column gaps only when the outputs stay disjoint and the total
+source crop area decreases. Source halos may overlap. If splitting does not
+reduce work, it keeps one rectangle. The split order is deterministic.
 
 The controller then tries to reuse a prefix of the previous FMM march. It
 recomputes field derivatives from the resulting complete travel-time field.
@@ -171,9 +177,10 @@ Incremental map preprocessing also records `speed_update`:
 | --- | --- |
 | `status`, `reason` | `local_update`, `full_recompute`, or `unchanged`, and its cause |
 | `changed_cells` | Changed clipped distance or mask inputs; null when not checked |
-| `updated_cells` | Area of the output rectangle replaced in the speed array |
-| `computed_cells` | Area of the source crop passed to speed construction |
+| `updated_cells` | Total area of disjoint output rectangles replaced in the speed array |
+| `computed_cells` | Sum of source crop areas passed to speed construction, counting overlapping halos |
 | `total_cells` | Full map area |
+| `region_count` | Number of speed crops: up to four for local updates, one for full construction, zero for unchanged inputs |
 
 JSON summaries include backend, field mode counts, and FMM and speed status and
 reason counts. A full solve with reason `new_field` starts a tracked field;

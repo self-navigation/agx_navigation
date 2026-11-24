@@ -358,10 +358,63 @@ def build_speed_field(
     return v
 
 
+_MAX_SPEED_REGIONS = 4
+
+
+def _speed_update_regions(dirty, halo):
+    h, w = dirty.shape
+
+    def bounds(box):
+        r0, r1, c0, c1 = box
+        selected = dirty[r0:r1, c0:c1]
+        rows = np.flatnonzero(np.any(selected, axis=1))
+        cols = np.flatnonzero(np.any(selected, axis=0))
+        return (r0 + int(rows[0]), r0 + int(rows[-1]) + 1,
+                c0 + int(cols[0]), c0 + int(cols[-1]) + 1)
+
+    def expand(box, padding):
+        r0, r1, c0, c1 = box
+        return (max(0, r0 - padding), min(h, r1 + padding),
+                max(0, c0 - padding), min(w, c1 + padding))
+
+    def source_area(box):
+        r0, r1, c0, c1 = expand(box, 2 * halo)
+        return (r1 - r0) * (c1 - c0)
+
+    regions = [bounds((0, h, 0, w))]
+    while len(regions) < _MAX_SPEED_REGIONS:
+        best, best_saving = None, 0
+        for index, box in enumerate(regions):
+            r0, r1, c0, c1 = box
+            selected = dirty[r0:r1, c0:c1]
+            for axis in (0, 1):
+                occupied = np.flatnonzero(np.any(selected, axis=1 - axis))
+                gaps = np.diff(occupied) - 1
+                if not gaps.size:
+                    continue
+                gap = int(np.argmax(gaps))
+                # Keep output regions disjoint; source halos may overlap.
+                if gaps[gap] < max(1, 2 * halo):
+                    continue
+                cut = box[2 * axis] + int(occupied[gap]) + 1
+                before, after = list(box), list(box)
+                before[2 * axis + 1], after[2 * axis] = cut, cut
+                children = [bounds(before), bounds(after)]
+                saving = source_area(box) - sum(source_area(child) for child in children)
+                if saving > best_saving:
+                    best, best_saving = (index, children), saving
+        if best is None:
+            break
+        index, children = best
+        regions[index:index + 1] = children
+    return [(expand(box, halo), expand(box, 2 * halo)) for box in regions]
+
+
 def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
     total = obstacles.size
     info = dict(status="full_recompute", reason="new_map", changed_cells=None,
-                updated_cells=total, computed_cells=total, total_cells=total)
+                updated_cells=total, computed_cells=total, total_cells=total,
+                region_count=1)
 
     def full(reason):
         info["reason"] = reason
@@ -387,27 +440,24 @@ def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
     info["changed_cells"] = int(np.count_nonzero(dirty))
     if not info["changed_cells"]:
         info.update(status="unchanged", reason="inputs_unchanged",
-                    updated_cells=0, computed_cells=0)
+                    updated_cells=0, computed_cells=0, region_count=0)
         return previous.speed.copy(), info
 
     halo = int(np.ceil((radius + 1e-9) / resolution)) if levels else 0
-    rows = np.flatnonzero(np.any(dirty, axis=1))
-    cols = np.flatnonzero(np.any(dirty, axis=0))
-    h, w = obstacles.shape
-    r0, r1 = max(0, int(rows[0]) - halo), min(h, int(rows[-1]) + halo + 1)
-    c0, c1 = max(0, int(cols[0]) - halo), min(w, int(cols[-1]) + halo + 1)
-    # Changed centres affect one radius; computing those cells needs one more.
-    sr0, sr1 = max(0, r0 - halo), min(h, r1 + halo)
-    sc0, sc1 = max(0, c0 - halo), min(w, c1 + halo)
-    if sr0 == sc0 == 0 and sr1 == h and sc1 == w:
+    regions = _speed_update_regions(dirty, halo)
+    computed_cells = sum((r1 - r0) * (c1 - c0)
+                         for _, (r0, r1, c0, c1) in regions)
+    if computed_cells >= total:
         return full("full_region")
-    source = np.s_[sr0:sr1, sc0:sc1]
-    local_speed = build_speed_field(edt_free[source], obstacles[source], cfg, resolution)
     speed = previous.speed.copy()
-    speed[r0:r1, c0:c1] = local_speed[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0]
+    for (r0, r1, c0, c1), (sr0, sr1, sc0, sc1) in regions:
+        source = np.s_[sr0:sr1, sc0:sc1]
+        local_speed = build_speed_field(edt_free[source], obstacles[source], cfg, resolution)
+        speed[r0:r1, c0:c1] = local_speed[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0]
     info.update(status="local_update", reason="changed_region",
-                updated_cells=(r1 - r0) * (c1 - c0),
-                computed_cells=(sr1 - sr0) * (sc1 - sc0))
+                updated_cells=sum((r1 - r0) * (c1 - c0)
+                                  for (r0, r1, c0, c1), _ in regions),
+                computed_cells=computed_cells, region_count=len(regions))
     return speed, info
 
 
