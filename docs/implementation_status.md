@@ -1,132 +1,75 @@
 # Implementation status
 
-Audit date: 2026-11-24. User base: `898061a`.
-Validated implementation: parent `5e3ee28`, native `ef17210`.
-This report describes code and regression coverage. It does not claim a new
-live ROS, Gazebo, or physical execution result.
+Date: 2026-11-24. This batch is based on the pushed parent `3a785b9` and
+scikit-fmm `cc7e63f`. The native dependency and its pin are unchanged.
 
-The new work is a field-update implementation and a computation benchmark.
-It is not yet the complete map-aware trajectory replanning system from the
-historical implementation plan.
+Field performance work is frozen. The corrected target upload has 51 exact
+field matches, seven complete runs, and passing native preflight checks.
+The next work is functional replanning integration, not further field tuning.
+See `docs/field_freeze.md` for the evidence and its Makefile provenance limit.
 
-## Implemented by the field-update work
+## Progress against the original agenda
 
-| Area | Implemented behavior | Main limit |
+| Phase | Implemented in the current branch | Remaining gate |
 | --- | --- | --- |
-| Map and field caching | Compare effective masks, geometry, settings, policy, goal, and target; reuse preprocessing or copy a cached result | One serial request stream |
-| Centred speed updates | Exact local regions with source halos; descending radius levels and tiled half-width construction | Unsupported settings use full speed construction |
-| Interior wall distance | Certified local occupied-distance updates, crop expansion, and fallback; occupied bounding-box optimization for full reconstruction | Only the obstacle-side distance is localized |
-| Native FMM replay | Track input reads, check source initialization, restore a safe checkpoint, and resume the same march | Complete fields only |
-| Initialization support | Prove unchanged initialization from fixed phi near changed cells, without reconstruction | Source-area and dense edits retain exact reconstruction |
-| Complete-state reuse | Keep a completed march for unread, inert input edits; skip marching and checkpoint copies | Invalidates old checkpoints; a later read edit can need a full solve |
-| Checkpoint policy | Count and byte limits, fixed or geometric spacing, checkpoint and copy diagnostics | Budget covers retained native arrays, not total process memory |
-| ROS field configuration | Persistent updater, backend/checkpoint parameters, stage logs, and unchanged publication order | Computation remains synchronous in callbacks |
-| Benchmark | Full/cached/incremental modes, profiles, provenance, native behavior checks, FMM phase times, exact verification, and complete-case summaries | Fresh planner per snapshot; no moving execution model |
+| A: baseline | Explicit solve outcomes; no stale solution commit; full raw boundaries; field identity and frozen rollouts; shared sentinel and cell-centre geometry; pure map and profile loaders | Live launch profile wiring, canonical publisher adapter, and typed deployed field transport |
+| B: execution reference | Whole-object reveal; nominal and held-command replay; production full-stop R1 runner; stopped compute time, stale-result rejection, and independent final checks | Floor-6 route/scenario campaign and other comparison arms |
+| C: validity and braking | Filled-footprint and swept checks; delayed wheel braking with numerical bounds; latest safe declared discrete brake anchor | Physical brake calibration and live deadline scheduling |
+| D: plan storage | Immutable N+1 raw states, commands and full spline horizons; NPZ/JSON persistence; bounded active/pending store; explicit warm-seed modes and repair provenance | Connect cross-plan warm seeds to candidate production and measure reuse only after integration |
+| E: trajectory decisions | Pure KEEP/REPAIR/SPLICE/STOP coordinator; full suffix checks; exact pending-record binding; state/map/deadline rejection; checked discrete-anchor activation | Automatic candidate construction/ranking, state-deviation propagation, moving-worker scheduling, and execution-runner integration |
+| F: field updates | Complete second-order replay, exact preprocessing updates, safe full fallbacks, and verified initialization support | Frozen; partial-domain replay and further tuning are deferred |
+| G: runtime | Existing ROS worker now holds one field per rollout and queues later updates | Independent field worker, typed revision transport, pending-plan interpreter activation, reset/pause handling, and live integration tests |
+| H/I: experiments | Computation benchmark and a small production-kernel execution smoke scenario | Gazebo/Nav2 comparison campaign, route-level metrics, figures, and paper results |
 
-Tests cover exact raw fields and reached masks, additions/removals, mixed
-changes, centring, source changes, ties, disconnected regions, cache ownership,
-fallbacks, memory limits, and checkpoint spacing. Interior tests include cavity
-closure where travel times stay equal but signed wall distances change.
-ROS callback and launch tests use stubs; they do not establish live transport.
+This is meaningful implementation progress, but the original agenda is not
+complete. The new coordinator is a checked core API. It does not yet construct
+and schedule moving candidates through the live interpreter. The full-stop
+runner intentionally uses fresh full fields and complete replacement plans.
+It is the reference needed before connecting and comparing moving reuse.
 
-Main code and tests are in:
+## What changed in the baseline
 
-- `src/agx_navigation/agx_planning/agx_planning/vector_field/`
-- `tools/bench_replanning.py`
-- `tools/replanning_baseline/`
-- `tools/summarize_replanning.py`
-- `tools/tests/`
-- `src/agx_navigation/agx_planning/test/unit/test_field_node_update.py`
-- `depend/scikit-fmm/`
+A failed BVP can no longer return an old command or commit an earlier spline.
+Stagnation has its own status. Each rollout uses a single owned field snapshot;
+object-local version numbers no longer identify numerical inputs. Typed fields
+check the goal/source association. Legacy packed ROS arrays remain explicitly
+unidentified and cannot establish that association.
 
-## Field limits that remain
+Field preparation now uses the same invalid-cell sentinel rule on direct and
+packed paths. Float64 and float32 precision choices remain distinct. Queries
+use cell centres, floor cell lookup, and explicit outer-half-cell handling.
+Affected historical plans need regeneration for corrected comparisons. These
+are baseline correctness changes; the frozen raw FMM algorithm is unchanged.
 
-- The global free-space EDT still runs after a map edit.
-- Field gradients are rebuilt over the full field, and returned fields are copied.
-- Early exit uses the stateless partial FMM solve. Partial-domain checkpoint
-  replay and domain extension are not implemented.
-- Source initialization changes or missing safe checkpoints can require a
-  full march. Replay status alone does not establish a speed improvement.
-- ROS defaults remain cached, early exit enabled, and checkpoint growth 1.
-  Complete-field replay requires an explicit configuration change.
-- There is no dedicated field worker, versioned field transport, or reliable
-  cross-process map/goal revision identity. Existing fields at downstream
-  subscribers are not revoked when a request becomes invalid.
-- Live ROS latency, stale-message handling, and transport behavior have not
-  been validated by these tests.
+Plan records retain full raw states and numerical horizons, with bounded
+storage and no pickled SciPy objects. A repair preserves the source identities
+of the reused suffix. A rejected candidate leaves the active plan intact.
+A changed measured state cannot reuse the old nominal braking certificate.
 
-Details: `docs/field_updates.md`, `docs/fmm_state.md`,
-`docs/field_updates_ros.md`, and `docs/replanning_baseline.md`.
-All code paths are relative to the repository root.
+## Current validation
 
-## Existing planner capabilities are inherited
+- 541 tool/core tests passed.
+- 423 existing planner unit tests passed, with one skip. Two expected SciPy
+  overflow warnings occur in an existing infeasible-pin regression.
+- The local production-kernel R1 smoke scenario passed final pose, heading,
+  wheel-speed and swept-collision checks after a reveal, brake and replacement.
+- Existing benchmark inputs, expanded profiles, metadata and hashes remained
+  identical for all 55 snapshot definitions after loader extraction.
+- Tests cover field ownership, old-result rejection, cancellation, persistence,
+  repaired suffix provenance, thin walls, turns near jambs, braking, stale maps,
+  changed state, late activation, and observation timing independent of the
+  collision step.
 
-The planner, supervisor, and runtime-corrector directories are unchanged from
-the historical baseline `e395ad967f414b21bf24962397ce4b486f8aec0e` in this audit.
-They already provide useful capabilities:
+No new target timing campaign is required for this batch. These checks do not
+establish physical tracking, live ROS behavior, or a no-stop navigation result.
+Full runnable details and limitations are in `docs/replanning_execution.md`.
 
-| Existing capability | Current scope |
-| --- | --- |
-| Previous-BVP warm starts | Shift the previous segment, unwrap heading, and pin the initial state within a rollout |
-| Solver process and actions | Stream chunks, cancel/preempt work, and restart a worker after a grace period |
-| Map-dependent supervision | Wall slowdown/stop, waypoint, lag, near-wall, and off-plan responses |
-| Rejoin and recovery | Candidate landing windows, wall checks/retries, asynchronous rejoin, buffer splicing, and full-replan recovery |
-| Playback buffer | Reorder chunks, support timed/progress playback, and resume an old suffix after a rejoin overlay |
+## Next implementation order
 
-These are foundations for new reuse logic. They are not a revision-tagged
-map-change coordinator with a validated prefix, reserved braking, and a
-certified replacement handover. Full replanning currently clears playback;
-there is no separate active/pending plan store with atomic activation.
-See `pmp_planner/`, `supervisor/`, and `runtime_corrector/` under the planning
-package path listed above.
-
-## Historical plan gates still open
-
-The benchmark detects failed BVPs and checks raw state continuity, but its
-guard does not repair the production solver's fallback behavior. Production
-failure propagation therefore remains an unfinished Phase A gate.
-
-Field identity is also unfinished. A newly parsed grid starts at version zero
-and becomes version one; warm-start invalidation compares that local number.
-Two replacement grids can therefore appear to have the same version.
-See `vector_field/grid.py`, `pmp_planner/rollout.py`, and
-`pmp_planner/shooting_solver.py` under the planning package path above.
-
-The branch does not yet add a versioned full-spline plan store, a map-aware
-KEEP/REPAIR/SPLICE/STOP coordinator, full remaining-suffix validation, reserved
-wheel-space braking, validated moving handover, or a reveal/execution runner.
-The benchmark is not the moving-robot full-stop reference arm. Gazebo/Nav2
-campaigns and no-stop navigation claims need separate implementation and tests.
-
-## Validation and next steps
-
-The current batch passed 596 Python tests, 374 fork doctests, and the native
-marcher/heap test under ASan and UBSan (leak checking disabled). All 59 separate
-field checks matched fresh complete solves: floor matrix 18 at each of growth
-1 and 4, disconnected-room sequence 7, cavity edits 8, separated edits 4, and
-repeated floor edits 4.
-
-The corrected target upload has 33 exact matches and confirms complete-state
-reuse. Ordinary replay cost about 33.4-33.7 ms before this batch. Growth 4 reduced
-the far-edit case median by 8.16%; other case differences were below 1%. Growth
-therefore remains an explicit workload choice, with the default still 1.
-
-The new local support check avoids initialization reconstruction on 11 of 13
-floor edits under both policies. The two source-adjacent edits retain the full
-comparison. Ordinary replay phase medians fell from about 36-39 ms to 4.3-4.8 ms.
-The complete floor-sequence medians changed from 5124.4 to 4516.4 ms at growth 1,
-and 4992.1 to 4416.7 ms at growth 4. The unread sequence changed from 360.1 to
-339.1 ms. All existing FMM work, checkpoint, and memory counters stayed equal.
-These are local serial measurements; variation in other stages also contributes
-to total times. They do not establish target-machine speed improvements.
-
-Incremental benchmark runs now check the loaded native behavior before creating
-output. This catches older replay or initialization code and prints a rebuild
-command for the Python executable in use. The check does not prove that every
-installed source file matches the checkout, so binary hashes remain recorded.
-
-Measure the new replay phase on the target before choosing the next field
-optimization. The remaining global free-space EDT and march work still need
-measurement. Complete production failure and field identity gates before
-extending the inherited planner toward moving, map-aware trajectory reuse and
-certified handover.
+1. Connect candidate construction and controlled warm starts to the coordinator.
+2. Execute complete replacements while the old validated prefix continues,
+   with worker deadlines and a reserved stopping fallback.
+3. Wire shared profiles, typed revisions and active/pending activation into ROS.
+4. Run the floor-6/Gazebo comparison campaign and close the remaining protocol
+   and reporting gates.
+5. Revisit optimization only after the functional system and comparisons work.
