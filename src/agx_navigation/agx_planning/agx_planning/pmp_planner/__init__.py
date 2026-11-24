@@ -8,6 +8,7 @@ from .rollout import (
     RolloutResult,
     compute_diag_values,
     goal_reached,
+    goal_state_reached,
     parse_field_array,
     rollout_generator,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "RolloutResult",
     "compute_diag_values",
     "goal_reached",
+    "goal_state_reached",
     "parse_field_array",
     "rollout_generator",
     "RolloutChunk",

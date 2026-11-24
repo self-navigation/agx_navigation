@@ -65,8 +65,12 @@ def test_disconnected_start_skips_planner(inputs):
     assert record["travel_time_at_start"] is None
 
 
-def test_completed_rollout_includes_terminal_raw_state(inputs):
-    profile, snapshots = inputs
+@pytest.mark.parametrize("suite, case", [
+    ("synthetic.yaml", "straight"),
+    ("floor6_smoke.yaml", "floor6_straight"),
+])
+def test_completed_rollout_includes_terminal_raw_state(suite, case):
+    profile, snapshots, _ = load_suite(REPO / "config/replanning" / suite, [case])
     metadata, occupancy = snapshots[0]
     record, arrays = measure_snapshot(occupancy, metadata, profile)
     assert record["status"] == "completed"
@@ -75,6 +79,8 @@ def test_completed_rollout_includes_terminal_raw_state(inputs):
     np.testing.assert_allclose(arrays["states"][:-1, :3], arrays["poses"], atol=1e-6)
     np.testing.assert_array_equal(arrays["states"][0], metadata["start"])
     assert record["goal_position_error_m"] < profile["planner"]["goal_tolerance_xy"]
+    assert record["goal_heading_error_rad"] < profile["planner"]["goal_tolerance_th"]
+    assert np.max(np.abs(arrays["states"][-1, 3:])) <= 0.5
     assert record["nominal_duration_s"] == pytest.approx(
         n / profile["planner"]["control_rate"]
     )

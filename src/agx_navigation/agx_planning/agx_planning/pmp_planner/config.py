@@ -250,9 +250,9 @@ class PlannerConfig:
     fp_sample_spacing: float = 0.08
 
     # --- Goal tolerances ---
-    # Both must be satisfied simultaneously to trigger REACHED (zero
-    # wheel command). The at-goal yaw correction is handled by the BVP
-    # itself (gated v_ref yields v~0 + omega!=0 at the goal).
+    # Rollout success requires both pose tolerances and raw wheel speeds
+    # at or below 0.5 rad/s. A pose match alone does not mean a stopped plan.
+    # The BVP handles the at-goal yaw correction and braking.
     goal_tolerance_xy: float = 0.05  # [m]
     goal_tolerance_th: float = 0.20  # [rad]
 

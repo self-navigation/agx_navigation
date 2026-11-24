@@ -6,7 +6,8 @@ pulling in rclpy.
 Public API
 ----------
   parse_field_array   -- build a VectorFieldGrid from a raw float32 buffer
-  goal_reached        -- check if a state is inside the goal-tolerance ball
+  goal_reached        -- check position and heading tolerances
+  goal_state_reached  -- check position, heading, and stopped wheel speeds
   compute_diag_values -- body-equivalent PMP diagnostics from a costate snapshot
   RolloutChunk        -- one committed BVP segment yielded by rollout_generator
   RolloutResult       -- terminal event; always the last item from rollout_generator
@@ -24,6 +25,10 @@ from typing import Callable, Generator, Optional
 import numpy as np
 
 _logger = logging.getLogger(__name__)
+
+# Match the independent final-state criterion used by the experiment runner.
+# This is a raw state limit in rad/s, not a published command deadzone.
+GOAL_WHEEL_SPEED_TOLERANCE = 0.5
 
 
 from agx_planning.vector_field import VectorFieldGrid
@@ -138,6 +143,23 @@ def goal_reached(
     return d_xy < cfg.goal_tolerance_xy and d_th < cfg.goal_tolerance_th
 
 
+def goal_state_reached(
+    state: np.ndarray,
+    goal: np.ndarray,
+    cfg: PlannerConfig,
+) -> bool:
+    """Require a finite five-state goal match with both wheels at <= 0.5 rad/s.
+
+    Keep ``goal_reached`` pose-only for callers that report pose separately.
+    Use raw planned wheel speeds here; published commands include deadzone and
+    actuator compensation and cannot establish that the planned state stopped.
+    """
+    state = np.asarray(state, dtype=float)
+    return bool(state.shape == (5,) and np.isfinite(state).all()
+                and goal_reached(state, goal, cfg)
+                and np.max(np.abs(state[3:5])) <= GOAL_WHEEL_SPEED_TOLERANCE)
+
+
 def compute_diag_values(
     costate_t0: np.ndarray,
     cfg: PlannerConfig,
@@ -204,8 +226,8 @@ def _rollout_generator(
 
     Termination paths
     -----------------
-    (a) state at an iteration boundary is inside the goal-tolerance ball
-    (b) a sample within a segment hits the ball (chunk is truncated to that point)
+    (a) state at an iteration boundary meets pose and wheel-speed tolerances
+    (b) a raw boundary within a segment meets them (chunk is truncated there)
     (c) stagnation: no meaningful forward progress while already near the goal
     (d) sim-time cap (max_rollout_sim_time backstop)
     (e) stop_fn() returns a stop-reason string
@@ -264,8 +286,8 @@ def _rollout_generator(
             return RolloutResult(status="failed", message="Field changed during rollout",
                                  solve_status="field_changed")
 
-        # Termination (a): state at the iteration boundary is in the goal ball.
-        if goal_reached(state, goal, cfg):
+        # Termination (a): pose and raw wheel speeds meet the goal criteria.
+        if goal_state_reached(state, goal, cfg):
             return RolloutResult(status="success", message="Goal reached")
 
         # Warm = the solver will seed from the previous solution (solve()
@@ -303,20 +325,19 @@ def _rollout_generator(
 
         wheel_cmds, accels, poses, costates, x_next = result
 
-        # Termination (b): scan for the first sample inside the goal ball.
-        # Truncate the chunk so the interpreter applies exactly the commands
-        # needed to arrive; wheel_cmds[i] is applied at poses[i], so the
-        # slice [:hit_idx] delivers the chassis to poses[hit_idx] = goal.
+        # Termination (b): scan all N+1 raw command boundaries, including the
+        # endpoint. A pose hit at speed must not cut off the braking part of the
+        # plan. The slice [:hit_idx] reaches raw_states[hit_idx] and keeps the
+        # N-command/N+1-state contract, even at the time cap or stagnation limit.
+        raw_states = solver._last_segment_states
         hit_idx = -1
-        for i in range(poses.shape[0]):
-            d_xy = hypot(poses[i, 0] - goal[0], poses[i, 1] - goal[1])
-            d_th = abs(((goal[2] - poses[i, 2] + pi) % (2.0 * pi)) - pi)
-            if d_xy < cfg.goal_tolerance_xy and d_th < cfg.goal_tolerance_th:
+        for i, sample in enumerate(raw_states):
+            if goal_state_reached(sample, goal, cfg):
                 hit_idx = i
                 break
 
         if hit_idx == 0:
-            # poses[0] == state (BVP pins the initial condition). This can
+            # raw_states[0] == state (BVP pins the initial condition). This can
             # only happen if the (a) check above somehow missed it -- defensive.
             return RolloutResult(status="success", message="Goal reached")
 
@@ -329,7 +350,7 @@ def _rollout_generator(
                 accels=accels[:hit_idx],
                 poses=poses[:hit_idx],
                 costates=costates[:hit_idx],
-                raw_states=solver._last_segment_states[:hit_idx + 1],
+                raw_states=raw_states[:hit_idx + 1],
                 solution=solver.last_outcome.solution,
                 solve_diagnostics=solver.last_outcome.diagnostics,
                 field_key=getattr(solver.field, "field_key", None),

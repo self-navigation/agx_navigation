@@ -15,7 +15,10 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src/agx_navigation/agx_planning"))
 _rclpy_mock = sys.modules.pop("rclpy", None)
 try:
-    from agx_planning.pmp_planner import PlannerConfig, PMPShootingSolver, rollout_generator
+    from agx_planning.pmp_planner import (
+        PlannerConfig, PMPShootingSolver, goal_reached, goal_state_reached,
+        rollout_generator,
+    )
     from agx_planning.pmp_planner import shooting_solver
     from agx_planning.vector_field import VectorFieldGrid
 finally:
@@ -37,13 +40,14 @@ def problem():
     return PMPShootingSolver(cfg, field()), np.array([1., 1., 0., 0., 0.]), np.array([4., 1., 0.])
 
 
-def candidate(x0, horizon, *, speed=0.0, pin_error=0.0, costate=0.0):
+def candidate(x0, horizon, *, speed=0.0, wheel_accel=0.0, pin_error=0.0, costate=0.0):
     knots = np.array([0., horizon])
     coefficients = np.zeros((2, 1, 10))
     coefficients[1, 0, :5] = x0
     coefficients[1, 0, 0] += pin_error
     coefficients[1, 0, 8:10] = costate
     coefficients[0, 0, 0] = speed
+    coefficients[0, 0, 3:5] = wheel_accel
     spline = PPoly(coefficients.transpose(2, 0, 1), knots, axis=1)
     return SimpleNamespace(success=True, status=0, message="Controlled test result",
                            sol=spline, x=knots, y=spline(knots), niter=1,
@@ -224,6 +228,88 @@ def test_near_goal_stagnation_is_not_success(problem, monkeypatch):
     chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
     assert len(chunks) >= 5
     assert result.status == "stagnated"
+
+
+@pytest.mark.parametrize("wheels, accepted", [
+    ([0., 0.], True), ([0.5, -0.5], True),
+    ([0.500001, 0.], False), ([0., -0.500001], False),
+    ([1., -1.], False), ([np.nan, 0.], False), ([0., np.inf], False),
+])
+def test_goal_state_requires_both_raw_wheel_speeds(problem, wheels, accepted):
+    solver, _, goal = problem
+    state = np.r_[goal, wheels]
+    assert goal_reached(state, goal, solver.cfg)  # Pose remains a separate check.
+    assert goal_state_reached(state, goal, solver.cfg) is accepted
+    assert not goal_state_reached(state[:3], goal, solver.cfg)
+    state[0] += 0.1
+    assert not goal_state_reached(state, goal, solver.cfg)
+
+
+def test_rollout_at_goal_still_plans_until_wheels_slow(problem, monkeypatch):
+    solver, x0, goal = problem
+    goal[:] = x0[:3]
+    x0[3:] = 1.0
+    patch_candidate(monkeypatch, wheel_accel=-2.0)
+    chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
+    assert result.status == "success"
+    assert [len(chunk.wheel_cmds) for chunk in chunks] == [2, 1]
+    assert np.max(np.abs(chunks[0].raw_states[-1, 3:])) > 0.5
+    np.testing.assert_allclose(chunks[-1].raw_states[-1, 3:], [0.4, 0.4])
+
+
+def test_rollout_stopped_at_goal_needs_no_solve(problem, monkeypatch):
+    solver, x0, goal = problem
+    goal[:] = x0[:3]
+    monkeypatch.setattr(shooting_solver, "solve_bvp", lambda *a, **k: pytest.fail("No solve needed"))
+    chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
+    assert chunks == [] and result.status == "success"
+
+
+def test_rollout_skips_fast_pose_hit_and_truncates_at_stopped_boundary(problem, monkeypatch):
+    solver, x0, goal = problem
+    solver.cfg.dt_segment = 0.5
+    x0[3:] = [0.8, -0.8]
+    goal[0] = x0[0] + 0.06
+    patch_candidate(monkeypatch, speed=0.2, wheel_accel=[-1., 1.])
+    # Published commands cannot stand in for raw state: force a zero command.
+    monkeypatch.setattr(solver, "_predistort", lambda wl_state, wr_state, lam_wl, lam_wr: (
+        np.zeros_like(wl_state), np.zeros_like(wr_state)))
+    chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
+    assert result.status == "success" and len(chunks) == 1
+    chunk = chunks[0]
+    assert len(chunk.wheel_cmds) == 3
+    assert chunk.raw_states.shape == (4, 5)
+    assert len(chunk.accels) == len(chunk.poses) == len(chunk.costates) == 3
+    assert goal_reached(chunk.raw_states[1], goal, solver.cfg)
+    assert not goal_state_reached(chunk.raw_states[1], goal, solver.cfg)
+    assert goal_state_reached(chunk.raw_states[-1], goal, solver.cfg)
+    assert not chunk.wheel_cmds.any()
+
+
+def test_rollout_accepts_final_boundary_at_time_cap_without_extra_solve(problem, monkeypatch):
+    solver, x0, goal = problem
+    solver.cfg.max_rollout_sim_time = solver.cfg.dt_segment
+    goal[:] = x0[:3]
+    x0[3:] = 0.75
+    calls = []
+    def solve(_ode, _bc, knots, guess, **_options):
+        calls.append(1)
+        return candidate(guess[:5, 0], knots[-1], wheel_accel=-1.25)
+    monkeypatch.setattr(shooting_solver, "solve_bvp", solve)
+    chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
+    assert result.status == "success" and len(calls) == 1
+    assert len(chunks) == 1 and len(chunks[0].wheel_cmds) == 2
+    np.testing.assert_allclose(chunks[0].raw_states[-1, 3:], [0.5, 0.5])
+
+
+def test_rollout_fast_goal_state_at_time_cap_is_not_success(problem, monkeypatch):
+    solver, x0, goal = problem
+    solver.cfg.max_rollout_sim_time = solver.cfg.dt_segment
+    goal[:] = x0[:3]
+    x0[3:] = 1.0
+    patch_candidate(monkeypatch)
+    chunks, result = collect(rollout_generator(solver, solver.cfg, x0, goal))
+    assert len(chunks) == 1 and result.status == "failed"
 
 
 def test_warm_start_requires_field_identity_and_goal(problem, monkeypatch):
