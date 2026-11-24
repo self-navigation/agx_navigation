@@ -1,7 +1,7 @@
 # Implementation status
 
-Audit date: 2026-11-24. User base: `27262d4`.
-Validated implementation: parent `09d5f6b`, native `4d04364`.
+Audit date: 2026-11-24. User base: `898061a`.
+Validated implementation: parent `5e3ee28`, native `ef17210`.
 This report describes code and regression coverage. It does not claim a new
 live ROS, Gazebo, or physical execution result.
 
@@ -17,10 +17,11 @@ historical implementation plan.
 | Centred speed updates | Exact local regions with source halos; descending radius levels and tiled half-width construction | Unsupported settings use full speed construction |
 | Interior wall distance | Certified local occupied-distance updates, crop expansion, and fallback; occupied bounding-box optimization for full reconstruction | Only the obstacle-side distance is localized |
 | Native FMM replay | Track input reads, check source initialization, restore a safe checkpoint, and resume the same march | Complete fields only |
+| Initialization support | Prove unchanged initialization from fixed phi near changed cells, without reconstruction | Source-area and dense edits retain exact reconstruction |
 | Complete-state reuse | Keep a completed march for unread, inert input edits; skip marching and checkpoint copies | Invalidates old checkpoints; a later read edit can need a full solve |
 | Checkpoint policy | Count and byte limits, fixed or geometric spacing, checkpoint and copy diagnostics | Budget covers retained native arrays, not total process memory |
 | ROS field configuration | Persistent updater, backend/checkpoint parameters, stage logs, and unchanged publication order | Computation remains synchronous in callbacks |
-| Benchmark | Full/cached/incremental modes, profiles, provenance, stage and FMM phase times, exact reference verification, and complete-case summaries | Fresh planner per snapshot; no moving execution model |
+| Benchmark | Full/cached/incremental modes, profiles, provenance, native behavior checks, FMM phase times, exact verification, and complete-case summaries | Fresh planner per snapshot; no moving execution model |
 
 Tests cover exact raw fields and reached masks, additions/removals, mixed
 changes, centring, source changes, ties, disconnected regions, cache ownership,
@@ -99,24 +100,33 @@ campaigns and no-stop navigation claims need separate implementation and tests.
 
 ## Validation and next steps
 
-The current batch passed 564 Python tests, 374 fork doctests, and the native
-marcher/heap test under ASan and UBSan (leak checking disabled). All 41 separate
-field checks matched fresh complete solves: floor matrix 18, disconnected-room
-sequence 7, cavity edits 8, separated edits 4, and repeated floor edits 4.
+The current batch passed 596 Python tests, 374 fork doctests, and the native
+marcher/heap test under ASan and UBSan (leak checking disabled). All 59 separate
+field checks matched fresh complete solves: floor matrix 18 at each of growth
+1 and 4, disconnected-room sequence 7, cavity edits 8, separated edits 4, and
+repeated floor edits 4.
 
-The uploaded target results already had 26 exact matches: floor matrix 18 and
-cavities 8. Target edit request medians were 162.3-216.5 ms. FMM took 90.2-140.1
-ms and is the main remaining stage cost in those runs. These uploaded results
-precede the new native fast path and FMM phase timers.
+The corrected target upload has 33 exact matches and confirms complete-state
+reuse. Ordinary replay cost about 33.4-33.7 ms before this batch. Growth 4 reduced
+the far-edit case median by 8.16%; other case differences were below 1%. Growth
+therefore remains an explicit workload choice, with the default still 1.
 
-The new local disconnected-room run removes marching and checkpoint copies
-for the two hidden edits. Its complete sequence median changed from 758.8 to
-736.0 ms, with overlapping ranges. The connected floor matrix does not use the
-new fast path and shows no general timing improvement. Do not treat this batch
-as a speedup for every map edit.
+The new local support check avoids initialization reconstruction on 11 of 13
+floor edits under both policies. The two source-adjacent edits retain the full
+comparison. Ordinary replay phase medians fell from about 36-39 ms to 4.3-4.8 ms.
+The complete floor-sequence medians changed from 5124.4 to 4516.4 ms at growth 1,
+and 4992.1 to 4416.7 ms at growth 4. The unread sequence changed from 360.1 to
+339.1 ms. All existing FMM work, checkpoint, and memory counters stayed equal.
+These are local serial measurements; variation in other stages also contributes
+to total times. They do not establish target-machine speed improvements.
 
-Local floor phase measurements identify both marching and replay validation
-as substantial costs. Measure these phases on the target machine, including
-checkpoint growth 1 and 4, before choosing the next optimization. Then complete
-production failure and field identity gates before extending the inherited
-planner toward moving, map-aware trajectory reuse and certified handover.
+Incremental benchmark runs now check the loaded native behavior before creating
+output. This catches older replay or initialization code and prints a rebuild
+command for the Python executable in use. The check does not prove that every
+installed source file matches the checkout, so binary hashes remain recorded.
+
+Measure the new replay phase on the target before choosing the next field
+optimization. The remaining global free-space EDT and march work still need
+measurement. Complete production failure and field identity gates before
+extending the inherited planner toward moving, map-aware trajectory reuse and
+certified handover.
