@@ -29,4 +29,3 @@ cases:
       - id: repeated
       - id: reached_removed
         rectangles: [[599, 99, 602, 102, 0]]
-
