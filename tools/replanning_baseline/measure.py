@@ -1,6 +1,7 @@
 """Timing and validity diagnostics around unchanged production kernels."""
 
 from contextlib import ExitStack
+from dataclasses import fields, is_dataclass
 import time
 from unittest.mock import patch
 
@@ -16,6 +17,62 @@ from .inputs import cell
 def finite_number(value):
     value = float(value)
     return value if np.isfinite(value) else None
+
+
+def _equal_field_values(observed, reference):
+    if observed is None or reference is None:
+        return observed is reference
+    if isinstance(observed, np.ndarray) or isinstance(reference, np.ndarray):
+        return (isinstance(observed, np.ndarray) and isinstance(reference, np.ndarray)
+                and np.array_equal(observed, reference, equal_nan=True))
+    if is_dataclass(observed) or is_dataclass(reference):
+        return (type(observed) is type(reference)
+                and all(_equal_field_values(getattr(observed, item.name),
+                                             getattr(reference, item.name))
+                        for item in fields(observed)))
+    if isinstance(observed, (list, tuple)) or isinstance(reference, (list, tuple)):
+        return (type(observed) is type(reference) and len(observed) == len(reference)
+                and all(_equal_field_values(a, b) for a, b in zip(observed, reference)))
+    try:
+        return bool(np.array_equal(observed, reference, equal_nan=True))
+    except TypeError:
+        return observed == reference
+
+
+def verify_field(result, occupancy, metadata, profile):
+    """Compare the measured raw field with a fresh solve outside the timers."""
+    verification = {"status": "error", "differing_fields": []}
+    start = time.perf_counter()
+    try:
+        geometry = metadata["geometry"]
+        sc, gc = cell(metadata["start"], geometry), cell(metadata["goal"], geometry)
+        outcome = vf.compute_field(
+            occupancy, *gc, geometry["resolution"], *geometry["origin"][:2],
+            vf.VectorFieldConfig(**profile["field"]), *sc,
+            profile["occupancy_threshold"], profile["allow_unknown"],
+        )
+        reference = outcome[0] if outcome is not None else None
+        differing = verification["differing_fields"]
+        if result is None or reference is None:
+            if result is not reference:
+                differing.append("field_presence")
+        else:
+            for item in fields(vf.VectorFieldResult):
+                if not _equal_field_values(getattr(result, item.name), getattr(reference, item.name)):
+                    differing.append(item.name)
+            if not np.array_equal(np.isfinite(result.travel_time), np.isfinite(reference.travel_time)):
+                differing.append("reached_mask")
+        verification.update(
+            status="mismatch" if differing else "match",
+            reached_cells=(int(np.isfinite(result.travel_time).sum()) if result is not None else None),
+            reference_reached_cells=(int(np.isfinite(reference.travel_time).sum())
+                                     if reference is not None else None),
+        )
+    except Exception as error:
+        verification["exception"] = f"{type(error).__name__}: {error}"
+    finally:
+        verification["wall_s"] = time.perf_counter() - start
+    return verification
 
 
 def measure_field(occupancy, metadata, profile, updater=None):
@@ -158,9 +215,11 @@ def measure_rollout(field, metadata, profile):
 
 
 def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields=False,
-                     updater=None):
+                     updater=None, verify_fields=False):
+    """Measure a snapshot, then optionally verify its field outside all timers."""
     record = {"status": "exception", "field_only": field_only, "solves": []}
     arrays = {}
+    result, field_computed = None, False
     start, cpu = time.perf_counter(), time.process_time()
     try:
         obstacles = occupancy >= profile["occupancy_threshold"]
@@ -173,6 +232,7 @@ def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields
             record["status"] = "blocked_start" if obstacles[sc[1], sc[0]] else "blocked_goal"
             return record, arrays
         result, stages = measure_field(occupancy, metadata, profile, updater)
+        field_computed = True
         record.update(stages)
         if result is None:
             record["status"] = "field_failed"
@@ -204,4 +264,11 @@ def measure_snapshot(occupancy, metadata, profile, field_only=False, save_fields
         record.update(status="exception", exception=f"{type(error).__name__}: {error}")
     finally:
         record.update(total_wall_s=time.perf_counter() - start, total_cpu_s=time.process_time() - cpu)
+        if verify_fields:
+            record["verification"] = (
+                verify_field(result, occupancy, metadata, profile)
+                if field_computed and record["status"] != "exception" else
+                {"status": "skipped", "reason": record["status"],
+                 "differing_fields": [], "wall_s": 0.0}
+            )
     return record, arrays

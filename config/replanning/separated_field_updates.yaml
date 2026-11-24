@@ -1,0 +1,23 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  grid:
+    shape: [501, 701]
+    resolution: 0.05
+    origin: [0.0, 0.0, 0.0]
+    rectangles:
+      - [0, 0, 701, 1, 100]
+      - [0, 500, 701, 501, 100]
+      - [0, 0, 1, 501, 100]
+      - [700, 0, 701, 501, 100]
+cases:
+  - id: separated_edits
+    start: [2.025, 12.525, 0.0, 0.0, 0.0]
+    goal: [17.525, 12.525, 0.0]
+    updates:
+      - id: added
+        rectangles: [[8, 8, 11, 11, 100], [690, 490, 693, 493, 100]]
+      - id: mixed
+        rectangles: [[8, 8, 11, 11, 0], [8, 490, 11, 493, 100]]
+      - id: removed
+        rectangles: [[8, 490, 11, 493, 0], [690, 490, 693, 493, 0]]

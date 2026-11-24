@@ -42,6 +42,7 @@ def run(args):
                 "options": vars(args), "setup_wall_s": time.perf_counter() - setup}
     write_json(output / "manifest.json", manifest)
     np.savez(output / "inputs.npz", **{f"map_{i}": a for i, (_, a) in enumerate(snapshots)})
+    verification_failures = 0
     with (output / "results.jsonl").open("w") as stream:
         for repetition in range(args.warmups + args.repeat):
             warmup = repetition < args.warmups
@@ -49,7 +50,10 @@ def run(args):
                 if updater is not None and metadata["snapshot_id"] == "base":
                     updater.clear()
                 record, arrays = measure_snapshot(occupancy, metadata, profile,
-                                                   args.field_only, args.save_fields, updater)
+                                                   args.field_only, args.save_fields, updater,
+                                                   verify_fields=args.verify_fields)
+                verification = record.get("verification", {})
+                verification_failures += verification.get("status") in ("mismatch", "error")
                 record.update(schema_version=1, snapshot_index=index, **metadata,
                               repetition=repetition - args.warmups, warmup=warmup,
                               profile_sha256=manifest["profile_sha256"])
@@ -62,9 +66,12 @@ def run(args):
                 stream.flush()
                 print(f"{metadata['case_id']}/{metadata['snapshot_id']} "
                       f"{'warmup' if warmup else record['repetition']}: "
-                      f"{record['status']} ({record['total_wall_s']:.3f}s)", flush=True)
+                      f"{record['status']} ({record['total_wall_s']:.3f}s)"
+                      + (f" verify={verification['status']}" if verification else ""), flush=True)
     (output / "COMPLETE").write_text("All requested samples were recorded.\n")
-    return 0
+    if verification_failures:
+        print(f"Field verification failed for {verification_failures} samples.", file=sys.stderr)
+    return int(verification_failures > 0)
 
 
 def main():
@@ -85,6 +92,8 @@ def main():
     parser.add_argument("--field-cache-mib", type=int, default=256,
                         help="incremental native working and checkpoint array budget in MiB")
     parser.add_argument("--save-fields", action="store_true", help="save raw fields outside the timed region")
+    parser.add_argument("--verify-fields", action="store_true",
+                        help="compare raw fields with fresh solves outside the timed region")
     args = parser.parse_args()
     if min(args.repeat, args.threads) < 1 or args.warmups < 0:
         parser.error("repeat and threads must be positive; warmups must be nonnegative")

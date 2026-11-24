@@ -1,0 +1,51 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  yaml: ../../src/rudn-ordjo-building/maps/floor_6.yaml
+cases:
+  - id: source_adjacent
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[268, 571, 269, 572, 100]]
+      - id: removed
+        rectangles: [[268, 571, 269, 572, 0]]
+  - id: near_edit
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[217, 524, 220, 527, 100]]
+      - id: enlarged
+        rectangles: [[215, 522, 222, 529, 100]]
+      - id: removed
+        rectangles: [[215, 522, 222, 529, 0]]
+  - id: middle_edit
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[516, 610, 519, 613, 100]]
+      - id: removed
+        rectangles: [[516, 610, 519, 613, 0]]
+  - id: far_edit
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[1064, 635, 1067, 638, 100]]
+      - id: enlarged
+        rectangles: [[1062, 633, 1069, 640, 100]]
+      - id: removed
+        rectangles: [[1062, 633, 1069, 640, 0]]
+  - id: separated_edits
+    start: [-18.625, -1.425, 0.0, 0.0, 0.0]
+    goal: [-16.625, -1.425, 0.0]
+    updates:
+      - id: added
+        rectangles: [[217, 524, 220, 527, 100], [122, 923, 125, 926, 100], [1064, 635, 1067, 638, 100]]
+      - id: mixed
+        rectangles: [[217, 524, 220, 527, 0], [913, 504, 916, 507, 100]]
+      - id: removed
+        rectangles: [[122, 923, 125, 926, 0], [1064, 635, 1067, 638, 0], [913, 504, 916, 507, 0]]

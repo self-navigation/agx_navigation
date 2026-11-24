@@ -149,6 +149,31 @@ publisher's trinary thresholds, image flip and negate convention. Nonzero
 origin yaw and out-of-map endpoints are rejected. This loader is local to the
 benchmark; existing map publishers are unchanged.
 
+## Field validation matrix
+
+`floor6_field_matrix.yaml` covers source-adjacent, near, middle, far, enlarged,
+and separated map edits. Each case removes its added obstacles before ending.
+`separated_field_updates.yaml` stresses distant edits in a large synthetic room.
+These are deterministic field fixtures, not recorded sensor updates or route
+coverage. Each case and repetition starts with an empty cache.
+
+Use `--verify-fields` to compare every raw field channel, metadata value, and
+reached mask with a fresh full computation. Verification runs after the sample
+timers stop and records its own wall time. It does not save large field arrays.
+Mismatch or verification error makes the benchmark exit with code 1 after all
+samples are recorded. Skipped comparisons are explicit. `COMPLETE` means all
+samples were recorded; inspect `verification` for correctness.
+
+```bash
+.venv-baseline/bin/python tools/bench_replanning.py \
+  --config config/replanning/floor6_field_matrix.yaml --field-only \
+  --field-backend incremental --verify-fields --out run_data/field-matrix-check
+```
+
+Run timing repetitions separately without verification, since a reference solve
+changes the process and CPU cache state between samples. Compare matching
+snapshots and include initial solves when assessing checkpoint overhead.
+
 ## Outputs and timing boundaries
 
 | File                                   | Contents                                                                                                                                                              |
