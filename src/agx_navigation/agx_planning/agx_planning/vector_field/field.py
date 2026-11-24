@@ -537,9 +537,27 @@ def _update_interior_distance(obstacles, resolution, previous):
     def full(reason):
         info.update(status="full_recompute", reason=reason,
                     updated_cells=total, region_count=1)
-        info["computed_cells"] += total
+        source, output = obstacles, None
+        if obstacles.ndim == 2 and np.isfinite(resolution) and resolution > 0:
+            rows = np.flatnonzero(obstacles.any(axis=1))
+            if rows.size:
+                cols = np.flatnonzero(obstacles.any(axis=0))
+                h, w = obstacles.shape
+                r0, r1 = max(0, int(rows[0]) - 1), min(h, int(rows[-1]) + 2)
+                c0, c1 = max(0, int(cols[0]) - 1), min(w, int(cols[-1]) + 2)
+                if (r0, r1, c0, c1) != (0, h, 0, w):
+                    # The halo outside the occupied box is free. It is nearer
+                    # to every obstacle than any excluded source in that direction.
+                    output = np.s_[r0:r1, c0:c1]
+                    source = obstacles[output]
+        info["computed_cells"] += source.size
         info["transform_calls"] += 1
-        return distance_transform_edt(obstacles) * resolution, info
+        distance = distance_transform_edt(source) * resolution
+        if output is not None:
+            complete = np.zeros(obstacles.shape, dtype=distance.dtype)
+            complete[output] = distance
+            distance = complete
+        return distance, info
 
     if previous is None or previous.obstacle_mask.shape != obstacles.shape:
         return full("new_map")
