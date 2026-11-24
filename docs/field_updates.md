@@ -44,6 +44,15 @@ Both bounds include its `1e-9` distance tolerance. Empty centre sets use the
 existing stop rule. This keeps the global EDT algorithm and the centring
 formula unchanged.
 
+Incremental speed construction also handles the radius levels from largest
+to smallest, starting at the highest level with a possible centre. Once a cell
+is covered, smaller radii cannot raise its half-width.
+It uses 128-cell output tiles around unresolved cells, with a source halo for
+each radius. Small arrays and levels whose crops cover as much area as the
+whole map use a full-map transform. Empty source-centre sets are skipped.
+This also applies to the first map and full speed fallback. The full and cached
+backends keep the original radius loop as the comparison reference.
+
 Separated edits can use up to four output rectangles. The updater splits at
 empty row or column gaps only when the outputs stay disjoint and the total
 source crop area decreases. Source halos may overlap. If splitting does not

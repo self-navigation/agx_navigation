@@ -295,6 +295,67 @@ def local_half_width(
     return hw
 
 
+def _local_half_width_tiled(edt_free, resolution, cap):
+    """Evaluate radius levels only where they can still raise half-width."""
+    if (edt_free.ndim != 2 or not np.isfinite(resolution) or resolution <= 0
+            or not np.isfinite(cap) or cap <= 0):
+        return local_half_width(edt_free, resolution, cap)
+    free = edt_free > 0.0
+    hw = np.where(free, np.minimum(edt_free, cap), 0.0)
+    n_levels = int(np.floor(cap / resolution + 1e-9))
+    if not n_levels or not free.any():
+        return hw
+    # Keep the input dtype for the same scalar comparison as the full array.
+    maximum = np.max(edt_free, where=free, initial=0, keepdims=True)
+    low, high = 0, n_levels
+    while low < high:
+        middle = (low + high + 1) // 2
+        if (maximum >= middle * resolution - 1e-9).item():
+            low = middle
+        else:
+            high = middle - 1
+    h, w = edt_free.shape
+    tile_size = 128
+    whole = ((0, h, 0, w), (0, h, 0, w))
+    for k in range(low, 0, -1):
+        r = k * resolution
+        pending = free & (hw < r)
+        if not pending.any():
+            break
+        centres = edt_free >= r - 1e-9
+        if not centres.any():
+            continue
+        regions = []
+        if edt_free.size > tile_size**2:
+            halo = int(np.ceil((r + 1e-9) / resolution))
+            for tr0 in range(0, h, tile_size):
+                for tc0 in range(0, w, tile_size):
+                    selected = pending[tr0:tr0 + tile_size, tc0:tc0 + tile_size]
+                    if not selected.any():
+                        continue
+                    rows = np.flatnonzero(np.any(selected, axis=1))
+                    cols = np.flatnonzero(np.any(selected, axis=0))
+                    r0, r1 = tr0 + int(rows[0]), tr0 + int(rows[-1]) + 1
+                    c0, c1 = tc0 + int(cols[0]), tc0 + int(cols[-1]) + 1
+                    source = (max(0, r0 - halo), min(h, r1 + halo),
+                              max(0, c0 - halo), min(w, c1 + halo))
+                    regions.append(((r0, r1, c0, c1), source))
+        source_cells = sum((r1 - r0) * (c1 - c0)
+                           for _, (r0, r1, c0, c1) in regions)
+        if not regions or source_cells >= edt_free.size:
+            regions = [whole]
+        for (r0, r1, c0, c1), (sr0, sr1, sc0, sc1) in regions:
+            local_centres = centres[sr0:sr1, sc0:sc1]
+            if not local_centres.any():
+                continue
+            distance = distance_transform_edt(~local_centres) * resolution
+            covered = pending[r0:r1, c0:c1] & (
+                distance[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0] <= r + 1e-9)
+            # The first covering radius is the largest possible level.
+            hw[r0:r1, c0:c1][covered] = r
+    return hw
+
+
 def normalized_clearance(
     edt_free: np.ndarray,
     half_width: np.ndarray,
@@ -316,6 +377,8 @@ def build_speed_field(
     obstacle_mask: np.ndarray,
     cfg: VectorFieldConfig,
     resolution: Optional[float] = None,
+    *,
+    tiled_half_width: bool = False,
 ) -> np.ndarray:
     """Map EDT distance to wave speed v(x) for the eikonal solve.
 
@@ -327,7 +390,8 @@ def build_speed_field(
     if cfg.centring:
         if resolution is None:
             raise ValueError("centring needs the grid resolution")
-        hw = local_half_width(edt_free, resolution, cfg.centring_cap)
+        half_width = _local_half_width_tiled if tiled_half_width else local_half_width
+        hw = half_width(edt_free, resolution, cfg.centring_cap)
         n_all = normalized_clearance(edt_free, hw, cfg.centring_cap)
         if cfg.centring_smooth > 0.0:
             n_all = _gaussian_with_nan(np.where(obstacle_mask, np.nan, n_all),
@@ -418,7 +482,8 @@ def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
 
     def full(reason):
         info["reason"] = reason
-        return build_speed_field(edt_free, obstacles, cfg, resolution), info
+        return build_speed_field(edt_free, obstacles, cfg, resolution,
+                                 tiled_half_width=True), info
 
     if previous is None or previous.obstacle_mask.shape != obstacles.shape:
         return full("new_map")
@@ -452,7 +517,8 @@ def _update_speed_field(edt_free, obstacles, cfg, resolution, previous):
     speed = previous.speed.copy()
     for (r0, r1, c0, c1), (sr0, sr1, sc0, sc1) in regions:
         source = np.s_[sr0:sr1, sc0:sc1]
-        local_speed = build_speed_field(edt_free[source], obstacles[source], cfg, resolution)
+        local_speed = build_speed_field(edt_free[source], obstacles[source], cfg, resolution,
+                                        tiled_half_width=True)
         speed[r0:r1, c0:c1] = local_speed[r0 - sr0:r1 - sr0, c0 - sc0:c1 - sc0]
     info.update(status="local_update", reason="changed_region",
                 updated_cells=sum((r1 - r0) * (c1 - c0)
