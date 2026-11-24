@@ -14,6 +14,10 @@ from agx_planning.vector_field import field as vf
 from .inputs import cell
 
 
+FMM_PHASES = ("fmm_init_s", "fmm_replay_s", "fmm_checkpoint_s", "fmm_advance_s",
+              "fmm_export_s", "fmm_stateless_s")
+
+
 def finite_number(value):
     value = float(value)
     return value if np.isfinite(value) else None
@@ -78,8 +82,10 @@ def verify_field(result, occupancy, metadata, profile):
 def measure_field(occupancy, metadata, profile, updater=None):
     geometry = metadata["geometry"]
     sc, gc = cell(metadata["start"], geometry), cell(metadata["goal"], geometry)
-    stages = dict.fromkeys(("edt_s", "speed_s", "fmm_s", "gradient_s"), 0.0)
+    stages = dict.fromkeys(("edt_s", "speed_s", "fmm_s", "gradient_s",
+                           *FMM_PHASES, "fmm_other_s"), 0.0)
     active = []
+    phase_active = []
 
     def timer(name, function):
         def call(*args, **kwargs):
@@ -94,6 +100,19 @@ def measure_field(occupancy, metadata, profile, updater=None):
                 active.pop()
         return call
 
+    def phase_timer(name, function):
+        def call(*args, **kwargs):
+            if active != ["fmm_s"] or phase_active:
+                return function(*args, **kwargs)
+            phase_active.append(name)
+            start = time.perf_counter()
+            try:
+                return function(*args, **kwargs)
+            finally:
+                stages[name] += time.perf_counter() - start
+                phase_active.pop()
+        return call
+
     start = time.perf_counter()
     with ExitStack() as stack:
         for name, label in (("distance_transform_edt", "edt_s"),
@@ -102,11 +121,21 @@ def measure_field(occupancy, metadata, profile, updater=None):
                             ("_update_speed_field", "speed_s"),
                             ("solve_eikonal", "fmm_s"), ("field_from_T", "gradient_s")):
             stack.enter_context(patch.object(vf, name, timer(label, getattr(vf, name))))
+        state_class = getattr(vf.skfmm, "TravelTimeState", None)
+        if state_class is not None:
+            for name, label in (("__init__", "fmm_init_s"), ("replay", "fmm_replay_s"),
+                                ("checkpoint", "fmm_checkpoint_s"), ("advance", "fmm_advance_s"),
+                                ("result", "fmm_export_s")):
+                stack.enter_context(patch.object(
+                    state_class, name, phase_timer(label, getattr(state_class, name))))
+        stack.enter_context(patch.object(
+            vf.skfmm, "travel_time", phase_timer("fmm_stateless_s", vf.skfmm.travel_time)))
         compute = vf.compute_field if updater is None else updater.update
         result = compute(occupancy, *gc, geometry["resolution"], *geometry["origin"][:2],
                          vf.VectorFieldConfig(**profile["field"]), *sc,
                          profile["occupancy_threshold"], profile["allow_unknown"])
     stages["compute_field_s"] = time.perf_counter() - start
+    stages["fmm_other_s"] = max(0.0, stages["fmm_s"] - sum(stages[name] for name in FMM_PHASES))
     stages["field_update"] = "full_recompute" if updater is None else updater.last_update
     if updater is not None and updater.last_fmm:
         stages["fmm_update"] = dict(updater.last_fmm)

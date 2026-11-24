@@ -1,0 +1,32 @@
+schema_version: 1
+profile: baseline_profile.yaml
+map:
+  grid:
+    shape: [501, 701]
+    resolution: 0.05
+    origin: [0.0, 0.0, 0.0]
+    rectangles:
+      - [0, 0, 701, 1, 100]
+      - [0, 500, 701, 501, 100]
+      - [0, 0, 1, 501, 100]
+      - [700, 0, 701, 501, 100]
+      - [350, 1, 351, 500, 100]
+cases:
+  # The right room is initially unreachable. Opening the door later makes
+  # the same obstacle edit affect the completed field.
+  - id: disconnected_then_open
+    start: [2.525, 12.525, 0.0, 0.0, 0.0]
+    goal: [5.025, 12.525, 0.0]
+    updates:
+      - id: hidden_added
+        rectangles: [[599, 99, 602, 102, 100]]
+      - id: hidden_removed
+        rectangles: [[599, 99, 602, 102, 0]]
+      - id: opened
+        rectangles: [[350, 234, 351, 267, 0]]
+      - id: reached_added
+        rectangles: [[599, 99, 602, 102, 100]]
+      - id: repeated
+      - id: reached_removed
+        rectangles: [[599, 99, 602, 102, 0]]
+

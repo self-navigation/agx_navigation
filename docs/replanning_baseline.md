@@ -201,7 +201,7 @@ floor field is large. Artifacts use ordinary NPZ arrays, never pickled objects.
 | --------------------------------- | --------------------------------------------------------------------------------------------- |
 | `total_wall_s`, `total_cpu_s`     | Endpoint/occupancy checks, field construction, pack/parse, planning and in-memory diagnostics |
 | `compute_field_s`                 | Field computation or update, including cache checks, result copies, and stage timing overhead |
-| `edt_s`                           | Top-level free and occupied distance transforms                                               |
+| `edt_s`                           | Global free-distance transform and interior update checks, transforms, and copies             |
 | `speed_s`                         | Speed change detection, local or full construction, and copies; includes internal EDT and smoothing |
 | `fmm_s`                           | Eikonal wrapper, including replay checks, checkpoints, marching, and output masking          |
 | `gradient_s`                      | Production gradient/direction construction                                                    |
@@ -216,6 +216,33 @@ and bookkeeping operation, so their sum can be below `compute_field_s`.
 Stage timers are nested within total timings: do not add both levels together.
 Instrumentation and extra state sampling remain part of measured computation
 and should stay identical across comparisons.
+
+The benchmark also splits `fmm_s` into the phases below. These are subsets of
+the FMM stage, not additional elapsed time. Do not add them to `fmm_s` or to
+the total request time.
+
+| Measurement | Included work |
+| --- | --- |
+| `fmm_init_s` | `TravelTimeState` construction, input conversion, and native initialization |
+| `fmm_replay_s` | Replay checks, candidate initialization, checkpoint selection, and accepted restore |
+| `fmm_checkpoint_s` | Checkpoint checks and array copies |
+| `fmm_advance_s` | All calls that advance or finish the march |
+| `fmm_export_s` | State result export, including its output copy and mask |
+| `fmm_stateless_s` | Calls to `skfmm.travel_time`, including stateless fallback |
+| `fmm_other_s` | Remaining FMM wrapper and controller work, including timer overhead |
+
+Phase wrappers run only inside the timed FMM stage. Nested phase calls belong
+to their outer phase, so their elapsed time is counted once. `fmm_other_s` is
+the nonnegative remainder after subtracting the six measured phases from
+`fmm_s`. Skipped phases are zero. These timings exist only in benchmark
+records; production controller work counters stay deterministic. Optional
+reference verification runs after all timing wrappers have been removed.
+
+`config/replanning/unread_field_updates.yaml` adds and removes an obstacle in
+a disconnected room, opens its door, and repeats the obstacle edit after the
+room becomes reachable. This separates edits that the completed FMM solve
+never read from edits that need a new march. It is a field computation case,
+not a discovery or moving-robot experiment.
 
 Samples that call the incremental FMM controller include `fmm_update`: status,
 reason, changed cells, reused batches, first affected batch, total and computed
@@ -301,6 +328,10 @@ also needs a non-null value in every snapshot of that repetition; missing
 stages are not filled with zero. Each metric's `n` shows how many complete
 repetitions supplied it. `verification_wall_s` is summed separately and is
 never added to `total_wall_s` or the other computation timings.
+
+FMM phase times follow the same snapshot and case accounting. Older records
+without these fields have phase sample counts of zero; missing values are
+not treated as measured zero-duration phases.
 
 Each case reports `expected_repetitions`, `complete_repetitions`, and an
 `incomplete_repetitions` list with missing snapshot IDs and observed outcomes.

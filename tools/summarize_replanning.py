@@ -11,6 +11,8 @@ import sys
 
 
 METRICS = ("total_wall_s", "total_cpu_s", "compute_field_s", "edt_s", "speed_s", "fmm_s",
+           "fmm_init_s", "fmm_replay_s", "fmm_checkpoint_s", "fmm_advance_s",
+           "fmm_export_s", "fmm_stateless_s", "fmm_other_s",
            "gradient_s", "pack_s", "parse_s", "planner_wall_s", "planner_cpu_s")
 FMM_WORK = ("reused_batches", "total_batches", "computed_batches", "checkpoint_count",
             "checkpoint_copies", "checkpoint_copy_bytes", "cache_array_bytes")
